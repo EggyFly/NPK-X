@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const NL = String.fromCharCode(10);
+const PAGE_SIZE = 1500;
 const SORT_KEYS = new Set(["name_asc", "name_desc", "size_asc", "size_desc", "type", "package"]);
 const storedView = localStorage.getItem("npk-view") || "grid";
 const storedSort = localStorage.getItem("npk-sort") || "name_asc";
@@ -15,9 +16,15 @@ const state = {
   platform: "win32",
   dirSummary: null,
   kindCounts: {},
+  fileTotal: 0,
+  searchTotal: 0,
+  searchQuery: "",
+  loadingMore: false,
 };
 
 let previewToken = 0;
+let listToken = 0;
+let moreObserver = null;
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -227,25 +234,148 @@ function renderFolders(dirs) {
     </button>`).join("")}</div>`;
 }
 
+function fileRowMarkup(file) {
+  return `<div class="file-row" data-file="${esc(file.path)}">
+    <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
+    <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
+    <div class="file-row-size">${formatBytes(file.size)}</div>
+    <div class="file-row-pkg">${esc(file.package)}</div>
+  </div>`;
+}
+
+function fileCardMarkup(file) {
+  return `<div class="file" data-file="${esc(file.path)}" title="${esc(file.path)}">
+    ${thumbMarkup(file)}
+    <div class="file-info">
+      <div class="file-name">${esc(file.name)}</div>
+      <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
+    </div>
+  </div>`;
+}
+
 function renderFiles(files) {
   if (!files.length) return "";
   if (state.view === "list") {
-    return `<div class="file-list">${files.map((file) => `
-      <div class="file-row" data-file="${esc(file.path)}">
-        <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
-        <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
-        <div class="file-row-size">${formatBytes(file.size)}</div>
-        <div class="file-row-pkg">${esc(file.package)}</div>
-      </div>`).join("")}</div>`;
+    return `<div class="file-list">${files.map(fileRowMarkup).join("")}</div>`;
   }
-  return `<div class="file-grid">${files.map((file) => `
-    <div class="file" data-file="${esc(file.path)}" title="${esc(file.path)}">
-      ${thumbMarkup(file)}
-      <div class="file-info">
-        <div class="file-name">${esc(file.name)}</div>
-        <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
-      </div>
-    </div>`).join("")}</div>`;
+  return `<div class="file-grid">${files.map(fileCardMarkup).join("")}</div>`;
+}
+
+function appendFiles(files) {
+  if (!files.length) return;
+  const container = document.querySelector("#content .file-list, #content .file-grid");
+  if (!container) return;
+  const markup = files.map(state.view === "list" ? fileRowMarkup : fileCardMarkup).join("");
+  container.insertAdjacentHTML("beforeend", markup);
+}
+
+function currentTotal() {
+  return state.searchMode ? state.searchTotal : state.fileTotal;
+}
+
+function updateCounts() {
+  const loaded = state.files.length;
+  if (state.searchMode) {
+    const total = state.searchTotal;
+    $("count").textContent = `${total.toLocaleString()} 个结果${loaded < total ? ` · 已加载 ${loaded.toLocaleString()}` : ""}`;
+    $("index-summary").textContent = `${total.toLocaleString()} 个结果${loaded < total ? `（已加载 ${loaded.toLocaleString()}）` : ""}`;
+    return;
+  }
+  const total = state.fileTotal;
+  const activeKind = state.kind ? ` · ${KIND_LABEL[state.kind] || state.kind}` : "";
+  $("count").textContent = `${Number(state.dirs.length).toLocaleString()} 个目录 · ${total.toLocaleString()} 个文件${activeKind}${loaded < total ? ` · 已加载 ${loaded.toLocaleString()}` : ""}`;
+}
+
+function setSentinelIdle() {
+  const sentinel = $("list-sentinel");
+  if (!sentinel) return;
+  sentinel.className = "list-sentinel";
+  sentinel.innerHTML = `<span class="load-hint">继续滚动加载更多</span>`;
+}
+
+function checkSentinel() {
+  if (state.loadingMore) return;
+  const sentinel = $("list-sentinel");
+  if (!sentinel) return;
+  const rect = sentinel.getBoundingClientRect();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  if (rect.top <= viewportHeight + 600) loadMore();
+}
+
+function ensureSentinel() {
+  const content = $("content");
+  if (!content) return;
+  let sentinel = $("list-sentinel");
+  if (state.files.length >= currentTotal()) {
+    if (sentinel) sentinel.remove();
+    if (moreObserver) {
+      moreObserver.disconnect();
+      moreObserver = null;
+    }
+    return;
+  }
+  if (!sentinel) {
+    sentinel = document.createElement("div");
+    sentinel.id = "list-sentinel";
+    sentinel.className = "list-sentinel";
+    content.appendChild(sentinel);
+    if (!moreObserver) {
+      moreObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMore();
+      }, { rootMargin: "600px 0px" });
+    }
+    moreObserver.observe(sentinel);
+  } else {
+    content.appendChild(sentinel);
+  }
+  setSentinelIdle();
+  requestAnimationFrame(checkSentinel);
+}
+
+function showLoadError(message) {
+  const sentinel = $("list-sentinel");
+  if (!sentinel) return;
+  sentinel.className = "list-sentinel failed";
+  sentinel.innerHTML = `<span>加载失败：${esc(message)}</span><button id="retry-more" class="mini-btn">重试</button>`;
+}
+
+async function loadMore() {
+  if (state.loadingMore) return;
+  const total = currentTotal();
+  if (state.files.length >= total) return;
+  const token = listToken;
+  state.loadingMore = true;
+  const sentinel = $("list-sentinel");
+  if (sentinel) {
+    sentinel.className = "list-sentinel";
+    sentinel.innerHTML = `<span class="spinner"></span>正在加载…`;
+  }
+  try {
+    const data = state.searchMode
+      ? await getJson(apiUrl("/api/search", { q: state.searchQuery, sort: state.sort, limit: PAGE_SIZE, offset: state.files.length }))
+      : await getJson(apiUrl("/api/list", { path: state.path, sort: state.sort, kind: state.kind, limit: PAGE_SIZE, offset: state.files.length }));
+    if (token !== listToken) return;
+    const more = data.files || [];
+    if (state.searchMode) state.searchTotal = Number(data.total ?? state.searchTotal);
+    else state.fileTotal = Number(data.file_total ?? state.fileTotal);
+    if (!more.length) {
+      if (state.searchMode) state.searchTotal = state.files.length;
+      else state.fileTotal = state.files.length;
+      ensureSentinel();
+      return;
+    }
+    state.files = state.files.concat(more);
+    appendFiles(more);
+    hydrateThumbs($("content"));
+    updateCounts();
+    updatePreviewNav();
+    ensureSentinel();
+  } catch (error) {
+    if (token !== listToken) return;
+    showLoadError(error.message);
+  } finally {
+    if (token === listToken) state.loadingMore = false;
+  }
 }
 
 function parentPath(path) {
@@ -270,8 +400,10 @@ function renderKindChips(kinds, total, interactive = true) {
 function renderIndex(data, search = false, query = "") {
   const path = data.path || "";
   $("index-path").textContent = search ? `搜索：${query}` : (path || "全部资源");
+  const loaded = (data.files || []).length;
+  const matchTotal = Number(data.file_total ?? loaded);
   const summary = search
-    ? `${Number(data.file_total ?? (data.files || []).length).toLocaleString()} 个结果`
+    ? `${matchTotal.toLocaleString()} 个结果${loaded < matchTotal ? `（已加载 ${loaded.toLocaleString()}）` : ""}`
     : `${Number(data.dir_summary?.files || 0).toLocaleString()} 个文件（含子目录） · ${formatBytes(data.dir_summary?.bytes || 0)}`;
   $("index-summary").textContent = summary;
   $("index-up").disabled = search || !path;
@@ -312,6 +444,12 @@ function updateViewButtons() {
 }
 
 async function loadList(path, push = true, keepKind = false) {
+  const token = ++listToken;
+  state.loadingMore = false;
+  if (moreObserver) {
+    moreObserver.disconnect();
+    moreObserver = null;
+  }
   state.searchMode = false;
   $("search").value = "";
   state.path = path || "";
@@ -329,31 +467,29 @@ async function loadList(path, push = true, keepKind = false) {
   $("count").textContent = "";
   try {
     const data = await getJson(apiUrl("/api/list", {
-      path: state.path, sort: state.sort, kind: state.kind,
+      path: state.path, sort: state.sort, kind: state.kind, limit: PAGE_SIZE, offset: 0,
     }));
+    if (token !== listToken) return;
     state.files = data.files || [];
     state.dirs = data.dirs || [];
     state.dirSummary = data.dir_summary || null;
     state.kindCounts = data.kind_counts || {};
+    state.fileTotal = Number(data.file_total ?? state.files.length);
     renderCrumbs(data.breadcrumbs);
     $("where").innerHTML = state.path
       ? `${esc(state.path.split("/").pop())}<span class="sub">${esc(state.path)}</span>`
       : `全部资源`;
-    const totalFiles = Number(data.file_total ?? state.files.length);
-    const activeKind = state.kind ? ` · ${esc(KIND_LABEL[state.kind] || state.kind)}` : "";
-    $("count").textContent = `${Number(state.dirs.length).toLocaleString()} 个目录 · ${totalFiles.toLocaleString()} 个文件${activeKind}`;
-    let html = renderFolders(state.dirs) + renderFiles(state.files);
-    if (data.truncated) {
-      html += `<div class="note" style="margin-top:12px">当前目录文件较多，只显示前 ${state.files.length.toLocaleString()} 个；请用搜索定位其余文件。</div>`;
-    }
-    $("content").innerHTML = html || `<div class="empty">这个目录没有可显示的项目。</div>`;
+    updateCounts();
+    $("content").innerHTML = renderFolders(state.dirs) + renderFiles(state.files) || `<div class="empty">这个目录没有可显示的项目。</div>`;
     hydrateThumbs($("content"));
     renderIndex(data);
+    ensureSentinel();
     document.querySelectorAll(".root").forEach((node) => {
       const rootPath = node.dataset.dir;
       node.classList.toggle("active", state.path === rootPath || state.path.startsWith(rootPath + "/"));
     });
   } catch (error) {
+    if (token !== listToken) return;
     $("content").innerHTML = `<div class="errorbox">读取失败：${esc(error.message)}</div>`;
     $("index-summary").textContent = "";
     $("index-kinds").innerHTML = "";
@@ -362,7 +498,14 @@ async function loadList(path, push = true, keepKind = false) {
 }
 
 async function search(query) {
+  const token = ++listToken;
+  state.loadingMore = false;
+  if (moreObserver) {
+    moreObserver.disconnect();
+    moreObserver = null;
+  }
   state.searchMode = true;
+  state.searchQuery = query;
   state.kind = "";
   state.previewPath = null;
   document.querySelectorAll(".root").forEach((node) => node.classList.remove("active"));
@@ -371,18 +514,20 @@ async function search(query) {
   $("count").textContent = "";
   $("content").innerHTML = `<div class="loading"><span class="spinner"></span>正在搜索…</div>`;
   try {
-    const data = await getJson(apiUrl("/api/search", { q: query, limit: 300, sort: state.sort }));
+    const data = await getJson(apiUrl("/api/search", { q: query, limit: PAGE_SIZE, offset: 0, sort: state.sort }));
+    if (token !== listToken) return;
     state.files = data.files || [];
     state.dirs = [];
-    state.kindCounts = {};
-    const counts = {};
-    for (const file of state.files) counts[file.kind] = (counts[file.kind] || 0) + 1;
+    state.kindCounts = data.kind_counts || {};
+    state.searchTotal = Number(data.total ?? state.files.length);
     renderCrumbs([]);
-    $("count").textContent = `${state.files.length} 个结果${state.files.length >= 300 ? "（已截断）" : ""}`;
+    updateCounts();
     $("content").innerHTML = renderFiles(state.files) || `<div class="empty">没有匹配的路径。</div>`;
     hydrateThumbs($("content"));
-    renderIndex({ path: "", dirs: [], files: state.files, file_total: state.files.length, kind_counts: counts }, true, query);
+    renderIndex({ path: "", dirs: [], files: state.files, file_total: state.searchTotal, kind_counts: state.kindCounts }, true, query);
+    ensureSentinel();
   } catch (error) {
+    if (token !== listToken) return;
     $("content").innerHTML = `<div class="errorbox">搜索失败：${esc(error.message)}</div>`;
   }
 }
@@ -545,16 +690,21 @@ function previewIndex() {
 
 function updatePreviewNav() {
   const index = previewIndex();
-  const total = state.files.length;
+  const total = currentTotal() || state.files.length;
   $("prev-file").disabled = index <= 0;
   $("next-file").disabled = index < 0 || index >= total - 1;
   $("file-position").textContent = index >= 0 ? `${index + 1} / ${total}` : "";
 }
 
-function stepPreview(delta) {
+async function stepPreview(delta) {
   const index = previewIndex();
   const next = index + delta;
-  if (index < 0 || next < 0 || next >= state.files.length) return;
+  if (index < 0 || next < 0) return;
+  if (next >= state.files.length) {
+    if (state.files.length >= currentTotal()) return;
+    await loadMore();
+  }
+  if (next >= state.files.length) return;
   showPreview(state.files[next]);
 }
 
@@ -682,6 +832,10 @@ function onSearchInput() {
 
 function bind() {
   $("content").addEventListener("click", (event) => {
+    if (event.target.closest("#retry-more")) {
+      loadMore();
+      return;
+    }
     const dir = event.target.closest("[data-dir]");
     if (dir) { loadList(dir.dataset.dir || ""); return; }
     const file = event.target.closest("[data-file]");

@@ -59,12 +59,12 @@ except Exception:  # optional
 SCHEMA_VERSION = "1"
 TOOLKIT_VERSION = "1.5-browser"
 SORT_EXPRESSIONS = {
-    "name_asc": "name COLLATE NOCASE ASC",
-    "name_desc": "name COLLATE NOCASE DESC",
-    "size_asc": "unpacked ASC",
-    "size_desc": "unpacked DESC",
-    "type": "kind ASC, name COLLATE NOCASE ASC",
-    "package": "package COLLATE NOCASE ASC, name COLLATE NOCASE ASC",
+    "name_asc": "name COLLATE NOCASE ASC, id ASC",
+    "name_desc": "name COLLATE NOCASE DESC, id ASC",
+    "size_asc": "unpacked ASC, id ASC",
+    "size_desc": "unpacked DESC, id ASC",
+    "type": "kind ASC, name COLLATE NOCASE ASC, id ASC",
+    "package": "package COLLATE NOCASE ASC, name COLLATE NOCASE ASC, id ASC",
 }
 KINDS = {"image", "audio", "bank", "video", "text", "script", "model", "binary"}
 TOOLKIT_ROOT = Path(__file__).resolve().parent
@@ -990,6 +990,8 @@ class Handler(BaseHTTPRequestHandler):
                 kind_filter = (query.get("kind", [""])[0] or "").strip()
                 if kind_filter not in KINDS:
                     kind_filter = ""
+                offset = max(int(query.get("offset", ["0"])[0] or 0), 0)
+                limit = min(max(int(query.get("limit", ["1500"])[0] or 1500), 1), 3000)
                 connection = db_connect(self.server.db_path)
                 try:
                     dirs = [
@@ -1007,7 +1009,8 @@ class Handler(BaseHTTPRequestHandler):
                         params.append(kind_filter)
                     total_files = connection.execute(f"SELECT COUNT(*) FROM files WHERE {where}", params).fetchone()[0]
                     file_rows = connection.execute(
-                        f"SELECT * FROM files WHERE {where} ORDER BY {sort_expr} LIMIT 3000", params
+                        f"SELECT * FROM files WHERE {where} ORDER BY {sort_expr} LIMIT ? OFFSET ?",
+                        params + [limit, offset],
                     ).fetchall()
                     kind_counts = {
                         row[0]: row[1]
@@ -1036,7 +1039,8 @@ class Handler(BaseHTTPRequestHandler):
                     crumbs.append({"name": part, "path": current})
                 self._json({
                     "path": path, "dirs": dirs, "files": files, "breadcrumbs": crumbs,
-                    "file_total": total_files, "truncated": total_files > len(files),
+                    "file_total": total_files, "offset": offset, "limit": limit,
+                    "truncated": offset + len(files) < total_files,
                     "kind_counts": kind_counts, "kind_filter": kind_filter,
                     "dir_summary": dir_summary, "sort": sort_key,
                 })
@@ -1046,15 +1050,24 @@ class Handler(BaseHTTPRequestHandler):
                 if not query_text:
                     self._error("empty query", 400)
                     return
-                limit = min(max(int(query.get("limit", ["200"])[0] or 200), 1), 500)
+                limit = min(max(int(query.get("limit", ["1500"])[0] or 1500), 1), 3000)
+                offset = max(int(query.get("offset", ["0"])[0] or 0), 0)
                 sort_key = query.get("sort", ["name_asc"])[0]
                 sort_expr = SORT_EXPRESSIONS.get(sort_key, SORT_EXPRESSIONS["name_asc"])
                 pattern = "%" + query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                 connection = db_connect(self.server.db_path)
                 try:
+                    kind_counts = {
+                        row[0]: row[1]
+                        for row in connection.execute(
+                            "SELECT kind,COUNT(*) FROM files WHERE lower(path) LIKE lower(?) ESCAPE '\\' GROUP BY kind",
+                            (pattern,),
+                        )
+                    }
+                    total_matches = sum(kind_counts.values())
                     rows = connection.execute(
-                        f"SELECT name,path,unpacked,kind,ext,package,signature FROM files WHERE lower(path) LIKE lower(?) ESCAPE '\\' ORDER BY {sort_expr} LIMIT ?",
-                        (pattern, limit),
+                        f"SELECT name,path,unpacked,kind,ext,package,signature FROM files WHERE lower(path) LIKE lower(?) ESCAPE '\\' ORDER BY {sort_expr} LIMIT ? OFFSET ?",
+                        (pattern, limit, offset),
                     )
                     files = [
                         {
@@ -1066,7 +1079,12 @@ class Handler(BaseHTTPRequestHandler):
                     ]
                 finally:
                     connection.close()
-                self._json({"query": query_text, "files": files, "sort": sort_key})
+                self._json({
+                    "query": query_text, "files": files, "sort": sort_key,
+                    "total": total_matches, "offset": offset, "limit": limit,
+                    "truncated": offset + len(files) < total_matches,
+                    "kind_counts": kind_counts,
+                })
                 return
             if route == "/api/info":
                 path = (query.get("path", [""])[0] or "").strip("/")

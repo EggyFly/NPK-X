@@ -259,6 +259,14 @@ a:hover { text-decoration: underline; }
 .file-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .file-row-size, .file-row-pkg { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.list-sentinel {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 18px 12px 24px; color: var(--muted); font-size: 11px;
+}
+.list-sentinel.failed { color: var(--danger); }
+.list-sentinel .spinner { margin-right: 0; }
+.list-sentinel .mini-btn { padding: 4px 9px; }
+
 .badge {
   display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 20px;
   padding: 0 6px; border-radius: 5px; background: #1c2a3a; color: #aebfd2;
