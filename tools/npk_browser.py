@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import sys as _sys
 from pathlib import Path as _Path
@@ -50,6 +50,11 @@ try:
     import soundfile as _soundfile
 except Exception:  # optional
     _soundfile = None
+
+try:
+    import numpy as _np
+except Exception:  # optional
+    _np = None
 
 SCHEMA_VERSION = "1"
 TOOLKIT_VERSION = "1.5-browser"
@@ -347,6 +352,7 @@ class BrowserServer(ThreadingHTTPServer):
     vgmstream: str | None
     fingerprint: dict
     _cache_lock = threading.Lock()
+    _thumb_sem = threading.Semaphore(3)
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
@@ -700,6 +706,196 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return target, converted
 
+    def _image_thumb(self, row, width: int) -> bytes:
+        cache = self.server.artifact(row, f"_img_w{width}.png", "thumb")
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        data, _ = self._ensure_png(row)
+        image = Image.open(io.BytesIO(data))
+        image.load()
+        image.thumbnail((width, width))
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA")
+        tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            image.save(tmp, "PNG")
+            thumb = tmp.read_bytes()
+            os.replace(tmp, cache)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        self.server.prune_cache()
+        return thumb
+
+    def _decode_wav_file(self, payload: bytes, ext: str) -> Path:
+        if not self.server.vgmstream:
+            raise ValueError("vgmstream-cli not available")
+        tmpdir = self.server.cache_root / "tmp"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex
+        src = tmpdir / f"{token}{ext}"
+        wav = tmpdir / f"{token}.wav"
+        try:
+            src.write_bytes(payload)
+            result = subprocess.run(
+                [self.server.vgmstream, "-o", str(wav), str(src)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            if result.returncode != 0 or not wav.is_file() or wav.stat().st_size < 44:
+                raise ValueError("audio decode failed")
+            return wav
+        except Exception:
+            try:
+                wav.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            try:
+                src.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _waveform_samples(self, row, max_seconds: int = 60):
+        """Decode just enough audio for a waveform; no intermediate FLAC."""
+        ext = (row["ext"] or "").lower()
+        payload = self._entry_payload(row)
+        source = None
+        try:
+            if ext == ".bnk":
+                try:
+                    bank = bnk_parse.parse_bank(payload)
+                except bnk_parse.BankFormatError:
+                    raise ValueError("bank has no embedded media") from None
+                if not bank.media:
+                    raise ValueError("bank has no embedded media")
+                _, payload = bank.media_payload(index=0)
+                source = self._decode_wav_file(payload, ".wem")
+            elif ext in (".wav", ".flac", ".ogg", ".mp3", ".m4a", ".aac", ".opus"):
+                info = _soundfile.info(io.BytesIO(payload))
+                frames = min(int(info.frames), int(info.samplerate * max_seconds))
+                samples, rate = _soundfile.read(
+                    io.BytesIO(payload), dtype="float32", always_2d=True, frames=max(frames, 1)
+                )
+                return samples.mean(axis=1), rate
+            else:
+                source = self._decode_wav_file(payload, ext if ext.startswith(".") else ".wem")
+            info = _soundfile.info(str(source))
+            frames = min(int(info.frames), int(info.samplerate * max_seconds))
+            samples, rate = _soundfile.read(
+                str(source), dtype="float32", always_2d=True, frames=max(frames, 1)
+            )
+            return samples.mean(axis=1), rate
+        finally:
+            if source is not None:
+                try:
+                    source.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _waveform_thumb(self, row, width: int) -> bytes:
+        if _soundfile is None or _np is None:
+            raise ValueError("waveform preview unavailable")
+        cache = self.server.artifact(row, f"_wave_w{width}.png", "thumb")
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        with BrowserServer._thumb_sem:
+            thumb = self.server.read_artifact(cache)
+            if thumb is not None:
+                return thumb
+            try:
+                mono, _rate = self._waveform_samples(row)
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(f"cannot decode audio: {exc}") from None
+            if not mono.size:
+                raise ValueError("audio has no samples")
+            height = max(48, int(round(width * 0.625)))
+            bins = _np.array_split(_np.abs(mono), width)
+            peaks = _np.array(
+                [float(part.max()) if part.size else 0.0 for part in bins], dtype="float32"
+            )
+            peak = float(peaks.max())
+            peaks = _np.sqrt(peaks / peak) if peak > 0 else _np.zeros(width, dtype="float32")
+            highlight = float(_np.percentile(peaks, 99)) if peak > 0 else 1.0
+            if highlight >= 1.0:
+                # Fully saturated tracks would otherwise paint every lane amber.
+                highlight = 1.01
+            image = Image.new("RGB", (width, height), (12, 19, 28))
+            draw = ImageDraw.Draw(image)
+            for y in (height // 4, (height * 3) // 4):
+                draw.line((0, y, width - 1, y), fill=(17, 26, 37))
+            mid = height / 2
+            for x, value in enumerate(peaks):
+                amplitude = max(1.0, float(value) * height * 0.44)
+                color = (255, 209, 102) if value >= highlight else (110, 231, 216)
+                draw.line((x, mid - amplitude, x, mid + amplitude), fill=color)
+            draw.line((0, int(mid), width - 1, int(mid)), fill=(34, 48, 67))
+            tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                image.save(tmp, "PNG")
+                thumb = tmp.read_bytes()
+                os.replace(tmp, cache)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+        self.server.prune_cache()
+        return thumb
+
+    def _thumbnail(self, row, width: int) -> bytes:
+        ext = (row["ext"] or "").lower()
+        kind = row["kind"] or ""
+        if kind == "image" or ext in IMAGE_EXT:
+            return self._image_thumb(row, width)
+        if kind in ("audio", "bank") or ext in AUDIO_EXT:
+            return self._waveform_thumb(row, width)
+        raise ValueError("thumbnail not available for this type")
+
+    def _text_snippet(self, row, max_chars: int, max_lines: int) -> tuple[str, bool]:
+        payload = self._entry_payload(row)
+        head = payload[: 128 * 1024]
+        if b"\x00" in head[:4096]:
+            raise ValueError("binary data; no text preview")
+        text = None
+        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+            try:
+                text = head.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = head.decode("latin-1")
+        sample = text[:4096]
+        printable = sum(1 for char in sample if char.isprintable() or char in "\r\n\t")
+        if sample and printable < len(sample) * 0.9:
+            raise ValueError("binary data; no text preview")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.split("\n")
+        out: list[str] = []
+        used = 0
+        for line in lines[:max_lines]:
+            line = line.rstrip()
+            if used >= max_chars:
+                break
+            room = max_chars - used
+            if len(line) > room:
+                out.append(line[:room])
+                used = max_chars
+                break
+            out.append(line)
+            used += len(line) + 1
+        snippet = "\n".join(out)
+        return snippet, len(text) > len(snippet)
+
     def do_POST(self):
         route, _ = self._query()
         if route != "/api/open":
@@ -951,28 +1147,26 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 width = min(max(int(query.get("w", ["256"])[0] or 256), 32), 1024)
                 try:
-                    cache = self.server.artifact(row, f"_w{width}.png", "thumb")
-                    thumb = self.server.read_artifact(cache)
-                    if thumb is None:
-                        data, _ = self._ensure_png(row)
-                        image = Image.open(io.BytesIO(data))
-                        image.thumbnail((width, width))
-                        if image.mode not in ("RGB", "RGBA"):
-                            image = image.convert("RGBA")
-                        tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
-                        try:
-                            image.save(tmp, "PNG")
-                            thumb = tmp.read_bytes()
-                            os.replace(tmp, cache)
-                        finally:
-                            try:
-                                tmp.unlink()
-                            except FileNotFoundError:
-                                pass
-                        self.server.prune_cache()
-                    self._send(thumb, "image/png")
+                    thumb = self._thumbnail(row, width)
                 except ValueError as exc:
                     self._error(str(exc), 415)
+                    return
+                self._send(thumb, "image/png")
+                return
+            if route == "/api/snippet":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                chars = min(max(int(query.get("chars", ["480"])[0] or 480), 80), 2000)
+                lines = min(max(int(query.get("lines", ["9"])[0] or 9), 1), 30)
+                try:
+                    text, truncated = self._text_snippet(row, chars, lines)
+                except ValueError as exc:
+                    self._error(str(exc), 415)
+                    return
+                self._json({"path": row["path"], "text": text, "truncated": truncated})
                 return
             if route == "/api/audio":
                 path = (query.get("path", [""])[0] or "").strip("/")
@@ -1050,6 +1244,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._error("not found", 404)
         except BrokenPipeError:
+            pass
+        except (ConnectionAbortedError, ConnectionResetError):
             pass
         except Exception as exc:
             import traceback

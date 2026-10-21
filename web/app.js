@@ -67,6 +67,12 @@ const EXT_KIND = {
   ".trackgroup": "model",
 };
 
+const TEXT_THUMB_EXT = new Set([
+  ".json", ".xml", ".txt", ".conf", ".plist", ".atlas", ".lod", ".ini",
+  ".csv", ".yaml", ".yml", ".html", ".css", ".js", ".lua", ".md", ".spr",
+  ".animgraph", ".animation", ".animconfig", ".trackgroup",
+]);
+
 function displayKind(kind, ext) {
   return EXT_KIND[(ext || "").toLowerCase()] || kind;
 }
@@ -87,16 +93,104 @@ function badgeShort(file) {
   return badge("binary", (file.ext || "BIN").replace(".", "").slice(0, 4).toUpperCase() || "BIN");
 }
 
-function thumbMarkup(file) {
-  if (file.kind !== "image") {
-    return `<div class="thumb">${badgeShort(file)}</div>`;
+function thumbMarkup(file, small = false) {
+  const kind = displayKind(file.kind, file.ext);
+  const ext = (file.ext || "").toLowerCase();
+  const width = small ? 96 : 360;
+  const thumbUrl = apiUrl("/api/thumb", { path: file.path, w: width, v: 3 });
+  const fallback = `<span class="thumb-fallback">${badgeShort(file)}</span>`;
+  if (kind === "image") {
+    return `<div class="thumb thumb-media">
+      <img loading="lazy" decoding="async" src="${thumbUrl}" alt=""
+           onerror="this.style.display='none';this.parentElement.classList.add('failed')">
+      ${fallback}
+    </div>`;
   }
-  const label = esc((file.ext || "IMG").replace(".", "").slice(0, 4).toUpperCase() || "IMG");
-  return `<div class="thumb">
-    <img loading="lazy" decoding="async" src="${apiUrl("/api/thumb", { path: file.path, w: 360 })}" alt=""
-         onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'">
-    <span class="badge image" style="display:none;position:absolute">${label}</span>
-  </div>`;
+  if (kind === "audio" || kind === "bank") {
+    const tag = small ? "" : `<span class="thumb-tag">${esc((file.ext || "WAV").replace(".", "").slice(0, 4).toUpperCase())}</span>`;
+    return `<div class="thumb thumb-media thumb-wave">
+      <img loading="lazy" decoding="async" src="${thumbUrl}" alt=""
+           onerror="this.style.display='none';this.parentElement.classList.add('failed')">
+      ${fallback}${tag}
+    </div>`;
+  }
+  if (kind === "video") {
+    return `<div class="thumb thumb-video" data-video-src="${esc(apiUrl("/api/video", { path: file.path }))}">
+      <span class="thumb-play">▶</span>
+      ${fallback}
+    </div>`;
+  }
+  if (!small && TEXT_THUMB_EXT.has(ext)) {
+    return `<div class="thumb thumb-text" data-snippet="${esc(apiUrl("/api/snippet", { path: file.path, chars: 420, lines: 8 }))}">
+      ${fallback}
+    </div>`;
+  }
+  return `<div class="thumb">${badgeShort(file)}</div>`;
+}
+
+let thumbObserver = null;
+
+function hydrateThumbs(root) {
+  if (thumbObserver) {
+    thumbObserver.disconnect();
+    thumbObserver = null;
+  }
+  if (!window.IntersectionObserver) return;
+  const targets = root.querySelectorAll("[data-snippet], [data-video-src]");
+  if (!targets.length) return;
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const node = entry.target;
+      observer.unobserve(node);
+      if (node.dataset.snippet) loadThumbSnippet(node);
+      else loadThumbVideo(node);
+    }
+  }, { rootMargin: "320px 0px" });
+  thumbObserver = observer;
+  const margin = 320;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  for (const node of targets) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom >= -margin && rect.top <= viewportHeight + margin) {
+      if (node.dataset.snippet) loadThumbSnippet(node);
+      else loadThumbVideo(node);
+    } else {
+      observer.observe(node);
+    }
+  }
+}
+
+async function loadThumbSnippet(node) {
+  const url = node.dataset.snippet;
+  delete node.dataset.snippet;
+  try {
+    const data = await getJson(url);
+    if (!data.text) return;
+    node.classList.add("loaded");
+    node.innerHTML = `<pre class="thumb-snippet">${esc(data.text)}</pre>`;
+  } catch (_) {
+    node.classList.add("failed");
+  }
+}
+
+function loadThumbVideo(wrap) {
+  const src = wrap.dataset.videoSrc;
+  delete wrap.dataset.videoSrc;
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  video.addEventListener("loadedmetadata", () => {
+    try { video.currentTime = Math.min(1, (video.duration || 2) * 0.1); } catch (_) {}
+  }, { once: true });
+  video.addEventListener("loadeddata", () => wrap.classList.add("loaded"), { once: true });
+  video.addEventListener("error", () => {
+    video.remove();
+    wrap.classList.add("failed");
+  }, { once: true });
+  video.src = src;
+  wrap.insertBefore(video, wrap.firstChild);
 }
 
 function renderCrumbs(crumbs) {
@@ -136,7 +230,7 @@ function renderFiles(files) {
   if (state.view === "list") {
     return `<div class="file-list">${files.map((file) => `
       <div class="file-row" data-file="${esc(file.path)}">
-        ${badgeShort(file)}
+        <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
         <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
         <div class="file-row-size">${formatBytes(file.size)}</div>
         <div class="file-row-pkg">${esc(file.package)}</div>
@@ -251,6 +345,7 @@ async function loadList(path, push = true, keepKind = false) {
       html += `<div class="note" style="margin-top:12px">当前目录文件较多，只显示前 ${state.files.length.toLocaleString()} 个；请用搜索定位其余文件。</div>`;
     }
     $("content").innerHTML = html || `<div class="empty">这个目录没有可显示的项目。</div>`;
+    hydrateThumbs($("content"));
     renderIndex(data);
     document.querySelectorAll(".root").forEach((node) => {
       const rootPath = node.dataset.dir;
@@ -283,6 +378,7 @@ async function search(query) {
     renderCrumbs([]);
     $("count").textContent = `${state.files.length} 个结果${state.files.length >= 300 ? "（已截断）" : ""}`;
     $("content").innerHTML = renderFiles(state.files) || `<div class="empty">没有匹配的路径。</div>`;
+    hydrateThumbs($("content"));
     renderIndex({ path: "", dirs: [], files: state.files, file_total: state.files.length, kind_counts: counts }, true, query);
   } catch (error) {
     $("content").innerHTML = `<div class="errorbox">搜索失败：${esc(error.message)}</div>`;
