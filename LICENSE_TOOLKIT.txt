@@ -1,0 +1,7 @@
+本工具包（Python 脚本、批处理、文档和打包脚本）用于离线研究与个人备份。
+在适用法律允许的最大范围内，作者不对使用本工具造成的任何直接或间接损失承担责任；
+不附带任何明示或暗示担保。请仅处理你合法拥有的数据，并遵守游戏服务条款。
+
+第三方组件（Python、Pillow、zstandard、mmh3、numpy、soundfile、libsndfile、
+texture2ddecoder、cffi、pycparser、typing_extensions、vgmstream）按各自许可证分发，
+详见 THIRD_PARTY_NOTICES.md 和 licenses/ 目录。
