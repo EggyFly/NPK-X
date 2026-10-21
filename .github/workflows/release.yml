@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare package name
+        run: |
+          PACKAGE_NAME="NPK-X-$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '_')"
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> "$GITHUB_ENV"
+
+      - name: Assemble portable package
+        run: |
+          mkdir -p "dist/$PACKAGE_NAME"
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='dist/' \
+            --exclude='SHA256SUMS.txt' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.DS_Store' \
+            --exclude='Thumbs.db' \
+            ./ "dist/$PACKAGE_NAME/"
+
+      - name: Generate package checksums
+        working-directory: dist/${{ env.PACKAGE_NAME }}
+        run: |
+          find . -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: Create zip archive
+        run: |
+          cd dist
+          zip -r -9 "$PACKAGE_NAME.zip" "$PACKAGE_NAME"
+          sha256sum "$PACKAGE_NAME.zip" > "$PACKAGE_NAME.zip.sha256"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: NPK-X ${{ github.ref_name }}
+          files: |
+            dist/${{ env.PACKAGE_NAME }}.zip
+            dist/${{ env.PACKAGE_NAME }}.zip.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          token: ${{ secrets.GITHUB_TOKEN }}
