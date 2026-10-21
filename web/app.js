@@ -520,8 +520,24 @@ async function openWith(app) {
   }
 }
 
+function setActiveFile(path) {
+  let target = null;
+  document.querySelectorAll("[data-file]").forEach((node) => {
+    const active = !!path && node.dataset.file === path;
+    node.classList.toggle("active", active);
+    if (active) {
+      node.setAttribute("aria-current", "true");
+      target = node;
+    } else {
+      node.removeAttribute("aria-current");
+    }
+  });
+  if (target) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 async function showPreview(file) {
   state.previewPath = file.path;
+  setActiveFile(file.path);
   $("preview-name").textContent = file.name;
   $("preview-badge").textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
   $("preview-badge").className = `badge ${displayKind(file.kind, file.ext)}`;
@@ -583,6 +599,7 @@ function closeDrawer() {
   $("drawer").setAttribute("aria-hidden", "true");
   $("overlay").classList.add("hidden");
   state.previewPath = null;
+  setActiveFile(null);
   $("preview-media").innerHTML = "";
   $("open-actions").innerHTML = "";
   $("preview-note").textContent = "";

@@ -193,6 +193,11 @@ a:hover { text-decoration: underline; }
   cursor: pointer; min-width: 0; display: flex; flex-direction: column;
 }
 .file:hover { border-color: #405877; background: var(--panel-2); }
+.file.active {
+  border-color: rgba(110, 231, 216, .8); background: var(--panel-2);
+  box-shadow: 0 0 0 2px rgba(110, 231, 216, .2), 0 8px 26px rgba(0, 0, 0, .35);
+}
+.file.active .file-name { color: #ecfffc; }
 .thumb {
   aspect-ratio: 16 / 10; background: #0c131c; display: grid; place-items: center; overflow: hidden;
   border-bottom: 1px solid var(--line); position: relative;
@@ -232,9 +237,15 @@ a:hover { text-decoration: underline; }
 .file-row {
   display: grid; grid-template-columns: 44px minmax(0, 1fr) 90px 82px; gap: 8px; align-items: center;
   padding: 8px 12px; border-bottom: 1px solid rgba(34,48,67,.7); cursor: pointer; min-width: 0;
+  position: relative;
 }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover { background: var(--panel-2); }
+.file-row.active { background: rgba(110, 231, 216, .08); }
+.file-row.active::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-2);
+}
+.file-row.active .file-row-name { color: #ecfffc; }
 .file-row-thumb {
   width: 44px; height: 32px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line);
   background: #0c131c; justify-self: center;
