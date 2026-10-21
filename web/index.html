@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>资源浏览器</title>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 <div class="app">
@@ -80,6 +80,11 @@
     </div>
     <button id="close-drawer" class="icon-btn" title="关闭">×</button>
   </div>
+  <div class="drawer-nav">
+    <button id="prev-file" class="mini-btn" title="上一个条目">‹ 上一个</button>
+    <span id="file-position" class="drawer-pos"></span>
+    <button id="next-file" class="mini-btn" title="下一个条目">下一个 ›</button>
+  </div>
   <div class="drawer-body">
     <div id="preview-media" class="preview-media"></div>
     <div class="section-title">文件信息</div>
@@ -98,6 +103,6 @@
 </div>
 <div id="overlay" class="overlay hidden"></div>
 
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>

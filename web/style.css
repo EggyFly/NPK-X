@@ -290,6 +290,12 @@ a:hover { text-decoration: underline; }
   display: flex; flex-direction: column;
 }
 .drawer-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+.drawer-nav {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 16px; border-bottom: 1px solid var(--line); background: #0b131c;
+}
+.drawer-nav .mini-btn { padding: 5px 10px; }
+.drawer-pos { color: var(--muted); font: 10px/1 ui-monospace, Consolas, monospace; letter-spacing: .5px; }
 .drawer-title { display: flex; gap: 10px; align-items: center; min-width: 0; }
 .drawer-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
 .drawer-body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }

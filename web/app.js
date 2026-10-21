@@ -17,6 +17,8 @@ const state = {
   kindCounts: {},
 };
 
+let previewToken = 0;
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -393,8 +395,9 @@ function bankMediaDetail(media) {
   return parts.join(" · ") || "内嵌 WEM";
 }
 
-async function showBankPreview(file, container) {
+async function showBankPreview(file, container, token) {
   const bank = await getJson(apiUrl("/api/bank", { path: file.path }));
+  if (token !== previewToken) return;
   const entries = bank.media || [];
   const hirc = bank.hirc || {};
   const first = entries.find((item) => item.valid);
@@ -535,9 +538,31 @@ function setActiveFile(path) {
   if (target) target.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+function previewIndex() {
+  if (!state.previewPath) return -1;
+  return state.files.findIndex((item) => item.path === state.previewPath);
+}
+
+function updatePreviewNav() {
+  const index = previewIndex();
+  const total = state.files.length;
+  $("prev-file").disabled = index <= 0;
+  $("next-file").disabled = index < 0 || index >= total - 1;
+  $("file-position").textContent = index >= 0 ? `${index + 1} / ${total}` : "";
+}
+
+function stepPreview(delta) {
+  const index = previewIndex();
+  const next = index + delta;
+  if (index < 0 || next < 0 || next >= state.files.length) return;
+  showPreview(state.files[next]);
+}
+
 async function showPreview(file) {
+  const token = ++previewToken;
   state.previewPath = file.path;
   setActiveFile(file.path);
+  updatePreviewNav();
   $("preview-name").textContent = file.name;
   $("preview-badge").textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
   $("preview-badge").className = `badge ${displayKind(file.kind, file.ext)}`;
@@ -557,9 +582,11 @@ async function showPreview(file) {
   try {
     info = await getJson(apiUrl("/api/info", { path: file.path }));
   } catch (error) {
+    if (token !== previewToken) return;
     $("preview-media").innerHTML = `<div class="errorbox">读取信息失败：${esc(error.message)}</div>`;
     return;
   }
+  if (token !== previewToken) return;
   $("preview-meta").innerHTML = metadataRows(info);
   const media = $("preview-media");
   const kind = info.kind;
@@ -572,7 +599,7 @@ async function showPreview(file) {
       $("preview-note").textContent = "首次打开可能需要一点时间。";
     } else if (kind === "bank") {
       $("download-link").textContent = "下载音频包";
-      await showBankPreview(file, media);
+      await showBankPreview(file, media, token);
     } else if (kind === "audio") {
       const url = apiUrl("/api/audio", { path: file.path });
       media.innerHTML = `<audio controls autoplay preload="auto" src="${url}"></audio>`;
@@ -587,19 +614,23 @@ async function showPreview(file) {
     } else {
       media.innerHTML = `<div class="placeholder"><span class="spinner"></span>正在读取结构…</div>`;
       const data = await getJson(apiUrl("/api/inspect", { path: file.path }));
+      if (token !== previewToken) return;
       renderInspect(data, media);
     }
   } catch (error) {
+    if (token !== previewToken) return;
     media.innerHTML = `<div class="errorbox">预览失败：${esc(error.message)}<br>可以使用“下载文件”查看原始内容。</div>`;
   }
 }
 
 function closeDrawer() {
+  previewToken += 1;
   $("drawer").classList.add("hidden");
   $("drawer").setAttribute("aria-hidden", "true");
   $("overlay").classList.add("hidden");
   state.previewPath = null;
   setActiveFile(null);
+  updatePreviewNav();
   $("preview-media").innerHTML = "";
   $("open-actions").innerHTML = "";
   $("preview-note").textContent = "";
@@ -709,6 +740,8 @@ function bind() {
   $("view-list").addEventListener("click", () => setView("list"));
   $("close-drawer").addEventListener("click", closeDrawer);
   $("overlay").addEventListener("click", closeDrawer);
+  $("prev-file").addEventListener("click", () => stepPreview(-1));
+  $("next-file").addEventListener("click", () => stepPreview(1));
   $("copy-path").addEventListener("click", copyPath);
   $("open-actions").addEventListener("click", (event) => {
     const button = event.target.closest("[data-open]");
