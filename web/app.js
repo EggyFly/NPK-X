@@ -23,6 +23,7 @@ const state = {
 };
 
 let previewToken = 0;
+let drawerCloseTimer = 0;
 let listToken = 0;
 let moreObserver = null;
 
@@ -860,6 +861,7 @@ const viewer = {
   mapScale: 0, mapLeft: 0, mapTop: 0,
   dragging: false, dragX: 0, dragY: 0, mapDragging: false,
 };
+let viewerCloseTimer = 0;
 
 function viewerIsOpen() {
   return !$("viewer").classList.contains("hidden");
@@ -867,16 +869,31 @@ function viewerIsOpen() {
 
 function openViewer(file) {
   closeDrawer();
-  closeViewer();
-  const token = ++viewer.token;
+  if (viewerCloseTimer) {
+    clearTimeout(viewerCloseTimer);
+    viewerCloseTimer = 0;
+  }
+  const node = $("viewer");
+  node.classList.remove("hidden", "closing", "open");
+  node.setAttribute("aria-hidden", "false");
+  viewer.token += 1;
+  const token = viewer.token;
   viewer.file = file;
   viewer.path = file.path;
   viewer.mode = isTextView(file) ? "text" : "image";
   $("viewer-name").textContent = file.name;
-  $("viewer").classList.remove("hidden");
-  $("viewer").setAttribute("aria-hidden", "false");
+  $("viewer-stage").innerHTML = "";
+  $("viewer-foot").innerHTML = "";
+  void node.offsetWidth;
+  node.classList.add("open");
   if (viewer.mode === "image") openImageViewer(file, token);
   else openTextViewer(file, token);
+}
+
+function clearViewerContent() {
+  $("viewer-name").textContent = "";
+  $("viewer-stage").innerHTML = "";
+  $("viewer-foot").innerHTML = "";
 }
 
 function closeViewer() {
@@ -886,11 +903,22 @@ function closeViewer() {
   viewer.mode = "";
   viewer.dragging = false;
   viewer.mapDragging = false;
-  $("viewer").classList.add("hidden");
-  $("viewer").setAttribute("aria-hidden", "true");
-  $("viewer-name").textContent = "";
-  $("viewer-stage").innerHTML = "";
-  $("viewer-foot").innerHTML = "";
+  const node = $("viewer");
+  node.setAttribute("aria-hidden", "true");
+  if (node.classList.contains("hidden")) {
+    clearViewerContent();
+    return;
+  }
+  node.classList.remove("open");
+  node.classList.add("closing");
+  if (viewerCloseTimer) clearTimeout(viewerCloseTimer);
+  viewerCloseTimer = setTimeout(() => {
+    viewerCloseTimer = 0;
+    if (node.classList.contains("open")) return;
+    node.classList.add("hidden");
+    node.classList.remove("closing");
+    clearViewerContent();
+  }, 340);
 }
 
 function imageViewerFoot(file) {
@@ -1066,6 +1094,7 @@ function bindViewerMapDrag() {
   map.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     viewer.mapDragging = true;
+    $("viewer").classList.add("map-dragging");
     map.setPointerCapture(event.pointerId);
     moveTo(event);
     event.preventDefault();
@@ -1075,6 +1104,7 @@ function bindViewerMapDrag() {
   });
   const end = (event) => {
     viewer.mapDragging = false;
+    $("viewer").classList.remove("map-dragging");
     try { map.releasePointerCapture(event.pointerId); } catch (_) {}
   };
   map.addEventListener("pointerup", end);
@@ -1360,9 +1390,7 @@ async function showPreview(file) {
   $("preview-note").textContent = "正在读取文件信息…";
   $("open-image").classList.add("hidden");
   renderOpenActions();
-  $("drawer").classList.remove("hidden");
-  $("drawer").setAttribute("aria-hidden", "false");
-  $("overlay").classList.remove("hidden");
+  openDrawerPanel();
   $("download-link").textContent = "下载文件";
   $("download-link").href = apiUrl("/api/download", { path: file.path });
   $("download-link").setAttribute("download", file.name);
@@ -1437,17 +1465,49 @@ async function showPreview(file) {
   }
 }
 
+function openDrawerPanel() {
+  const drawer = $("drawer");
+  const overlay = $("overlay");
+  if (drawerCloseTimer) {
+    clearTimeout(drawerCloseTimer);
+    drawerCloseTimer = 0;
+  }
+  drawer.classList.remove("hidden");
+  overlay.classList.remove("hidden");
+  drawer.setAttribute("aria-hidden", "false");
+  void drawer.offsetWidth;
+  void overlay.offsetWidth;
+  drawer.classList.add("open");
+  overlay.classList.add("open");
+}
+
 function closeDrawer() {
   previewToken += 1;
-  $("drawer").classList.add("hidden");
-  $("drawer").setAttribute("aria-hidden", "true");
-  $("overlay").classList.add("hidden");
   state.previewPath = null;
   setActiveFile(null);
   updatePreviewNav();
-  $("preview-media").innerHTML = "";
-  $("open-actions").innerHTML = "";
-  $("preview-note").textContent = "";
+  const drawer = $("drawer");
+  const overlay = $("overlay");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.classList.remove("open");
+  overlay.classList.remove("open");
+  if (drawer.classList.contains("hidden")) {
+    overlay.classList.add("hidden");
+    $("preview-media").innerHTML = "";
+    $("open-actions").innerHTML = "";
+    $("preview-note").textContent = "";
+    return;
+  }
+  if (drawerCloseTimer) clearTimeout(drawerCloseTimer);
+  drawerCloseTimer = setTimeout(() => {
+    drawerCloseTimer = 0;
+    if (drawer.classList.contains("open")) return;
+    drawer.classList.add("hidden");
+    overlay.classList.add("hidden");
+    $("preview-media").innerHTML = "";
+    $("open-actions").innerHTML = "";
+    $("preview-note").textContent = "";
+  }, 320);
 }
 
 async function copyText(text, button, label) {
@@ -1557,12 +1617,18 @@ function bind() {
     }
   });
   $("refresh").addEventListener("click", async () => {
-    await loadStats();
-    if (state.searchMode) {
-      const query = $("search").value.trim();
-      if (query.length >= 2) search(query); else loadList(state.path, false);
-    } else {
-      loadList(state.path, false, true);
+    const button = $("refresh");
+    button.classList.add("spinning");
+    try {
+      await loadStats();
+      if (state.searchMode) {
+        const query = $("search").value.trim();
+        if (query.length >= 2) await search(query); else await loadList(state.path, false);
+      } else {
+        await loadList(state.path, false, true);
+      }
+    } finally {
+      button.classList.remove("spinning");
     }
   });
   $("view-grid").addEventListener("click", () => setView("grid"));
