@@ -370,28 +370,31 @@ class BrowserServer(ThreadingHTTPServer):
             if now - self._last_prune < 15:
                 return
             self._last_prune = now
-            files = []
-            for path in self.artifacts.rglob("*"):
-                if not path.is_file() or path.name.endswith(".tmp"):
-                    continue
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                files.append((stat.st_mtime, stat.st_size, path))
-            total = sum(item[1] for item in files)
-            if total <= self.cache_limit:
-                return
-            files.sort(key=lambda item: item[0])
-            target = int(self.cache_limit * 0.8)
-            for _, size, path in files:
-                if total <= target:
-                    break
-                try:
-                    path.unlink()
-                    total -= size
-                except OSError:
-                    pass
+        threading.Thread(target=self._prune_cache_worker, daemon=True).start()
+
+    def _prune_cache_worker(self) -> None:
+        files = []
+        for path in self.artifacts.rglob("*"):
+            if not path.is_file() or path.name.endswith(".tmp"):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((stat.st_mtime, stat.st_size, path))
+        total = sum(item[1] for item in files)
+        if total <= self.cache_limit:
+            return
+        files.sort(key=lambda item: item[0])
+        target = int(self.cache_limit * 0.8)
+        for _, size, path in files:
+            if total <= target:
+                break
+            try:
+                path.unlink()
+                total -= size
+            except OSError:
+                pass
 
     def artifact(self, row, suffix: str, variant: str = "") -> Path:
         raw = f"{row['package']}|{row['path']}|{row['signature']}|{variant}".encode("utf-8")

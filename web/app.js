@@ -110,82 +110,163 @@ function thumbMarkup(file, small = false) {
   const fallback = `<span class="thumb-fallback">${badgeShort(file)}</span>`;
   if (kind === "image") {
     return `<div class="thumb thumb-media">
-      <img loading="lazy" decoding="async" src="${thumbUrl}" alt=""
-           onerror="this.style.display='none';this.parentElement.classList.add('failed')">
+      <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
+      <img decoding="async" data-thumb-src="${thumbUrl}" alt="">
       ${fallback}
     </div>`;
   }
   if (kind === "audio" || kind === "bank") {
     const tag = small ? "" : `<span class="thumb-tag">${esc((file.ext || "WAV").replace(".", "").slice(0, 4).toUpperCase())}</span>`;
     return `<div class="thumb thumb-media thumb-wave">
-      <img loading="lazy" decoding="async" src="${thumbUrl}" alt=""
-           onerror="this.style.display='none';this.parentElement.classList.add('failed')">
+      <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
+      <img decoding="async" data-thumb-src="${thumbUrl}" alt="">
       ${fallback}${tag}
     </div>`;
   }
   if (kind === "video") {
     return `<div class="thumb thumb-video" data-video-src="${esc(apiUrl("/api/video", { path: file.path }))}">
+      <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
       <span class="thumb-play">▶</span>
       ${fallback}
     </div>`;
   }
   if (!small && TEXT_THUMB_EXT.has(ext)) {
+    const lines = `<span class="sk-line"></span>`.repeat(6);
     return `<div class="thumb thumb-text" data-snippet="${esc(apiUrl("/api/snippet", { path: file.path, chars: 420, lines: 8 }))}">
+      <span class="thumb-skeleton-lines" aria-hidden="true">${lines}</span>
       ${fallback}
     </div>`;
   }
   return `<div class="thumb">${badgeShort(file)}</div>`;
 }
 
-let thumbObserver = null;
+const PREFETCH_MARGIN = 1200;
+let thumbPrefetchObserver = null;
+let thumbRevealObserver = null;
+
+function clearThumbSource(thumb) {
+  const img = thumb.querySelector("img[data-thumb-src]");
+  if (img) delete img.dataset.thumbSrc;
+  delete thumb.dataset.snippet;
+  delete thumb.dataset.videoSrc;
+}
+
+function unpreviewThumb(thumb) {
+  if (thumbPrefetchObserver) thumbPrefetchObserver.unobserve(thumb);
+  if (thumbRevealObserver) thumbRevealObserver.unobserve(thumb);
+}
+
+function revealThumb(thumb) {
+  if (thumb.dataset.visible !== "1" || thumb.dataset.ready !== "1") return;
+  if (thumb.classList.contains("loaded") || thumb.classList.contains("failed")) return;
+  clearThumbSource(thumb);
+  requestAnimationFrame(() => thumb.classList.add("loaded"));
+  unpreviewThumb(thumb);
+}
+
+function startThumbLoad(thumb) {
+  if (thumb.dataset.started === "1" || thumb.dataset.ready === "1") return;
+  thumb.dataset.started = "1";
+  const img = thumb.querySelector("img[data-thumb-src]");
+  if (img) {
+    const src = img.dataset.thumbSrc;
+    img.addEventListener("load", () => {
+      thumb.dataset.ready = "1";
+      revealThumb(thumb);
+    }, { once: true });
+    img.addEventListener("error", () => {
+      img.style.display = "none";
+      clearThumbSource(thumb);
+      thumb.classList.add("failed");
+      unpreviewThumb(thumb);
+    }, { once: true });
+    img.src = src;
+    return;
+  }
+  if (thumb.dataset.snippet) {
+    loadThumbSnippet(thumb);
+    return;
+  }
+  if (thumb.dataset.videoSrc) {
+    loadThumbVideo(thumb);
+  }
+}
+
+function setThumbVisible(thumb, visible) {
+  thumb.dataset.visible = visible ? "1" : "0";
+  if (visible) revealThumb(thumb);
+}
 
 function hydrateThumbs(root) {
-  if (thumbObserver) {
-    thumbObserver.disconnect();
-    thumbObserver = null;
+  if (thumbPrefetchObserver) {
+    thumbPrefetchObserver.disconnect();
+    thumbPrefetchObserver = null;
   }
-  if (!window.IntersectionObserver) return;
-  const targets = root.querySelectorAll("[data-snippet], [data-video-src]");
-  if (!targets.length) return;
-  const observer = new IntersectionObserver((entries) => {
+  if (thumbRevealObserver) {
+    thumbRevealObserver.disconnect();
+    thumbRevealObserver = null;
+  }
+  const nodes = root.querySelectorAll("[data-thumb-src], [data-snippet], [data-video-src]");
+  if (!nodes.length) return;
+  const wraps = new Set();
+  nodes.forEach((node) => {
+    const thumb = node.closest(".thumb");
+    if (thumb && !thumb.classList.contains("loaded") && !thumb.classList.contains("failed")) wraps.add(thumb);
+  });
+  if (!wraps.size) return;
+  if (!window.IntersectionObserver) {
+    wraps.forEach((thumb) => {
+      setThumbVisible(thumb, true);
+      startThumbLoad(thumb);
+    });
+    return;
+  }
+  thumbPrefetchObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      const node = entry.target;
-      observer.unobserve(node);
-      if (node.dataset.snippet) loadThumbSnippet(node);
-      else loadThumbVideo(node);
+      if (entry.isIntersecting) startThumbLoad(entry.target);
     }
-  }, { rootMargin: "320px 0px" });
-  thumbObserver = observer;
-  const margin = 320;
+  }, { rootMargin: "1200px 0px" });
+  thumbRevealObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) setThumbVisible(entry.target, entry.isIntersecting);
+  }, { rootMargin: "0px" });
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-  for (const node of targets) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom >= -margin && rect.top <= viewportHeight + margin) {
-      if (node.dataset.snippet) loadThumbSnippet(node);
-      else loadThumbVideo(node);
-    } else {
-      observer.observe(node);
-    }
-  }
+  wraps.forEach((thumb) => {
+    thumb.dataset.visible = "0";
+    const rect = thumb.getBoundingClientRect();
+    const inView = rect.bottom >= 0 && rect.top <= viewportHeight;
+    const near = rect.bottom >= -PREFETCH_MARGIN && rect.top <= viewportHeight + PREFETCH_MARGIN;
+    thumbPrefetchObserver.observe(thumb);
+    thumbRevealObserver.observe(thumb);
+    if (inView) setThumbVisible(thumb, true);
+    if (near) startThumbLoad(thumb);
+  });
 }
 
-async function loadThumbSnippet(node) {
-  const url = node.dataset.snippet;
-  delete node.dataset.snippet;
+async function loadThumbSnippet(thumb) {
+  const url = thumb.dataset.snippet;
   try {
     const data = await getJson(url);
-    if (!data.text) return;
-    node.classList.add("loaded");
-    node.innerHTML = `<pre class="thumb-snippet">${esc(data.text)}</pre>`;
+    if (!data.text) {
+      clearThumbSource(thumb);
+      thumb.classList.add("failed");
+      unpreviewThumb(thumb);
+      return;
+    }
+    const pre = document.createElement("pre");
+    pre.className = "thumb-snippet";
+    pre.textContent = data.text;
+    thumb.appendChild(pre);
+    thumb.dataset.ready = "1";
+    revealThumb(thumb);
   } catch (_) {
-    node.classList.add("failed");
+    clearThumbSource(thumb);
+    thumb.classList.add("failed");
+    unpreviewThumb(thumb);
   }
 }
 
-function loadThumbVideo(wrap) {
-  const src = wrap.dataset.videoSrc;
-  delete wrap.dataset.videoSrc;
+function loadThumbVideo(thumb) {
+  const src = thumb.dataset.videoSrc;
   const video = document.createElement("video");
   video.muted = true;
   video.playsInline = true;
@@ -193,13 +274,18 @@ function loadThumbVideo(wrap) {
   video.addEventListener("loadedmetadata", () => {
     try { video.currentTime = Math.min(1, (video.duration || 2) * 0.1); } catch (_) {}
   }, { once: true });
-  video.addEventListener("loadeddata", () => wrap.classList.add("loaded"), { once: true });
+  video.addEventListener("loadeddata", () => {
+    thumb.dataset.ready = "1";
+    revealThumb(thumb);
+  }, { once: true });
   video.addEventListener("error", () => {
     video.remove();
-    wrap.classList.add("failed");
+    clearThumbSource(thumb);
+    thumb.classList.add("failed");
+    unpreviewThumb(thumb);
   }, { once: true });
   video.src = src;
-  wrap.insertBefore(video, wrap.firstChild);
+  thumb.insertBefore(video, thumb.firstChild);
 }
 
 function renderCrumbs(crumbs) {
@@ -267,6 +353,39 @@ function appendFiles(files) {
   if (!container) return;
   const markup = files.map(state.view === "list" ? fileRowMarkup : fileCardMarkup).join("");
   container.insertAdjacentHTML("beforeend", markup);
+}
+
+function skeletonScreen(hint) {
+  const items = [];
+  for (let i = 0; i < 12; i += 1) {
+    if (state.view === "list") {
+      items.push(`<div class="file-row skeleton-row" aria-hidden="true">
+        <div class="file-row-thumb skeleton"></div>
+        <div class="sk-line sk-line-name"></div>
+        <div class="sk-line sk-line-size"></div>
+        <div class="sk-line sk-line-pkg"></div>
+      </div>`);
+    } else {
+      items.push(`<div class="file skeleton-card" aria-hidden="true">
+        <div class="thumb skeleton"></div>
+        <div class="file-info">
+          <div class="sk-line sk-line-name"></div>
+          <div class="sk-line sk-line-meta"></div>
+        </div>
+      </div>`);
+    }
+  }
+  const wrapClass = state.view === "list" ? "file-list" : "file-grid";
+  return `<div class="skeleton-hint"><span class="spinner"></span>${esc(hint)}</div>
+    <div class="${wrapClass} skeleton-wrap">${items.join("")}</div>`;
+}
+
+function metaSkeleton() {
+  let html = "";
+  for (let i = 0; i < 8; i += 1) {
+    html += `<div class="sk-line sk-key"></div><div class="sk-line sk-val"></div>`;
+  }
+  return html;
 }
 
 function currentTotal() {
@@ -434,6 +553,9 @@ async function loadStats() {
     renderRoots(stats.roots);
   } catch (error) {
     console.error(error);
+    $("stat-files").textContent = "—";
+    $("stat-size").textContent = "—";
+    $("roots").innerHTML = "";
   }
 }
 
@@ -462,9 +584,13 @@ async function loadList(path, push = true, keepKind = false) {
     else url.searchParams.delete("path");
     history.pushState({ path: state.path }, "", url);
   }
-  $("content").innerHTML = `<div class="loading"><span class="spinner"></span>正在读取目录…</div>`;
+  $("content").innerHTML = skeletonScreen("正在读取目录…");
   $("where").textContent = state.path || "全部资源";
+  $("index-path").textContent = state.path || "全部资源";
   $("count").textContent = "";
+  $("index-summary").textContent = "正在读取…";
+  $("index-kinds").innerHTML = "";
+  $("index-dirs").innerHTML = "";
   try {
     const data = await getJson(apiUrl("/api/list", {
       path: state.path, sort: state.sort, kind: state.kind, limit: PAGE_SIZE, offset: 0,
@@ -511,8 +637,11 @@ async function search(query) {
   document.querySelectorAll(".root").forEach((node) => node.classList.remove("active"));
   closeDrawer();
   $("where").innerHTML = `搜索结果<span class="sub">${esc(query)}</span>`;
+  $("index-path").textContent = `搜索：${query}`;
   $("count").textContent = "";
-  $("content").innerHTML = `<div class="loading"><span class="spinner"></span>正在搜索…</div>`;
+  $("content").innerHTML = skeletonScreen("正在搜索…");
+  $("index-summary").textContent = "正在搜索…";
+  $("index-kinds").innerHTML = "";
   try {
     const data = await getJson(apiUrl("/api/search", { q: query, limit: PAGE_SIZE, offset: 0, sort: state.sort }));
     if (token !== listToken) return;
@@ -573,6 +702,7 @@ async function showBankPreview(file, container, token) {
     ${hircTypes ? `<div class="section-title">HIRC 对象类型</div><div class="bank-chips">${hircTypes}</div>` : ""}
     ${(bank.warnings || []).length ? `<div class="note">${esc(bank.warnings.join("；"))}</div>` : ""}
   </div>`;
+  swapPreview(container);
   $("preview-note").textContent = entries.length
     ? "BNK 是 Wwise 音频包；内嵌 WEM 按需解码为 FLAC，不会保存到磁盘。"
     : "这个 Bank 没有内嵌 WEM 音频，可能只包含事件或容器定义。";
@@ -590,9 +720,16 @@ async function showBankPreview(file, container, token) {
   });
 }
 
+function swapPreview(container) {
+  container.classList.remove("swap-in");
+  void container.offsetWidth;
+  container.classList.add("swap-in");
+}
+
 function renderInspect(info, container) {
   if (info.text !== null && info.text !== undefined) {
     container.innerHTML = `<pre>${esc(info.text)}${info.text_truncated ? NL + "…" : ""}</pre>`;
+    swapPreview(container);
     const refs = info.references || [];
     $("preview-note").textContent = `${info.summary}${refs.length ? ` 共找到 ${refs.length} 个引用路径。` : ""}${info.text_truncated ? " 内容较大，仅显示开头部分。" : ""}`;
     return;
@@ -619,6 +756,7 @@ function renderInspect(info, container) {
     </details>
     ${info.renderable === "none" ? `<div class="note">这个格式主要保存参数和引用关系，不是可直接显示的图片或模型；完整可视化需要对应的引擎模块。</div>` : ""}
   </div>`;
+  swapPreview(container);
   $("preview-note").textContent = strings.length || references.length
     ? "已提取可读字段和引用资源；原始 Hex 可展开查看。"
     : "未找到可读字段；可以展开 Hex 或下载原文件。";
@@ -716,9 +854,10 @@ async function showPreview(file) {
   $("preview-name").textContent = file.name;
   $("preview-badge").textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
   $("preview-badge").className = `badge ${displayKind(file.kind, file.ext)}`;
-  $("preview-media").innerHTML = `<div class="placeholder"><span class="spinner"></span>正在准备预览…</div>`;
-  $("preview-meta").innerHTML = "";
-  $("preview-note").textContent = "";
+  $("preview-media").classList.remove("swap-in");
+  $("preview-media").innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+  $("preview-meta").innerHTML = metaSkeleton();
+  $("preview-note").textContent = "正在读取文件信息…";
   $("open-image").classList.add("hidden");
   renderOpenActions();
   $("drawer").classList.remove("hidden");
@@ -733,6 +872,8 @@ async function showPreview(file) {
     info = await getJson(apiUrl("/api/info", { path: file.path }));
   } catch (error) {
     if (token !== previewToken) return;
+    $("preview-meta").innerHTML = "";
+    $("preview-note").textContent = "";
     $("preview-media").innerHTML = `<div class="errorbox">读取信息失败：${esc(error.message)}</div>`;
     return;
   }
@@ -743,12 +884,24 @@ async function showPreview(file) {
   try {
     if (kind === "image") {
       const url = apiUrl("/api/image", { path: file.path });
-      media.innerHTML = `<img src="${url}" alt="${esc(file.name)}">`;
+      media.innerHTML = `<div class="preview-image">
+        <span class="preview-image-skeleton skeleton" aria-hidden="true"></span>
+        <img src="${url}" alt="${esc(file.name)}">
+      </div>`;
+      const wrap = media.querySelector(".preview-image");
+      const img = media.querySelector("img");
+      const ready = () => requestAnimationFrame(() => wrap && wrap.classList.add("ready"));
+      img.addEventListener("load", ready, { once: true });
+      img.addEventListener("error", () => {
+        media.innerHTML = `<div class="errorbox">图片加载失败</div>`;
+      }, { once: true });
+      if (img.complete && img.naturalWidth > 0) ready();
       $("open-image").href = url;
       $("open-image").classList.remove("hidden");
       $("preview-note").textContent = "首次打开可能需要一点时间。";
     } else if (kind === "bank") {
       $("download-link").textContent = "下载音频包";
+      $("preview-note").textContent = "正在解析 Bank 结构与内嵌音频…";
       await showBankPreview(file, media, token);
     } else if (kind === "audio") {
       const url = apiUrl("/api/audio", { path: file.path });
@@ -759,16 +912,27 @@ async function showPreview(file) {
         ? "这是 Wwise 媒体 Short ID；原始事件名未随客户端资源提供。音频按需加载。"
         : "音频按需加载，直接播放。";
     } else if (kind === "video") {
-      media.innerHTML = `<video controls src="${apiUrl("/api/video", { path: file.path })}"></video>`;
+      media.innerHTML = `<div class="preview-video">
+        <span class="preview-video-skeleton skeleton" aria-hidden="true"></span>
+        <video controls preload="metadata" src="${apiUrl("/api/video", { path: file.path })}"></video>
+      </div>`;
+      const wrap = media.querySelector(".preview-video");
+      const video = media.querySelector("video");
+      video.addEventListener("loadedmetadata", () => requestAnimationFrame(() => wrap && wrap.classList.add("ready")), { once: true });
+      video.addEventListener("error", () => {
+        media.innerHTML = `<div class="errorbox">视频加载失败</div>`;
+      }, { once: true });
       $("preview-note").textContent = "可以直接播放并拖动进度。";
     } else {
-      media.innerHTML = `<div class="placeholder"><span class="spinner"></span>正在读取结构…</div>`;
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = "正在读取资源结构…";
       const data = await getJson(apiUrl("/api/inspect", { path: file.path }));
       if (token !== previewToken) return;
       renderInspect(data, media);
     }
   } catch (error) {
     if (token !== previewToken) return;
+    $("preview-note").textContent = "";
     media.innerHTML = `<div class="errorbox">预览失败：${esc(error.message)}<br>可以使用“下载文件”查看原始内容。</div>`;
   }
 }
@@ -925,9 +1089,15 @@ async function init() {
   bind();
   updateViewButtons();
   syncTopbarHeight();
+  $("stat-files").innerHTML = `<span class="sk-line stat-sk" style="width:46px"></span>`;
+  $("stat-size").innerHTML = `<span class="sk-line stat-sk" style="width:54px"></span>`;
+  $("roots").innerHTML = Array.from({ length: 6 }, () => `<div class="root skeleton-root">
+    <span class="sk-line" style="width:62%"></span><span class="sk-line" style="width:26px"></span>
+  </div>`).join("");
   const path = new URLSearchParams(location.search).get("path") || "";
-  await loadStats();
+  const statsPromise = loadStats();
   await loadList(path, false);
+  await statsPromise;
 }
 
 init();
