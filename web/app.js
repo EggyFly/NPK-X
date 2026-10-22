@@ -26,6 +26,14 @@ let previewToken = 0;
 let listToken = 0;
 let moreObserver = null;
 
+function icon(name) {
+  return `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+}
+
+function brandIcon(name) {
+  return `<svg class="icon brand" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -102,6 +110,19 @@ function badgeShort(file) {
   return badge("binary", (file.ext || "BIN").replace(".", "").slice(0, 4).toUpperCase() || "BIN");
 }
 
+function isTextView(file) {
+  const kind = displayKind(file.kind, file.ext);
+  const ext = (file.ext || "").toLowerCase();
+  return kind === "text" || TEXT_THUMB_EXT.has(ext);
+}
+
+function itemAction(file) {
+  const kind = displayKind(file.kind, file.ext);
+  if (kind === "audio") return { name: "play", label: "播放", icon: "play" };
+  if (kind === "image" || isTextView(file)) return { name: "view", label: "放大查看", icon: "zoom" };
+  return { name: "preview", label: "放大查看", icon: "zoom" };
+}
+
 function thumbMarkup(file, small = false) {
   const kind = displayKind(file.kind, file.ext);
   const ext = (file.ext || "").toLowerCase();
@@ -126,7 +147,7 @@ function thumbMarkup(file, small = false) {
   if (kind === "video") {
     return `<div class="thumb thumb-video" data-video-src="${esc(apiUrl("/api/video", { path: file.path }))}">
       <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
-      <span class="thumb-play">▶</span>
+      <span class="thumb-play">${icon("play")}</span>
       ${fallback}
     </div>`;
   }
@@ -321,20 +342,28 @@ function renderFolders(dirs) {
 }
 
 function fileRowMarkup(file) {
+  const act = itemAction(file);
   return `<div class="file-row" data-file="${esc(file.path)}">
     <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
     <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
     <div class="file-row-size">${formatBytes(file.size)}</div>
     <div class="file-row-pkg">${esc(file.package)}</div>
+    <div class="file-row-action">
+      <button class="zoom-btn ${act.name === "play" ? "play-btn" : ""}" type="button" data-action="${act.name}" title="${act.label}" aria-label="${act.label}">${icon(act.icon)}</button>
+    </div>
   </div>`;
 }
 
 function fileCardMarkup(file) {
+  const act = itemAction(file);
   return `<div class="file" data-file="${esc(file.path)}" title="${esc(file.path)}">
     ${thumbMarkup(file)}
     <div class="file-info">
-      <div class="file-name">${esc(file.name)}</div>
-      <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
+      <div class="file-text">
+        <div class="file-name">${esc(file.name)}</div>
+        <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
+      </div>
+      <button class="zoom-btn ${act.name === "play" ? "play-btn" : ""}" type="button" data-action="${act.name}" title="${act.label}" aria-label="${act.label}">${icon(act.icon)}</button>
     </div>
   </div>`;
 }
@@ -363,14 +392,17 @@ function skeletonScreen(hint) {
         <div class="file-row-thumb skeleton"></div>
         <div class="sk-line sk-line-name"></div>
         <div class="sk-line sk-line-size"></div>
-        <div class="sk-line sk-line-pkg"></div>
+        <div class="sk-line sk-line-pkg file-row-pkg"></div>
+        <div></div>
       </div>`);
     } else {
       items.push(`<div class="file skeleton-card" aria-hidden="true">
         <div class="thumb skeleton"></div>
         <div class="file-info">
-          <div class="sk-line sk-line-name"></div>
-          <div class="sk-line sk-line-meta"></div>
+          <div class="file-text">
+            <div class="sk-line sk-line-name"></div>
+            <div class="sk-line sk-line-meta"></div>
+          </div>
         </div>
       </div>`);
     }
@@ -567,6 +599,8 @@ function updateViewButtons() {
 
 async function loadList(path, push = true, keepKind = false) {
   const token = ++listToken;
+  stopAudio();
+  closeViewer();
   state.loadingMore = false;
   if (moreObserver) {
     moreObserver.disconnect();
@@ -625,6 +659,8 @@ async function loadList(path, push = true, keepKind = false) {
 
 async function search(query) {
   const token = ++listToken;
+  stopAudio();
+  closeViewer();
   state.loadingMore = false;
   if (moreObserver) {
     moreObserver.disconnect();
@@ -779,31 +815,495 @@ function metadataRows(info) {
   return rows.map(([key, value]) => `<div class="k">${esc(key)}</div><div class="v">${esc(value)}</div>`).join("");
 }
 
-function renderOpenActions() {
+function quickOpenActions() {
   const actions = [];
   if (state.platform === "win32") actions.push(["explorer", "资源管理器"]);
   if (state.platform === "darwin") actions.push(["finder", "访达"]);
   actions.push(["vscode", "VS Code"], ["idea", "IDEA"]);
-  $("open-actions").innerHTML = actions.map(([app, label]) =>
-    `<button class="btn" data-open="${app}">${label}</button>`).join("");
+  return actions;
 }
 
-async function openWith(app) {
-  if (!state.previewPath) return;
-  const note = $("preview-note");
-  note.textContent = "正在打开…";
+function actionIcon(app) {
+  return brandIcon(app === "finder" ? "explorer" : app);
+}
+
+function renderOpenActions() {
+  $("open-actions").innerHTML = quickOpenActions().map(([app, label]) =>
+    `<button class="btn" data-open="${app}">${actionIcon(app)}${label}</button>`).join("");
+}
+
+async function openPathWith(path, app, note) {
+  if (!path) return;
+  if (note) note.textContent = "正在打开…";
   try {
     const response = await fetch("/api/open", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: state.previewPath, app }),
+      body: JSON.stringify({ path, app }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "打开失败");
-    note.textContent = result.converted ? `${result.message}（使用转换后的预览图）` : result.message;
+    if (note) note.textContent = result.converted ? `${result.message}（使用转换后的预览图）` : result.message;
   } catch (error) {
-    note.textContent = error.message;
+    if (note) note.textContent = error.message;
   }
+}
+
+async function openWith(app) {
+  if (!state.previewPath) return;
+  await openPathWith(state.previewPath, app, $("preview-note"));
+}
+
+const viewer = {
+  token: 0, path: null, file: null, mode: "",
+  scale: 1, fit: 1, ox: 0, oy: 0, nw: 0, nh: 0, sw: 0, sh: 0,
+  mapScale: 0, mapLeft: 0, mapTop: 0,
+  dragging: false, dragX: 0, dragY: 0, mapDragging: false,
+};
+
+function viewerIsOpen() {
+  return !$("viewer").classList.contains("hidden");
+}
+
+function openViewer(file) {
+  closeDrawer();
+  closeViewer();
+  const token = ++viewer.token;
+  viewer.file = file;
+  viewer.path = file.path;
+  viewer.mode = isTextView(file) ? "text" : "image";
+  $("viewer-name").textContent = file.name;
+  $("viewer").classList.remove("hidden");
+  $("viewer").setAttribute("aria-hidden", "false");
+  if (viewer.mode === "image") openImageViewer(file, token);
+  else openTextViewer(file, token);
+}
+
+function closeViewer() {
+  viewer.token += 1;
+  viewer.path = null;
+  viewer.file = null;
+  viewer.mode = "";
+  viewer.dragging = false;
+  viewer.mapDragging = false;
+  $("viewer").classList.add("hidden");
+  $("viewer").setAttribute("aria-hidden", "true");
+  $("viewer-name").textContent = "";
+  $("viewer-stage").innerHTML = "";
+  $("viewer-foot").innerHTML = "";
+}
+
+function imageViewerFoot(file) {
+  const mapUrl = apiUrl("/api/thumb", { path: file.path, w: 360, v: 3 });
+  return `<div class="viewer-zoom">
+    <button class="icon-btn" id="viewer-zoom-out" title="缩小" aria-label="缩小">${icon("minus")}</button>
+    <label class="viewer-zoom-value"><input id="viewer-zoom-input" type="number" min="5" max="800" step="1" value="100"><span>%</span></label>
+    <button class="icon-btn" id="viewer-zoom-in" title="放大" aria-label="放大">${icon("plus")}</button>
+    <button class="mini-btn" id="viewer-zoom-fit" title="适应窗口">${icon("fit")}适应</button>
+  </div>
+  <div class="viewer-map" id="viewer-map">
+    <img id="viewer-map-img" alt="" src="${esc(mapUrl)}">
+    <div class="viewer-map-view" id="viewer-map-view"></div>
+  </div>`;
+}
+
+function openImageViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = imageViewerFoot(file);
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在加载原图…</div>`;
+  const img = new Image();
+  img.id = "viewer-image";
+  img.alt = file.name;
+  img.draggable = false;
+  img.addEventListener("load", () => {
+    if (token !== viewer.token) return;
+    viewer.nw = img.naturalWidth;
+    viewer.nh = img.naturalHeight;
+    stage.innerHTML = "";
+    stage.appendChild(img);
+    layoutImageViewer();
+    bindImageViewerControls();
+    updateViewerMap();
+  }, { once: true });
+  img.addEventListener("error", () => {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">图片加载失败</div>`;
+  }, { once: true });
+  img.src = apiUrl("/api/image", { path: file.path });
+}
+
+function layoutImageViewer() {
+  const stage = $("viewer-stage");
+  const img = $("viewer-image");
+  if (!stage || !img || !viewer.nw) return;
+  viewer.sw = stage.clientWidth;
+  viewer.sh = stage.clientHeight;
+  viewer.fit = Math.min(viewer.sw / viewer.nw, viewer.sh / viewer.nh, 1);
+  viewer.scale = viewer.fit;
+  viewer.ox = (viewer.sw - viewer.nw * viewer.scale) / 2;
+  viewer.oy = (viewer.sh - viewer.nh * viewer.scale) / 2;
+  applyImageViewer();
+}
+
+function clampImageViewer() {
+  const dw = viewer.nw * viewer.scale;
+  const dh = viewer.nh * viewer.scale;
+  viewer.ox = dw <= viewer.sw ? (viewer.sw - dw) / 2 : Math.min(0, Math.max(viewer.sw - dw, viewer.ox));
+  viewer.oy = dh <= viewer.sh ? (viewer.sh - dh) / 2 : Math.min(0, Math.max(viewer.sh - dh, viewer.oy));
+}
+
+function applyImageViewer() {
+  const img = $("viewer-image");
+  if (!img) return;
+  img.style.transform = `translate(${viewer.ox}px, ${viewer.oy}px) scale(${viewer.scale})`;
+  const input = $("viewer-zoom-input");
+  if (input && document.activeElement !== input) input.value = Math.round(viewer.scale * 100);
+  updateViewerMap();
+}
+
+function setImageViewerScale(next, ax, ay) {
+  if (!viewer.nw) return;
+  const scale = Math.min(8, Math.max(0.05, next));
+  const cx = ax === undefined ? viewer.sw / 2 : ax;
+  const cy = ay === undefined ? viewer.sh / 2 : ay;
+  const ix = (cx - viewer.ox) / viewer.scale;
+  const iy = (cy - viewer.oy) / viewer.scale;
+  viewer.scale = scale;
+  viewer.ox = cx - ix * scale;
+  viewer.oy = cy - iy * scale;
+  clampImageViewer();
+  applyImageViewer();
+}
+
+function bindImageViewerControls() {
+  const stage = $("viewer-stage");
+  const zoomInput = $("viewer-zoom-input");
+  $("viewer-zoom-in").addEventListener("click", () => setImageViewerScale(viewer.scale * 1.25));
+  $("viewer-zoom-out").addEventListener("click", () => setImageViewerScale(viewer.scale / 1.25));
+  $("viewer-zoom-fit").addEventListener("click", layoutImageViewer);
+  zoomInput.addEventListener("change", () => {
+    const value = Number(zoomInput.value);
+    if (Number.isFinite(value) && value > 0) setImageViewerScale(value / 100);
+    else applyImageViewer();
+  });
+  zoomInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      zoomInput.blur();
+    }
+  });
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (viewer.nw * viewer.scale <= viewer.sw && viewer.nh * viewer.scale <= viewer.sh) return;
+    viewer.dragging = true;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
+    stage.classList.add("dragging");
+    stage.setPointerCapture(event.pointerId);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!viewer.dragging) return;
+    viewer.ox += event.clientX - viewer.dragX;
+    viewer.oy += event.clientY - viewer.dragY;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
+    clampImageViewer();
+    applyImageViewer();
+  });
+  const endDrag = (event) => {
+    if (!viewer.dragging) return;
+    viewer.dragging = false;
+    stage.classList.remove("dragging");
+    try { stage.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const rect = stage.getBoundingClientRect();
+    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    setImageViewerScale(viewer.scale * factor, event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+  bindViewerMapDrag();
+}
+
+function updateViewerMap() {
+  const map = $("viewer-map");
+  const view = $("viewer-map-view");
+  if (!map || !view || !viewer.nw || !viewer.scale) return;
+  const mw = map.clientWidth;
+  const mh = map.clientHeight;
+  const ms = Math.min(mw / viewer.nw, mh / viewer.nh);
+  const left = (mw - viewer.nw * ms) / 2;
+  const top = (mh - viewer.nh * ms) / 2;
+  const vw = Math.min(viewer.nw, viewer.sw / viewer.scale);
+  const vh = Math.min(viewer.nh, viewer.sh / viewer.scale);
+  const vx = Math.max(0, Math.min(viewer.nw - vw, -viewer.ox / viewer.scale));
+  const vy = Math.max(0, Math.min(viewer.nh - vh, -viewer.oy / viewer.scale));
+  viewer.mapScale = ms;
+  viewer.mapLeft = left;
+  viewer.mapTop = top;
+  view.style.left = `${left + vx * ms}px`;
+  view.style.top = `${top + vy * ms}px`;
+  view.style.right = "auto";
+  view.style.width = `${Math.max(6, vw * ms)}px`;
+  view.style.height = `${Math.max(6, vh * ms)}px`;
+}
+
+function bindViewerMapDrag() {
+  const map = $("viewer-map");
+  if (!map) return;
+  const moveTo = (event) => {
+    if (!viewer.mapScale) return;
+    const rect = map.getBoundingClientRect();
+    const ix = (event.clientX - rect.left - viewer.mapLeft) / viewer.mapScale;
+    const iy = (event.clientY - rect.top - viewer.mapTop) / viewer.mapScale;
+    viewer.ox = viewer.sw / 2 - Math.max(0, Math.min(viewer.nw, ix)) * viewer.scale;
+    viewer.oy = viewer.sh / 2 - Math.max(0, Math.min(viewer.nh, iy)) * viewer.scale;
+    clampImageViewer();
+    applyImageViewer();
+  };
+  map.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    viewer.mapDragging = true;
+    map.setPointerCapture(event.pointerId);
+    moveTo(event);
+    event.preventDefault();
+  });
+  map.addEventListener("pointermove", (event) => {
+    if (viewer.mapDragging) moveTo(event);
+  });
+  const end = (event) => {
+    viewer.mapDragging = false;
+    try { map.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  map.addEventListener("pointerup", end);
+  map.addEventListener("pointercancel", end);
+}
+
+function textViewerFoot() {
+  return `<div class="viewer-text-actions">
+    <div class="viewer-actions" id="viewer-actions"></div>
+    <div class="viewer-note" id="viewer-note"></div>
+  </div>
+  <div class="viewer-map" id="viewer-map">
+    <canvas id="viewer-map-canvas" class="viewer-map-canvas"></canvas>
+    <div class="viewer-map-view" id="viewer-map-view"></div>
+  </div>`;
+}
+
+async function openTextViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = textViewerFoot();
+  $("viewer-actions").innerHTML = quickOpenActions().map(([app, label]) =>
+    `<button class="btn" data-viewer-open="${app}">${actionIcon(app)}${label}</button>`).join("");
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在读取文本…</div>`;
+  try {
+    const response = await fetch(apiUrl("/api/text", { path: file.path }));
+    if (token !== viewer.token) return;
+    if (!response.ok) {
+      stage.innerHTML = `<div class="errorbox">这个文件无法作为文本显示</div>`;
+      return;
+    }
+    const text = await response.text();
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="viewer-text-wrap" id="viewer-text-wrap"><pre class="viewer-text" id="viewer-text"></pre></div>`;
+    const pre = $("viewer-text");
+    pre.textContent = text;
+    requestAnimationFrame(() => {
+      if (token !== viewer.token) return;
+      drawTextViewerMap(text);
+      bindTextViewerMap();
+      updateTextViewerMap();
+    });
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">读取失败：${esc(error.message)}</div>`;
+  }
+}
+
+function drawTextViewerMap(text) {
+  const map = $("viewer-map");
+  const canvas = $("viewer-map-canvas");
+  if (!map || !canvas) return;
+  const width = map.clientWidth;
+  const height = map.clientHeight;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(width * dpr));
+  canvas.height = Math.max(1, Math.round(height * dpr));
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(143, 199, 255, .45)";
+  const lines = text.split("\n");
+  const step = Math.max(1, Math.floor(lines.length / 1500));
+  const rows = Math.ceil(lines.length / step);
+  const lineH = (height - 8) / Math.max(1, rows);
+  for (let i = 0; i < lines.length; i += step) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const ratio = Math.min(120, line.length) / 120;
+    ctx.fillRect(4, 4 + (i / step) * lineH, Math.max(1, ratio * (width - 8)), Math.max(0.6, lineH * 0.65));
+  }
+}
+
+function updateTextViewerMap() {
+  const wrap = $("viewer-text-wrap");
+  const map = $("viewer-map");
+  const view = $("viewer-map-view");
+  if (!wrap || !map || !view) return;
+  const height = map.clientHeight;
+  const max = Math.max(1, wrap.scrollHeight - wrap.clientHeight);
+  const ratio = max > 0 ? Math.min(1, Math.max(0, wrap.scrollTop / max)) : 0;
+  const vh = Math.min(height, Math.max(10, (wrap.clientHeight / Math.max(1, wrap.scrollHeight)) * height));
+  view.style.left = "0";
+  view.style.right = "0";
+  view.style.width = "auto";
+  view.style.top = `${ratio * Math.max(0, height - vh)}px`;
+  view.style.height = `${vh}px`;
+}
+
+function bindTextViewerMap() {
+  const map = $("viewer-map");
+  const wrap = $("viewer-text-wrap");
+  if (!map || !wrap) return;
+  let dragging = false;
+  const scrollTo = (event) => {
+    const rect = map.getBoundingClientRect();
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    wrap.scrollTop = y * Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+    updateTextViewerMap();
+  };
+  map.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    map.setPointerCapture(event.pointerId);
+    scrollTo(event);
+    event.preventDefault();
+  });
+  map.addEventListener("pointermove", (event) => {
+    if (dragging) scrollTo(event);
+  });
+  const end = (event) => {
+    dragging = false;
+    try { map.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  map.addEventListener("pointerup", end);
+  map.addEventListener("pointercancel", end);
+  wrap.addEventListener("scroll", updateTextViewerMap, { passive: true });
+}
+
+let audioPlayer = null;
+let audioCard = null;
+let audioPath = null;
+let audioFrame = 0;
+
+function formatClock(value) {
+  let total = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (minutes > 0) return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `0:${String(seconds).padStart(2, "0")}`;
+}
+
+function findFileNode(path) {
+  return Array.from(document.querySelectorAll("[data-file]")).find((node) => node.dataset.file === path) || null;
+}
+
+function stopAudio() {
+  if (audioPlayer) {
+    const player = audioPlayer;
+    audioPlayer = null;
+    player.pause();
+    player.removeAttribute("src");
+    try { player.load(); } catch (_) {}
+  }
+  if (audioFrame) cancelAnimationFrame(audioFrame);
+  audioFrame = 0;
+  if (audioCard) {
+    audioCard.classList.remove("audio-playing");
+    const bar = audioCard.querySelector(".audio-progress");
+    if (bar) bar.remove();
+  }
+  audioCard = null;
+  audioPath = null;
+}
+
+function playAudio(file) {
+  stopAudio();
+  const card = findFileNode(file.path);
+  if (!card) return;
+  audioCard = card;
+  audioPath = file.path;
+  card.classList.add("audio-playing");
+  const bar = document.createElement("div");
+  bar.className = "audio-progress";
+  bar.innerHTML = `<div class="audio-progress-fill"></div>
+    <div class="audio-progress-panel"><div class="audio-progress-time"><span class="audio-time-current">0:00</span><span class="audio-time-total">0:00</span></div></div>`;
+  card.appendChild(bar);
+  bar.addEventListener("click", (event) => {
+    event.stopPropagation();
+    seekAudio(event);
+  });
+  bar.addEventListener("pointerdown", (event) => event.stopPropagation());
+  const player = new Audio();
+  player.preload = "auto";
+  audioPlayer = player;
+  const isCurrent = () => audioPlayer === player;
+  player.addEventListener("loadedmetadata", () => {
+    if (isCurrent()) updateAudioProgress();
+  });
+  player.addEventListener("timeupdate", () => {
+    if (isCurrent()) updateAudioProgress();
+  });
+  player.addEventListener("ended", () => {
+    if (isCurrent()) stopAudio();
+  });
+  player.addEventListener("error", () => {
+    if (isCurrent()) stopAudio();
+  });
+  player.src = apiUrl("/api/audio", { path: file.path });
+  player.currentTime = 0;
+  player.play().catch(() => {
+    if (isCurrent()) stopAudio();
+  });
+  updateAudioProgress();
+  tickAudio();
+}
+
+function tickAudio() {
+  if (!audioPlayer || !audioCard) return;
+  updateAudioProgress();
+  audioFrame = requestAnimationFrame(tickAudio);
+}
+
+function updateAudioProgress() {
+  if (!audioPlayer || !audioCard) return;
+  const bar = audioCard.querySelector(".audio-progress");
+  if (!bar) return;
+  const duration = audioPlayer.duration;
+  const current = audioPlayer.currentTime || 0;
+  const ratio = Number.isFinite(duration) && duration > 0 ? Math.min(1, current / duration) : 0;
+  const fill = bar.querySelector(".audio-progress-fill");
+  if (fill) fill.style.width = `${ratio * 100}%`;
+  const cur = bar.querySelector(".audio-time-current");
+  const total = bar.querySelector(".audio-time-total");
+  if (cur) cur.textContent = formatClock(current);
+  if (total) total.textContent = Number.isFinite(duration) ? formatClock(duration) : "0:00";
+}
+
+function seekAudio(event) {
+  if (!audioPlayer || !audioCard) return;
+  const duration = audioPlayer.duration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const bar = audioCard.querySelector(".audio-progress");
+  if (!bar) return;
+  const rect = bar.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  audioPlayer.currentTime = ratio * duration;
+  updateAudioProgress();
 }
 
 function setActiveFile(path) {
@@ -1000,6 +1500,17 @@ function bind() {
       loadMore();
       return;
     }
+    const action = event.target.closest("[data-action]");
+    if (action) {
+      const node = action.closest("[data-file]");
+      const match = node ? state.files.find((item) => item.path === node.dataset.file) : null;
+      if (match) {
+        if (action.dataset.action === "play") playAudio(match);
+        else if (action.dataset.action === "view") openViewer(match);
+        else showPreview(match);
+      }
+      return;
+    }
     const dir = event.target.closest("[data-dir]");
     if (dir) { loadList(dir.dataset.dir || ""); return; }
     const file = event.target.closest("[data-file]");
@@ -1058,6 +1569,14 @@ function bind() {
   $("view-list").addEventListener("click", () => setView("list"));
   $("close-drawer").addEventListener("click", closeDrawer);
   $("overlay").addEventListener("click", closeDrawer);
+  $("viewer-close").addEventListener("click", closeViewer);
+  $("viewer").addEventListener("click", (event) => {
+    if (!event.target.closest(".viewer-panel")) closeViewer();
+  });
+  $("viewer-foot").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-viewer-open]");
+    if (button && viewer.path) openPathWith(viewer.path, button.dataset.viewerOpen, $("viewer-note"));
+  });
   $("prev-file").addEventListener("click", () => stepPreview(-1));
   $("next-file").addEventListener("click", () => stepPreview(1));
   $("copy-path").addEventListener("click", copyPath);
@@ -1070,15 +1589,24 @@ function bind() {
     loadList(path, false);
   });
   window.addEventListener("resize", syncTopbarHeight);
+  window.addEventListener("resize", () => {
+    if (!viewerIsOpen()) return;
+    if (viewer.mode === "image" && viewer.nw) layoutImageViewer();
+    else if (viewer.mode === "text") {
+      drawTextViewerMap($("viewer-text")?.textContent || "");
+      updateTextViewerMap();
+    }
+  });
   if (window.ResizeObserver) {
     new ResizeObserver(syncTopbarHeight).observe($("content-topbar"));
   }
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (!$("drawer").classList.contains("hidden")) closeDrawer();
+      if (viewerIsOpen()) closeViewer();
+      else if (!$("drawer").classList.contains("hidden")) closeDrawer();
       else if ($("search").value) { $("search").value = ""; loadList(state.path, false); }
     }
-    if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
+    if (event.key === "/" && !viewerIsOpen() && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
       event.preventDefault();
       $("search").focus();
     }
