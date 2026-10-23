@@ -121,6 +121,7 @@ function itemAction(file) {
   const kind = displayKind(file.kind, file.ext);
   const ext = (file.ext || "").toLowerCase();
   if (ext === ".gmp") return { name: "view", label: "地图预览", icon: "map" };
+  if (ext === ".xn") return { name: "script", label: "脚本预览", icon: "code" };
   if (kind === "audio") return { name: "play", label: "播放", icon: "play" };
   if (kind === "image" || isTextView(file)) return { name: "view", label: "放大查看", icon: "zoom" };
   return { name: "preview", label: "放大查看", icon: "zoom" };
@@ -845,8 +846,115 @@ function renderGmpPreview(data, container) {
     : "已读取地图块，但没有可绘制的单位坐标；可下载原文件进一步分析。";
 }
 
-function metadataRows(info) {
-  const rows = [
+function xnPreviewText(data) {
+  const p = data.preview || {};
+  const lines = [
+    `# module: ${data.module || ""}`,
+    `# signature: ${data.signature}`,
+    `# container: XN v2 (HMAC-SHA256 + NeoX AES-256 + zlib)`,
+    `# compressed: ${Number(data.compressed || 0).toLocaleString()} bytes`,
+    `# original: ${Number(data.original || 0).toLocaleString()} bytes`,
+    `# code_name: ${p.code_name || "<module>"}`,
+    `# filename: ${p.filename || (data.module ? data.module.replace(/\./g, "/") + ".nxs" : "")}`,
+    `# code_objects: ${Number(p.code_objects || 0).toLocaleString()}`,
+    "",
+    "## functions",
+    (p.functions || []).slice(0, 300).map((fn) => `${fn.name}(${(fn.args || []).join(", ")})  # line ${fn.line}`).join("\n"),
+    "",
+    "## names",
+    (p.names || []).slice(0, 500).join("\n"),
+    "",
+    "## strings",
+    (p.strings || []).slice(0, 300).join("\n"),
+  ];
+  return lines.join("\n");
+}
+
+function renderXnPreview(data, container, file) {
+  const p = data.preview || {};
+  if (!data.decrypted) {
+    container.innerHTML = `<div class="xn-fail">
+      <div class="xn-fail-title">${icon("code")}XN 加密脚本</div>
+      <p>${esc(data.reason || "无法解密")}</p>
+      <p class="note">容器结构已识别；该文件需要对应的模块名才能派生解密密钥。</p>
+    </div>`;
+    $("preview-note").textContent = "脚本模块名尚未索引，暂时无法解密。";
+    return;
+  }
+  const names = (p.names || []).slice(0, 80);
+  const strings = (p.strings || []).slice(0, 60);
+  const functions = (p.functions || []).slice(0, 60);
+  container.innerHTML = `<div class="xn-panel">
+    <div class="xn-head">
+      <div>
+        <b>${esc(data.module || "未知模块")}</b>
+        <span>${esc(p.filename || (data.module ? data.module.replace(/\./g, "/") + ".nxs" : ""))}</span>
+      </div>
+      <button class="btn primary" id="xn-open-viewer" type="button">${icon("code")}打开预览</button>
+    </div>
+    <div class="bank-chips">
+      <span class="bank-chip">代码对象 <b>${Number(p.code_objects || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">函数 <b>${Number(p.function_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">名称 <b>${Number(p.name_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">字符串 <b>${Number(p.string_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">解压后 <b>${formatBytes(data.original || 0)}</b></span>
+    </div>
+    <div class="section-title">函数 / 类</div>
+    <div class="xn-list">${functions.map((fn) => `<span class="xn-item" title="${esc(fn.name)}">${esc(fn.name)}(${esc((fn.args || []).join(", "))})</span>`).join("")}</div>
+    <div class="section-title">名称表</div>
+    <div class="xn-list">${names.map((name) => `<span class="xn-item" title="${esc(name)}">${esc(name)}</span>`).join("")}</div>
+    <div class="section-title">字符串常量</div>
+    <div class="xn-list">${strings.map((text) => `<span class="xn-item" title="${esc(text)}">${esc(text)}</span>`).join("")}</div>
+  </div>`;
+  const open = container.querySelector("#xn-open-viewer");
+  if (open) open.addEventListener("click", () => openScriptViewer(file));
+  $("preview-note").textContent = "已解密为 Python 2.7 marshal 结构（自定义字节码，展示名称与常量）。";
+}
+
+async function openScriptViewer(file) {
+  closeDrawer();
+  if (viewerCloseTimer) {
+    clearTimeout(viewerCloseTimer);
+    viewerCloseTimer = 0;
+  }
+  const node = $("viewer");
+  node.classList.remove("hidden", "closing", "open");
+  node.setAttribute("aria-hidden", "false");
+  viewer.token += 1;
+  const token = viewer.token;
+  viewer.file = file;
+  viewer.path = file.path;
+  viewer.mode = "script";
+  $("viewer-name").textContent = file.name;
+  $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在解密脚本…</div>`;
+  $("viewer-foot").innerHTML = "";
+  void node.offsetWidth;
+  node.classList.add("open");
+  try {
+    const data = await getJson(apiUrl("/api/xn", { path: file.path }));
+    if (token !== viewer.token) return;
+    if (!data.decrypted) {
+      $("viewer-stage").innerHTML = `<div class="errorbox">${esc(data.reason || "无法解密")}</div>`;
+      return;
+    }
+    const text = xnPreviewText(data);
+    $("viewer-stage").innerHTML = `<div class="script-viewer"><pre class="script-preview">${esc(text)}</pre></div>`;
+    $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-copy" type="button">复制预览</button>`;
+    const copy = $("xn-copy");
+    if (copy) {
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(text); copy.textContent = "已复制"; }
+        catch (_) { copy.textContent = "复制失败"; }
+        setTimeout(() => { copy.textContent = "复制预览"; }, 1200);
+      });
+    }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    $("viewer-stage").innerHTML = `<div class="errorbox">脚本解密失败：${esc(error.message)}</div>`;
+  }
+}
+
+function metadataRows(info) {  const rows = [
     ["路径", info.path],
     ["资源包", info.package],
     ["类型", `${KIND_LABEL[displayKind(info.kind, info.ext)] || info.kind} ${info.ext || ""}`],
@@ -917,28 +1025,62 @@ const mapView = {
   dragging: false, dragX: 0, dragY: 0,
   minimap: null, minimapCtx: null, minimapBox: null,
   minimapBase: null,
+  icons: {},
   frame: 0,
 };
 
 const MAP_EID_LABEL = {
-  100001: "触发器", 100007: "出生点", 100008: "捡拾物",
-  100024: "移动平台", 100029: "齿轮", 100060: "道具箱", 900001: "地板",
+  100001: "触发器", 100007: "出生点", 100008: "搅拌器",
+  100024: "拐角", 100029: "齿轮", 100060: "道具箱", 900001: "地砖",
 };
 const MAP_EID_COLOR = {
   100001: "#ff8d8d", 100007: "#6ee7d8", 100008: "#ffd166",
   100024: "#8fc7ff", 100029: "#ffa0d2", 100060: "#ff9f43", 900001: "#5f7186",
 };
 const MAP_FALLBACK_COLORS = ["#8fc7ff", "#6ee7d8", "#ffd166", "#ff9f43", "#b7a8ff", "#ff8d8d"];
+const MAP_EID_ICON = {
+  100007: "gui2/main/img_spawn_qipao.kta",
+  100029: "gui2/editor_egg/editor_right/img_gear.kta",
+  100060: "gui2/editor_egg/editor_right/item_box_ban.kta",
+  900001: "gui2/editor_egg/editor_right/img_diban_007.kta",
+};
+
+function mapIconPath(eid) {
+  return MAP_EID_ICON[Number(eid)] || "";
+}
+
+function mapUnitColor(unit) {
+  const color = unit.color;
+  if (Array.isArray(color) && color.length >= 3) {
+    return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+  }
+  return mapColor(unit.eid ?? unit.type ?? 0);
+}
+
+function mapIconUrl(eid) {
+  const path = mapIconPath(eid);
+  return path ? apiUrl("/api/thumb", { path, w: 64, v: 3 }) : "";
+}
+
+function ensureMapIcons() {
+  const eids = new Set((mapView.data?.units || []).map((unit) => unit.eid).filter((eid) => eid != null));
+  for (const eid of eids) {
+    const url = mapIconUrl(eid);
+    if (!url || mapView.icons[eid]) continue;
+    const img = new Image();
+    img.onload = () => {
+      mapView.icons[eid] = img;
+      requestMapDraw();
+    };
+    img.src = url;
+  }
+}
 
 function mapColor(eid) {
   const key = Number(eid);
   if (MAP_EID_COLOR[key]) return MAP_EID_COLOR[key];
   const index = Math.abs(Number.isFinite(key) ? key : 0) % MAP_FALLBACK_COLORS.length;
   return MAP_FALLBACK_COLORS[index];
-}
-
-function mapUnitColor(unit) {
-  return mapColor(unit.eid ?? unit.type ?? 0);
 }
 
 function viewerIsOpen() {
@@ -989,6 +1131,7 @@ function clearViewerContent() {
   mapView.minimapCtx = null;
   mapView.minimapBox = null;
   mapView.minimapBase = null;
+  mapView.icons = {};
   mapView.dragging = false;
   $("viewer-name").textContent = "";
   $("viewer-stage").innerHTML = "";
@@ -1393,6 +1536,7 @@ function renderMapStage(file, data) {
   resizeMapCanvas();
   bindMapControls(file);
   buildMapLegend();
+  ensureMapIcons();
   drawMap();
 }
 
@@ -1554,17 +1698,28 @@ function drawMapUnits(ctx, w, h, scale) {
     const sx = w / 2 + (x - mapView.centerX) * scale;
     const sy = h / 2 - (z - mapView.centerZ) * scale;
     if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) continue;
-    ctx.beginPath();
-    ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = mapUnitColor(unit);
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = "#0b1219";
-    ctx.stroke();
+    const icon = mapView.icons[unit.eid];
+    const iconSize = Math.max(18, radius * 2.6);
+    if (icon) {
+      ctx.beginPath();
+      ctx.arc(sx, sy, iconSize / 2 + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(8, 14, 21, .88)";
+      ctx.fill();
+      ctx.drawImage(icon, sx - iconSize / 2, sy - iconSize / 2, iconSize, iconSize);
+    } else {
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = mapUnitColor(unit);
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "#0b1219";
+      ctx.stroke();
+    }
+    const marker = icon ? iconSize / 2 : radius;
     const name = unit.name || "";
     if (!name || labels >= 160) continue;
     const width = ctx.measureText(name).width;
-    const lx = sx + radius + 3;
+    const lx = sx + marker + 3;
     const ly = sy;
     if (lx + width > w - 4 || ly < 28 || ly > h - 6) continue;
     const box = [lx, ly - 7, lx + width, ly + 7];
@@ -1809,9 +1964,14 @@ function buildMapLegend() {
   const panel = $("map-legend");
   if (!data || !panel) return;
   const labels = {};
+  const tints = {};
   for (const unit of data.units || []) {
     const eid = unit.eid;
-    if (eid == null || labels[eid]) continue;
+    if (eid == null) continue;
+    if (!tints[eid] && Array.isArray(unit.color) && unit.color.length >= 3) {
+      tints[eid] = `rgb(${unit.color[0]}, ${unit.color[1]}, ${unit.color[2]})`;
+    }
+    if (labels[eid]) continue;
     const base = String(unit.name || "").replace(/\d+$/, "").trim();
     if (base) labels[eid] = base;
   }
@@ -1820,10 +1980,14 @@ function buildMapLegend() {
     .slice(0, 10)
     .map(([eidText, count]) => {
       const eid = Number(eidText);
-      const color = mapColor(eid);
+      const color = tints[eid] || mapColor(eid);
       const label = MAP_EID_LABEL[eid] || labels[eid] || `类型 ${eidText}`;
+      const icon = mapIconUrl(eid);
+      const swatch = icon
+        ? `<span class="map-legend-icon" style="background-image:url('${icon}')"></span>`
+        : `<span class="map-legend-swatch" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color}"></span>`;
       return `<div class="map-legend-row">
-        <span class="map-legend-dot" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color}"></span>
+        ${swatch}
         <span class="map-legend-name">${esc(label)}</span>
         <span class="map-legend-count">${Number(count).toLocaleString()}</span>
       </div>`;
@@ -1833,7 +1997,7 @@ function buildMapLegend() {
 }
 
 function updateMapLegendDots() {
-  document.querySelectorAll(".map-legend-dot").forEach((dot) => {
+  document.querySelectorAll(".map-legend-swatch").forEach((dot) => {
     dot.style.width = `${mapView.dotSize}px`;
     dot.style.height = `${mapView.dotSize}px`;
   });
@@ -2032,6 +2196,12 @@ async function showPreview(file) {
       const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
       if (token !== previewToken) return;
       renderGmpPreview(data, media);
+    } else if (kind === "script") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = "正在解密脚本…";
+      const data = await getJson(apiUrl("/api/xn", { path: file.path }));
+      if (token !== previewToken) return;
+      renderXnPreview(data, media, file);
     } else if (kind === "image") {
       const url = apiUrl("/api/image", { path: file.path });
       media.innerHTML = `<div class="preview-image">
@@ -2191,6 +2361,7 @@ function bind() {
       if (match) {
         if (action.dataset.action === "play") playAudio(match);
         else if (action.dataset.action === "view") openViewer(match);
+        else if (action.dataset.action === "script") openScriptViewer(match);
         else showPreview(match);
       }
       return;

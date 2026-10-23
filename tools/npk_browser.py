@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import ipaddress
 import json
 import glob
 import mimetypes
@@ -46,6 +47,7 @@ import image_convert
 import gmp_parse
 import xn_crypto
 import xn_parse
+import xn_decompile
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -362,6 +364,9 @@ class BrowserServer(ThreadingHTTPServer):
     _xn_sem = threading.Semaphore(2)
     _xn_cache_lock = threading.Lock()
     _xn_cache: dict = {}
+    _xn_source_lock = threading.Lock()
+    _xn_source_cache: dict = {}
+    _xn_decompile_sem = threading.Semaphore(1)
     _xn_names_lock = threading.Lock()
     _xn_names = None
     _last_prune = 0.0
@@ -939,6 +944,100 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._xn_cache.pop(next(iter(BrowserServer._xn_cache)))
         return result
 
+    def _xn_disasm(self, row, func: str = "") -> dict:
+        signature = int(row["signature"])
+        salt = self._xn_name_map().get(signature)
+        if not salt:
+            return {"error": "模块名尚未索引", "signature": f"{signature:08x}"}
+        payload = self._entry_payload(row)
+        plain = xn_crypto.decrypt(payload, salt)
+        if plain is None:
+            return {"error": "解密失败", "signature": f"{signature:08x}"}
+        try:
+            text = xn_parse.disasm_text(plain, func, 1600)
+        except Exception as exc:
+            return {"error": f"反汇编失败: {exc}", "signature": f"{signature:08x}"}
+        return {
+            "path": row["path"],
+            "signature": f"{signature:08x}",
+            "module": salt,
+            "function": func or "<module>",
+            "disassembly": text,
+        }
+
+    def _uncompyle_exe(self) -> str | None:
+        candidates = [shutil.which("uncompyle6")]
+        for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
+            if not base:
+                continue
+            candidates.extend(glob.glob(str(Path(base) / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
+            candidates.extend(glob.glob(str(Path(base) / "Programs" / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
+        candidates.append(r"C:\Python314\Scripts\uncompyle6.exe")
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+        return None
+
+    def _xn_source(self, row) -> dict:
+        signature = int(row["signature"])
+        salt = self._xn_name_map().get(signature)
+        if not salt:
+            return {"error": "模块名尚未索引", "signature": f"{signature:08x}"}
+        key = (signature, salt, row["packed_hash"])
+        with BrowserServer._xn_source_lock:
+            cached = BrowserServer._xn_source_cache.get(key)
+        if cached is not None:
+            return cached
+        payload = self._entry_payload(row)
+        with BrowserServer._xn_sem:
+            plain = xn_crypto.decrypt(payload, salt)
+        if plain is None:
+            return {"error": "解密失败", "signature": f"{signature:08x}"}
+        try:
+            pyc = xn_decompile.to_pyc(plain)
+        except Exception as exc:
+            return {"error": f"字节码转换失败: {exc}", "signature": f"{signature:08x}"}
+        exe = self._uncompyle_exe()
+        if not exe:
+            return {"error": "未找到 uncompyle6, 无法反编译", "signature": f"{signature:08x}"}
+        tmp = self.server.cache_root / "tmp" / f"{uuid.uuid4().hex}.pyc"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            tmp.write_bytes(pyc)
+            with BrowserServer._xn_decompile_sem:
+                proc = subprocess.run(
+                    [exe, str(tmp)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
+                    cwd=str(tmp.parent),
+                )
+        except subprocess.TimeoutExpired:
+            return {"error": "反编译超时", "signature": f"{signature:08x}"}
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        source = proc.stdout or ""
+        if not source.strip():
+            message = (proc.stderr or "uncompyle6 没有输出").strip().splitlines()[-1]
+            return {"error": f"反编译失败: {message}", "signature": f"{signature:08x}"}
+        result = {
+            "path": row["path"],
+            "signature": f"{signature:08x}",
+            "module": salt,
+            "source": source,
+            "source_bytes": len(source.encode("utf-8")),
+        }
+        with BrowserServer._xn_source_lock:
+            BrowserServer._xn_source_cache[key] = result
+            while len(BrowserServer._xn_source_cache) > 16:
+                BrowserServer._xn_source_cache.pop(next(iter(BrowserServer._xn_source_cache)))
+        return result
+
     def _text_snippet(self, row, max_chars: int, max_lines: int) -> tuple[str, bool]:
         payload = self._entry_payload(row)
         head = payload[: 128 * 1024]
@@ -1199,6 +1298,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(data)
                 return
             if route == "/api/xn":
+                client = (self.client_address[0] or "").lower()
+                try:
+                    address = ipaddress.ip_address(client)
+                    mapped = getattr(address, "ipv4_mapped", None)
+                    allowed = address.is_loopback or (mapped is not None and mapped.is_loopback)
+                except ValueError:
+                    allowed = client == "localhost"
+                if not allowed:
+                    self._error("XN preview is loopback-only", 403)
+                    return
                 path = (query.get("path", [""])[0] or "").strip("/")
                 row = self._row(path)
                 if not row:
@@ -1206,6 +1315,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if (row["ext"] or "").lower() != ".xn":
                     self._error("not an XN file", 415)
+                    return
+                if (query.get("decompile", ["0"])[0] or "") == "1":
+                    self._json(self._xn_source(row))
+                    return
+                if (query.get("disasm", ["0"])[0] or "") == "1":
+                    self._json(self._xn_disasm(row, (query.get("func", [""])[0] or "")))
                     return
                 try:
                     data = self._xn_data(row)

@@ -11,7 +11,7 @@ import struct
 import zstandard
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-MAX_MSGPACK_RAW = 4 * 1024 * 1024
+MAX_MSGPACK_RAW = 64 * 1024 * 1024
 OFFMAP_LIMIT = 50000.0
 REF_RE = re.compile(
     r"[A-Za-z0-9_./\\-]{2,240}\.(?:gim|mesh|kta|dds|ktx|png|jpe?g|tga|bmp|webp|gif|"
@@ -274,7 +274,7 @@ def parse(payload: bytes) -> dict:
     type_counts = {}
 
     for root in objects:
-        budget = [60000]
+        budget = [1500000]
         for node in _walk(root, budget):
             if isinstance(node, dict):
                 if map_name is None:
@@ -294,11 +294,13 @@ def parse(payload: bytes) -> dict:
                     if isinstance(value, bool):
                         egg_island_scene = value
                 group = _key(node, "unit", "units")
+                if not isinstance(group, dict):
+                    group = _key(node, "batch_unit_data")
                 if isinstance(group, dict):
                     for unit_key, unit in group.items():
                         if not isinstance(unit, dict):
                             continue
-                        position = _position(_key(unit, "world_position", "position"))
+                        position = _position(_key(unit, "ctx_world_position", "world_position", "position"))
                         if position is None:
                             continue
                         unit_id = _key(unit, "unit_id")
@@ -308,17 +310,27 @@ def parse(payload: bytes) -> dict:
                             continue
                         name = _text(_key(unit, "name") or "")
                         unit_type = _key(unit, "type", "unit_type")
+                        model_id = _key(unit, "model_id")
+                        model = _text(_key(unit, "ctx_model_path", "model_path", "model") or "")
+                        material = _text(_key(unit, "mat_path", "material_path") or "")
+                        if not name and model:
+                            name = model.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                         eid = _key(unit, "eid")
+                        if not isinstance(eid, int) and isinstance(model_id, int):
+                            eid = model_id
                         camp = _key(unit, "camp_id")
                         parent = _key(unit, "parent_unit_id")
                         color = _color(_key(unit, "paint_area1"))
-                        scale = _vec(_key(unit, "real_scale", "scale"), 3)
-                        angle = _vec(_key(unit, "model_angle"), 3)
+                        scale = _vec(_key(unit, "ctx_real_scale", "real_scale", "scale"), 3)
+                        angle = _vec(_key(unit, "ctx_model_angle", "model_angle"), 3)
                         units[unit_id] = {
                             "id": unit_id,
                             "name": name,
                             "type": unit_type if isinstance(unit_type, int) else None,
                             "eid": eid if isinstance(eid, int) else None,
+                            "model_id": model_id if isinstance(model_id, int) else None,
+                            "model": model,
+                            "material": material,
                             "camp": camp if isinstance(camp, int) else None,
                             "parent": parent if isinstance(parent, int) else 0,
                             "position": [round(item, 3) for item in position],
@@ -341,8 +353,8 @@ def parse(payload: bytes) -> dict:
         "temp_map_id": temp_map_id,
         "egg_island_scene": egg_island_scene,
         "unit_count": len(unit_list),
-        "units": unit_list[:5000],
-        "unit_truncated": len(unit_list) > 5000,
+        "units": unit_list[:12000],
+        "unit_truncated": len(unit_list) > 12000,
         "eids": {str(key): value for key, value in sorted(eids.items())},
         "types": {str(key): value for key, value in sorted(type_counts.items())},
         "references": sorted(references)[:200],
