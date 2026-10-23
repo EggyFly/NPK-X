@@ -163,6 +163,27 @@ def _position(value):
     return values
 
 
+def _vec(value, count):
+    if not isinstance(value, (list, tuple)):
+        return None
+    values = [_number(item) for item in value[:count]]
+    if any(item is None for item in values):
+        return None
+    return [round(item, 3) for item in values]
+
+
+def _color(value):
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return None
+    result = []
+    for item in value[:3]:
+        number = _number(item)
+        if number is None:
+            return None
+        result.append(max(0, min(255, int(round(number)))))
+    return result
+
+
 def _walk(value, budget):
     if budget[0] <= 0:
         return
@@ -290,6 +311,9 @@ def parse(payload: bytes) -> dict:
                         eid = _key(unit, "eid")
                         camp = _key(unit, "camp_id")
                         parent = _key(unit, "parent_unit_id")
+                        color = _color(_key(unit, "paint_area1"))
+                        scale = _vec(_key(unit, "real_scale", "scale"), 3)
+                        angle = _vec(_key(unit, "model_angle"), 3)
                         units[unit_id] = {
                             "id": unit_id,
                             "name": name,
@@ -298,6 +322,9 @@ def parse(payload: bytes) -> dict:
                             "camp": camp if isinstance(camp, int) else None,
                             "parent": parent if isinstance(parent, int) else 0,
                             "position": [round(item, 3) for item in position],
+                            "color": color,
+                            "scale": scale,
+                            "angle": angle,
                         }
                         if isinstance(eid, int):
                             eids[eid] = eids.get(eid, 0) + 1

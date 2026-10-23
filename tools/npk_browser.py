@@ -44,6 +44,8 @@ import rebuild_data
 import resource_inspect
 import image_convert
 import gmp_parse
+import xn_crypto
+import xn_parse
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -357,6 +359,11 @@ class BrowserServer(ThreadingHTTPServer):
     _gmp_sem = threading.Semaphore(2)
     _gmp_cache_lock = threading.Lock()
     _gmp_cache: dict = {}
+    _xn_sem = threading.Semaphore(2)
+    _xn_cache_lock = threading.Lock()
+    _xn_cache: dict = {}
+    _xn_names_lock = threading.Lock()
+    _xn_names = None
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
@@ -884,6 +891,54 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._gmp_cache.pop(next(iter(BrowserServer._gmp_cache)))
         return data
 
+    def _xn_name_map(self) -> dict:
+        with BrowserServer._xn_names_lock:
+            if BrowserServer._xn_names is None:
+                mapping = {}
+                try:
+                    payload = json.loads((Path(__file__).resolve().parent.parent / "data" / "xn_names.json").read_text("utf-8"))
+                    mapping = {int(key): value for key, value in payload.get("map", {}).items()}
+                except (OSError, ValueError, TypeError):
+                    mapping = {}
+                BrowserServer._xn_names = mapping
+            return BrowserServer._xn_names
+
+    def _xn_data(self, row) -> dict:
+        signature = int(row["signature"])
+        salt = self._xn_name_map().get(signature)
+        result = {"path": row["path"], "signature": f"{signature:08x}", "module": salt}
+        payload = self._entry_payload(row)
+        sizes = xn_crypto.header(payload)
+        if not sizes:
+            result.update({"decrypted": False, "reason": "不是有效的 XN 容器"})
+            return result
+        result["compressed"], result["original"] = sizes
+        if not salt:
+            result.update({"decrypted": False, "reason": "模块名尚未索引，无法解密"})
+            return result
+        key = (signature, salt, row["packed_hash"])
+        with BrowserServer._xn_cache_lock:
+            cached = BrowserServer._xn_cache.get(key)
+        if cached is not None:
+            return cached
+        with BrowserServer._xn_sem:
+            plain = xn_crypto.decrypt(payload, salt)
+        if plain is None:
+            result.update({"decrypted": False, "reason": "解密失败"})
+            return result
+        try:
+            preview = xn_parse.preview(plain)
+        except Exception as exc:
+            result.update({"decrypted": False, "reason": f"解析失败: {exc}"})
+            return result
+        result["decrypted"] = True
+        result["preview"] = preview
+        with BrowserServer._xn_cache_lock:
+            BrowserServer._xn_cache[key] = result
+            while len(BrowserServer._xn_cache) > 32:
+                BrowserServer._xn_cache.pop(next(iter(BrowserServer._xn_cache)))
+        return result
+
     def _text_snippet(self, row, max_chars: int, max_lines: int) -> tuple[str, bool]:
         payload = self._entry_payload(row)
         head = payload[: 128 * 1024]
@@ -1140,6 +1195,22 @@ class Handler(BaseHTTPRequestHandler):
                     data = self._gmp_data(row)
                 except Exception as exc:
                     self._error(f"GMP parse failed: {exc}", 415)
+                    return
+                self._json(data)
+                return
+            if route == "/api/xn":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".xn":
+                    self._error("not an XN file", 415)
+                    return
+                try:
+                    data = self._xn_data(row)
+                except Exception as exc:
+                    self._error(f"XN decrypt failed: {exc}", 415)
                     return
                 self._json(data)
                 return
