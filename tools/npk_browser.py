@@ -43,6 +43,7 @@ import bnk_parse
 import rebuild_data
 import resource_inspect
 import image_convert
+import gmp_parse
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -353,6 +354,9 @@ class BrowserServer(ThreadingHTTPServer):
     fingerprint: dict
     _cache_lock = threading.Lock()
     _thumb_sem = threading.Semaphore(3)
+    _gmp_sem = threading.Semaphore(2)
+    _gmp_cache_lock = threading.Lock()
+    _gmp_cache: dict = {}
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
@@ -863,6 +867,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._waveform_thumb(row, width)
         raise ValueError("thumbnail not available for this type")
 
+    def _gmp_data(self, row) -> dict:
+        key = (row["path"], row["signature"], row["packed_hash"])
+        with BrowserServer._gmp_cache_lock:
+            data = BrowserServer._gmp_cache.get(key)
+        if data is not None:
+            return data
+        with BrowserServer._gmp_sem:
+            data = gmp_parse.parse(self._entry_payload(row))
+        data["path"] = row["path"]
+        if not data.get("map_name"):
+            data["map_name"] = Path(row["path"]).stem
+        with BrowserServer._gmp_cache_lock:
+            BrowserServer._gmp_cache[key] = data
+            while len(BrowserServer._gmp_cache) > 8:
+                BrowserServer._gmp_cache.pop(next(iter(BrowserServer._gmp_cache)))
+        return data
+
     def _text_snippet(self, row, max_chars: int, max_lines: int) -> tuple[str, bool]:
         payload = self._entry_payload(row)
         head = payload[: 128 * 1024]
@@ -1105,6 +1126,22 @@ class Handler(BaseHTTPRequestHandler):
                         "kind": row["kind"], "ext": row["ext"],
                     }
                 )
+                return
+            if route == "/api/gmp":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".gmp":
+                    self._error("not a GMP file", 415)
+                    return
+                try:
+                    data = self._gmp_data(row)
+                except Exception as exc:
+                    self._error(f"GMP parse failed: {exc}", 415)
+                    return
+                self._json(data)
                 return
             if route == "/api/inspect":
                 path = (query.get("path", [""])[0] or "").strip("/")

@@ -119,6 +119,8 @@ function isTextView(file) {
 
 function itemAction(file) {
   const kind = displayKind(file.kind, file.ext);
+  const ext = (file.ext || "").toLowerCase();
+  if (ext === ".gmp") return { name: "view", label: "地图预览", icon: "map" };
   if (kind === "audio") return { name: "play", label: "播放", icon: "play" };
   if (kind === "image" || isTextView(file)) return { name: "view", label: "放大查看", icon: "zoom" };
   return { name: "preview", label: "放大查看", icon: "zoom" };
@@ -799,6 +801,50 @@ function renderInspect(info, container) {
     : "未找到可读字段；可以展开 Hex 或下载原文件。";
 }
 
+function renderGmpPreview(data, container) {
+  container.classList.add("gmp-mode");
+  const units = data.units || [];
+  const refs = data.references || [];
+  const chips = [
+    `<span class="bank-chip">单位 <b>${Number(data.unit_count || 0).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">块 <b>${Number((data.chunks || []).length).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">MessagePack <b>${Number(data.parsed_chunks || 0).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">二进制 <b>${Number(data.binary_chunks || 0).toLocaleString()}</b></span>`,
+  ].join("");
+  const unitRows = units.slice(0, 200).map((unit) => {
+    const position = (unit.position || []).map((value) => Number(value).toFixed(1)).join(", ");
+    const label = unit.name || `单位 ${unit.id}`;
+    return `<div class="gmp-unit" title="${esc(label)}">
+      <span class="gmp-unit-name">${esc(label)}</span>
+      <span class="gmp-unit-meta">${esc(String(unit.eid ?? unit.type ?? "—"))} · ${esc(position)}</span>
+    </div>`;
+  }).join("");
+  container.innerHTML = `<div class="gmp-preview">
+    <div class="gmp-head">
+      <div class="gmp-title">
+        <b>${esc(data.map_name || "地图")}</b>
+        <span>${Number(data.unit_count || 0).toLocaleString()} 个单位 · ${Number((data.chunks || []).length).toLocaleString()} 个数据块</span>
+      </div>
+      <button class="btn primary" id="gmp-open-map" type="button">${icon("map")}地图画布</button>
+    </div>
+    <div class="bank-chips">${chips}</div>
+    ${units.length
+      ? `<div class="section-title">单位（${Math.min(units.length, 200)}${units.length > 200 ? " / " + units.length : ""}）</div><div class="gmp-units">${unitRows}</div>`
+      : `<div class="note">没有解析到可显示的单位坐标。</div>`}
+    ${refs.length ? `<div class="section-title">引用资源</div><div class="inspect-refs">${refs.slice(0, 80).map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
+  </div>`;
+  const open = container.querySelector("#gmp-open-map");
+  if (open) {
+    open.addEventListener("click", () => {
+      const file = state.files.find((item) => item.path === data.path);
+      if (file) openViewer(file);
+    });
+  }
+  $("preview-note").textContent = units.length
+    ? `地图布局：${Number(data.unit_count || 0).toLocaleString()} 个单位；点击“地图画布”可拖动、缩放查看。`
+    : "已读取地图块，但没有可绘制的单位坐标；可下载原文件进一步分析。";
+}
+
 function metadataRows(info) {
   const rows = [
     ["路径", info.path],
@@ -863,6 +909,38 @@ const viewer = {
 };
 let viewerCloseTimer = 0;
 
+const mapView = {
+  data: null, file: null, canvas: null, ctx: null, stage: null,
+  width: 1, height: 1, dpr: 1,
+  centerX: 0, centerZ: 0, scale: 1, fitScale: 1,
+  dotSize: Math.min(16, Math.max(3, Number(localStorage.getItem("npk-map-dot-size")) || 6)),
+  dragging: false, dragX: 0, dragY: 0,
+  minimap: null, minimapCtx: null, minimapBox: null,
+  minimapBase: null,
+  frame: 0,
+};
+
+const MAP_EID_LABEL = {
+  100001: "触发器", 100007: "出生点", 100008: "捡拾物",
+  100024: "移动平台", 100029: "齿轮", 100060: "道具箱", 900001: "地板",
+};
+const MAP_EID_COLOR = {
+  100001: "#ff8d8d", 100007: "#6ee7d8", 100008: "#ffd166",
+  100024: "#8fc7ff", 100029: "#ffa0d2", 100060: "#ff9f43", 900001: "#5f7186",
+};
+const MAP_FALLBACK_COLORS = ["#8fc7ff", "#6ee7d8", "#ffd166", "#ff9f43", "#b7a8ff", "#ff8d8d"];
+
+function mapColor(eid) {
+  const key = Number(eid);
+  if (MAP_EID_COLOR[key]) return MAP_EID_COLOR[key];
+  const index = Math.abs(Number.isFinite(key) ? key : 0) % MAP_FALLBACK_COLORS.length;
+  return MAP_FALLBACK_COLORS[index];
+}
+
+function mapUnitColor(unit) {
+  return mapColor(unit.eid ?? unit.type ?? 0);
+}
+
 function viewerIsOpen() {
   return !$("viewer").classList.contains("hidden");
 }
@@ -880,17 +958,38 @@ function openViewer(file) {
   const token = viewer.token;
   viewer.file = file;
   viewer.path = file.path;
-  viewer.mode = isTextView(file) ? "text" : "image";
+  const ext = (file.ext || "").toLowerCase();
+  viewer.mode = ext === ".gmp" ? "map" : isTextView(file) ? "text" : "image";
   $("viewer-name").textContent = file.name;
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
-  if (viewer.mode === "image") openImageViewer(file, token);
-  else openTextViewer(file, token);
+  if (viewer.mode === "map") {
+    openMapViewer(file, token);
+  } else if (viewer.mode === "image") {
+    openImageViewer(
+      file, token,
+      apiUrl("/api/image", { path: file.path }),
+      apiUrl("/api/thumb", { path: file.path, w: 360, v: 3 })
+    );
+  } else {
+    openTextViewer(file, token);
+  }
 }
 
 function clearViewerContent() {
+  if (mapView.frame) cancelAnimationFrame(mapView.frame);
+  mapView.frame = 0;
+  mapView.data = null;
+  mapView.file = null;
+  mapView.canvas = null;
+  mapView.ctx = null;
+  mapView.minimap = null;
+  mapView.minimapCtx = null;
+  mapView.minimapBox = null;
+  mapView.minimapBase = null;
+  mapView.dragging = false;
   $("viewer-name").textContent = "";
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -921,8 +1020,8 @@ function closeViewer() {
   }, 340);
 }
 
-function imageViewerFoot(file) {
-  const mapUrl = apiUrl("/api/thumb", { path: file.path, w: 360, v: 3 });
+function imageViewerFoot(file, mapUrl) {
+  const mapSource = mapUrl || apiUrl("/api/thumb", { path: file.path, w: 360, v: 3 });
   return `<div class="viewer-zoom">
     <button class="icon-btn" id="viewer-zoom-out" title="缩小" aria-label="缩小">${icon("minus")}</button>
     <label class="viewer-zoom-value"><input id="viewer-zoom-input" type="number" min="5" max="800" step="1" value="100"><span>%</span></label>
@@ -930,15 +1029,16 @@ function imageViewerFoot(file) {
     <button class="mini-btn" id="viewer-zoom-fit" title="适应窗口">${icon("fit")}适应</button>
   </div>
   <div class="viewer-map" id="viewer-map">
-    <img id="viewer-map-img" alt="" src="${esc(mapUrl)}">
+    <img id="viewer-map-img" alt="" src="${esc(mapSource)}">
     <div class="viewer-map-view" id="viewer-map-view"></div>
   </div>`;
 }
 
-function openImageViewer(file, token) {
+function openImageViewer(file, token, sourceUrl, mapUrl) {
   const stage = $("viewer-stage");
-  $("viewer-foot").innerHTML = imageViewerFoot(file);
-  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在加载原图…</div>`;
+  const isMap = (file.ext || "").toLowerCase() === ".gmp";
+  $("viewer-foot").innerHTML = imageViewerFoot(file, mapUrl);
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${isMap ? "正在解析地图…" : "正在加载原图…"}</div>`;
   const img = new Image();
   img.id = "viewer-image";
   img.alt = file.name;
@@ -955,9 +1055,9 @@ function openImageViewer(file, token) {
   }, { once: true });
   img.addEventListener("error", () => {
     if (token !== viewer.token) return;
-    stage.innerHTML = `<div class="errorbox">图片加载失败</div>`;
+    stage.innerHTML = `<div class="errorbox">${isMap ? "地图加载失败" : "图片加载失败"}</div>`;
   }, { once: true });
-  img.src = apiUrl("/api/image", { path: file.path });
+  img.src = sourceUrl;
 }
 
 function layoutImageViewer() {
@@ -1223,6 +1323,522 @@ function bindTextViewerMap() {
   wrap.addEventListener("scroll", updateTextViewerMap, { passive: true });
 }
 
+function mapAxis() {
+  return mapView.data?.bounds?.axis === "xy" ? "xy" : "xz";
+}
+
+function mapPoint(unit) {
+  const pos = unit.position || [];
+  return mapAxis() === "xy" ? [pos[0], pos[1]] : [pos[0], pos[2]];
+}
+
+function mapUnits() {
+  const data = mapView.data;
+  if (!data) return [];
+  const axis = mapAxis();
+  return (data.units || []).filter((unit) => {
+    const pos = unit.position;
+    if (!Array.isArray(pos) || pos.length < 3) return false;
+    const x = pos[0];
+    const z = axis === "xy" ? pos[1] : pos[2];
+    return Number.isFinite(x) && Number.isFinite(z) && Math.abs(x) < 50000 && Math.abs(z) < 50000;
+  });
+}
+
+function mapNiceStep(raw) {
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  const power = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / power;
+  return (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * power;
+}
+
+function mapFormat(value, step) {
+  const rounded = Math.abs(value) < 1e-9 ? 0 : value;
+  if (step >= 1) return String(Math.round(rounded));
+  if (step >= 0.1) return rounded.toFixed(1);
+  return rounded.toFixed(2);
+}
+
+async function openMapViewer(file, token) {
+  mapView.file = file;
+  mapView.data = null;
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在解析地图布局…</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
+    if (token !== viewer.token) return;
+    mapView.data = data;
+    renderMapStage(file, data);
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">地图解析失败：${esc(error.message)}</div>`;
+  }
+}
+
+function renderMapStage(file, data) {
+  const stage = $("viewer-stage");
+  stage.innerHTML = `<canvas id="map-canvas" class="map-canvas" aria-label="地图画布"></canvas>
+    <div class="map-hud" id="map-hud"></div>
+    <div class="map-legend" id="map-legend"></div>
+    ${!data.unit_count || !data.bounds ? `<div class="map-empty">没有可绘制的单位坐标；详情面板中有数据块统计</div>` : ""}`;
+  $("viewer-foot").innerHTML = mapFoot();
+  mapView.stage = stage;
+  mapView.canvas = $("map-canvas");
+  mapView.ctx = mapView.canvas.getContext("2d");
+  mapView.minimap = $("map-minimap-canvas");
+  mapView.minimapCtx = mapView.minimap ? mapView.minimap.getContext("2d") : null;
+  mapView.dragging = false;
+  fitMapView();
+  resizeMapCanvas();
+  bindMapControls(file);
+  buildMapLegend();
+  drawMap();
+}
+
+function mapFoot() {
+  return `<div class="viewer-zoom">
+    <button class="icon-btn" id="map-zoom-out" title="缩小" aria-label="缩小">${icon("minus")}</button>
+    <label class="viewer-zoom-value"><input id="map-zoom-input" type="number" min="5" max="2000" step="1" value="100"><span>%</span></label>
+    <button class="icon-btn" id="map-zoom-in" title="放大" aria-label="放大">${icon("plus")}</button>
+    <button class="mini-btn" id="map-zoom-fit" title="适应窗口">${icon("fit")}适应</button>
+    <label class="map-dot-control">点 <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
+  </div>
+  <div class="viewer-map">
+    <canvas id="map-minimap-canvas" class="viewer-map-canvas"></canvas>
+  </div>`;
+}
+
+function fitMapView() {
+  if (!mapView.stage) return;
+  const w = Math.max(1, mapView.stage.clientWidth);
+  const h = Math.max(1, mapView.stage.clientHeight);
+  mapView.width = w;
+  mapView.height = h;
+  const bounds = mapView.data?.bounds;
+  if (!bounds) {
+    mapView.centerX = 0;
+    mapView.centerZ = 0;
+    mapView.fitScale = 24;
+    mapView.scale = 24;
+  } else {
+    const spanX = Math.max(1, bounds.max_x - bounds.min_x);
+    const spanZ = Math.max(1, bounds.max_y - bounds.min_y);
+    mapView.centerX = (bounds.min_x + bounds.max_x) / 2;
+    mapView.centerZ = (bounds.min_y + bounds.max_y) / 2;
+    mapView.fitScale = Math.max(0.02, Math.min(80, Math.min(Math.max(80, w - 120) / spanX, Math.max(80, h - 120) / spanZ)));
+    mapView.scale = mapView.fitScale;
+  }
+  updateMapZoomInput();
+  updateMapHud();
+}
+
+function resizeMapCanvas() {
+  const canvas = mapView.canvas;
+  const stage = mapView.stage;
+  if (!canvas || !stage) return;
+  const w = Math.max(1, stage.clientWidth);
+  const h = Math.max(1, stage.clientHeight);
+  const dpr = window.devicePixelRatio || 1;
+  mapView.width = w;
+  mapView.height = h;
+  mapView.dpr = dpr;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width = "100%";
+  canvas.style.height = "100%";
+  mapView.minimapBase = null;
+  if (mapView.ctx) mapView.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawMap();
+}
+
+function updateMapHud() {
+  const hud = $("map-hud");
+  if (!hud) return;
+  const second = mapAxis() === "xz" ? "Z" : "Y";
+  hud.textContent = `X ${mapView.centerX.toFixed(1)} · ${second} ${mapView.centerZ.toFixed(1)}`;
+}
+
+function updateMapZoomInput() {
+  const input = $("map-zoom-input");
+  if (!input || document.activeElement === input) return;
+  input.value = Math.round((mapView.scale / (mapView.fitScale || 1)) * 100);
+}
+
+function setMapScale(next, ax, ay) {
+  if (!mapView.canvas) return;
+  const fit = mapView.fitScale || 1;
+  const scale = Math.max(fit * 0.05, Math.min(fit * 20, next));
+  const w = mapView.width;
+  const h = mapView.height;
+  const anchorX = ax === undefined ? w / 2 : ax;
+  const anchorY = ay === undefined ? h / 2 : ay;
+  const old = mapView.scale || 1;
+  const worldX = mapView.centerX + (anchorX - w / 2) / old;
+  const worldZ = mapView.centerZ - (anchorY - h / 2) / old;
+  mapView.scale = scale;
+  mapView.centerX = worldX - (anchorX - w / 2) / scale;
+  mapView.centerZ = worldZ + (anchorY - h / 2) / scale;
+  updateMapZoomInput();
+  updateMapHud();
+  requestMapDraw();
+}
+
+function requestMapDraw() {
+  if (mapView.frame) return;
+  mapView.frame = requestAnimationFrame(() => {
+    mapView.frame = 0;
+    drawMap();
+  });
+}
+
+function drawMap() {
+  const ctx = mapView.ctx;
+  if (!ctx || !mapView.canvas) return;
+  const w = mapView.width;
+  const h = mapView.height;
+  const scale = mapView.scale || 1;
+  ctx.setTransform(mapView.dpr, 0, 0, mapView.dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#080e15";
+  ctx.fillRect(0, 0, w, h);
+
+  const step = mapNiceStep(80 / scale);
+  const halfW = w / (2 * scale);
+  const halfH = h / (2 * scale);
+  const minX = mapView.centerX - halfW;
+  const maxX = mapView.centerX + halfW;
+  const minZ = mapView.centerZ - halfH;
+  const maxZ = mapView.centerZ + halfH;
+
+  ctx.strokeStyle = "#111c27";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
+    const sx = w / 2 + (x - mapView.centerX) * scale;
+    ctx.moveTo(sx, 0);
+    ctx.lineTo(sx, h);
+  }
+  for (let z = Math.ceil(minZ / step) * step; z <= maxZ; z += step) {
+    const sy = h / 2 - (z - mapView.centerZ) * scale;
+    ctx.moveTo(0, sy);
+    ctx.lineTo(w, sy);
+  }
+  ctx.stroke();
+
+  drawMapUnits(ctx, w, h, scale);
+
+  ctx.strokeStyle = "rgba(232, 238, 247, .22)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 8, h / 2);
+  ctx.lineTo(w / 2 + 8, h / 2);
+  ctx.moveTo(w / 2, h / 2 - 8);
+  ctx.lineTo(w / 2, h / 2 + 8);
+  ctx.stroke();
+
+  drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ);
+  drawMapMinimap();
+}
+
+function drawMapUnits(ctx, w, h, scale) {
+  const units = mapUnits();
+  if (!units.length) return;
+  const radius = Math.max(3, Math.min(16, mapView.dotSize));
+  const boxes = [];
+  let labels = 0;
+  ctx.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.textBaseline = "middle";
+  for (const unit of units) {
+    const [x, z] = mapPoint(unit);
+    const sx = w / 2 + (x - mapView.centerX) * scale;
+    const sy = h / 2 - (z - mapView.centerZ) * scale;
+    if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) continue;
+    ctx.beginPath();
+    ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = mapUnitColor(unit);
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#0b1219";
+    ctx.stroke();
+    const name = unit.name || "";
+    if (!name || labels >= 160) continue;
+    const width = ctx.measureText(name).width;
+    const lx = sx + radius + 3;
+    const ly = sy;
+    if (lx + width > w - 4 || ly < 28 || ly > h - 6) continue;
+    const box = [lx, ly - 7, lx + width, ly + 7];
+    if (boxes.some((other) => box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])) continue;
+    ctx.strokeStyle = "#0b1219";
+    ctx.lineWidth = 3;
+    ctx.strokeText(name, lx, ly);
+    ctx.fillStyle = "#dae5f0";
+    ctx.fillText(name, lx, ly);
+    boxes.push(box);
+    labels += 1;
+  }
+}
+
+function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
+  const top = 24;
+  const left = 44;
+  ctx.fillStyle = "rgba(10, 17, 25, .94)";
+  ctx.fillRect(0, 0, w, top);
+  ctx.fillRect(0, 0, left, h);
+  ctx.strokeStyle = "#223043";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, top + 0.5);
+  ctx.lineTo(w, top + 0.5);
+  ctx.moveTo(left + 0.5, 0);
+  ctx.lineTo(left + 0.5, h);
+  ctx.stroke();
+  ctx.font = '10px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#c7d4e4";
+  ctx.fillText(`X / ${mapAxis() === "xz" ? "Z" : "Y"}`, 6, top / 2);
+  ctx.fillStyle = "#8495ab";
+  for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
+    const sx = w / 2 + (x - mapView.centerX) * scale;
+    if (sx < left) continue;
+    ctx.strokeStyle = "#3a4e66";
+    ctx.beginPath();
+    ctx.moveTo(sx, 0);
+    ctx.lineTo(sx, 6);
+    ctx.stroke();
+    ctx.fillText(mapFormat(x, step), sx + 3, top / 2 + 2);
+  }
+  for (let z = Math.ceil(minZ / step) * step; z <= maxZ; z += step) {
+    const sy = h / 2 - (z - mapView.centerZ) * scale;
+    if (sy < top) continue;
+    ctx.strokeStyle = "#3a4e66";
+    ctx.beginPath();
+    ctx.moveTo(0, sy);
+    ctx.lineTo(4, sy);
+    ctx.stroke();
+    ctx.fillText(mapFormat(z, step), 12, sy);
+  }
+  ctx.textAlign = "left";
+}
+
+function buildMapMinimapBase() {
+  const canvas = mapView.minimap;
+  if (!canvas || !mapView.data) {
+    mapView.minimapBase = null;
+    return;
+  }
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!w || !h) {
+    mapView.minimapBase = null;
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const base = document.createElement("canvas");
+  base.width = Math.round(w * dpr);
+  base.height = Math.round(h * dpr);
+  const ctx = base.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0a1119";
+  ctx.fillRect(0, 0, w, h);
+  const bounds = mapView.data.bounds;
+  let minX, maxX, minZ, maxZ;
+  if (bounds) {
+    const padX = Math.max(1, (bounds.max_x - bounds.min_x) * 0.05);
+    const padZ = Math.max(1, (bounds.max_y - bounds.min_y) * 0.05);
+    minX = bounds.min_x - padX;
+    maxX = bounds.max_x + padX;
+    minZ = bounds.min_y - padZ;
+    maxZ = bounds.max_y + padZ;
+  } else {
+    minX = mapView.centerX - 100;
+    maxX = mapView.centerX + 100;
+    minZ = mapView.centerZ - 100;
+    maxZ = mapView.centerZ + 100;
+  }
+  const spanX = Math.max(1, maxX - minX);
+  const spanZ = Math.max(1, maxZ - minZ);
+  const ms = Math.min((w - 8) / spanX, (h - 8) / spanZ);
+  const left = (w - spanX * ms) / 2;
+  const top = (h - spanZ * ms) / 2;
+  const box = { left, top, ms, minX, maxZ };
+  ctx.fillStyle = "rgba(143, 199, 255, .55)";
+  for (const unit of mapUnits()) {
+    const [x, z] = mapPoint(unit);
+    const mx = left + (x - minX) * ms;
+    const my = top + (maxZ - z) * ms;
+    ctx.beginPath();
+    ctx.arc(mx, my, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  mapView.minimapBase = { canvas: base, box };
+  mapView.minimapBox = box;
+}
+
+function drawMapMinimap() {
+  const canvas = mapView.minimap;
+  const ctx = mapView.minimapCtx;
+  if (!canvas || !ctx) return;
+  if (!mapView.minimapBase) buildMapMinimapBase();
+  const base = mapView.minimapBase;
+  if (!base) return;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!w || !h) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(base.canvas, 0, 0, w, h);
+  const box = base.box;
+  mapView.minimapBox = box;
+  const viewW = mapView.width / (mapView.scale || 1);
+  const viewH = mapView.height / (mapView.scale || 1);
+  const vx = box.left + (mapView.centerX - viewW / 2 - box.minX) * box.ms;
+  const vy = box.top + (box.maxZ - (mapView.centerZ + viewH / 2)) * box.ms;
+  ctx.fillStyle = "rgba(110, 231, 216, .1)";
+  ctx.strokeStyle = "#6ee7d8";
+  ctx.lineWidth = 1;
+  ctx.fillRect(vx, vy, viewW * box.ms, viewH * box.ms);
+  ctx.strokeRect(vx + 0.5, vy + 0.5, Math.max(1, viewW * box.ms - 1), Math.max(1, viewH * box.ms - 1));
+}
+
+function bindMapControls(file) {
+  const canvas = mapView.canvas;
+  if (!canvas) return;
+  $("map-zoom-in").addEventListener("click", () => setMapScale(mapView.scale * 1.25));
+  $("map-zoom-out").addEventListener("click", () => setMapScale(mapView.scale / 1.25));
+  $("map-zoom-fit").addEventListener("click", () => {
+    fitMapView();
+    resizeMapCanvas();
+  });
+  const zoomInput = $("map-zoom-input");
+  zoomInput.addEventListener("change", () => {
+    const value = Number(zoomInput.value);
+    if (Number.isFinite(value) && value > 0) setMapScale(mapView.fitScale * value / 100);
+    else updateMapZoomInput();
+  });
+  zoomInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      zoomInput.blur();
+    }
+  });
+  const dot = $("map-dot-size");
+  dot.value = String(mapView.dotSize);
+  dot.addEventListener("input", () => {
+    mapView.dotSize = Math.max(3, Math.min(16, Number(dot.value) || 6));
+    localStorage.setItem("npk-map-dot-size", String(mapView.dotSize));
+    updateMapLegendDots();
+    requestMapDraw();
+  });
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    mapView.dragging = true;
+    mapView.dragX = event.clientX;
+    mapView.dragY = event.clientY;
+    canvas.classList.add("dragging");
+    try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!mapView.dragging) return;
+    const scale = mapView.scale || 1;
+    mapView.centerX -= (event.clientX - mapView.dragX) / scale;
+    mapView.centerZ += (event.clientY - mapView.dragY) / scale;
+    mapView.dragX = event.clientX;
+    mapView.dragY = event.clientY;
+    updateMapHud();
+    requestMapDraw();
+  });
+  const endDrag = (event) => {
+    if (!mapView.dragging) return;
+    mapView.dragging = false;
+    canvas.classList.remove("dragging");
+    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    setMapScale(mapView.scale * factor, event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+  bindMapMinimap();
+}
+
+function bindMapMinimap() {
+  const canvas = mapView.minimap;
+  if (!canvas) return;
+  let dragging = false;
+  const centerFrom = (event) => {
+    const box = mapView.minimapBox;
+    if (!box) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+    mapView.centerX = box.minX + (mx - box.left) / box.ms;
+    mapView.centerZ = box.maxZ - (my - box.top) / box.ms;
+    updateMapHud();
+    requestMapDraw();
+  };
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+    centerFrom(event);
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (dragging) centerFrom(event);
+  });
+  const end = (event) => {
+    dragging = false;
+    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+}
+
+function buildMapLegend() {
+  const data = mapView.data;
+  const panel = $("map-legend");
+  if (!data || !panel) return;
+  const labels = {};
+  for (const unit of data.units || []) {
+    const eid = unit.eid;
+    if (eid == null || labels[eid]) continue;
+    const base = String(unit.name || "").replace(/\d+$/, "").trim();
+    if (base) labels[eid] = base;
+  }
+  const rows = Object.entries(data.eids || {})
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 10)
+    .map(([eidText, count]) => {
+      const eid = Number(eidText);
+      const color = mapColor(eid);
+      const label = MAP_EID_LABEL[eid] || labels[eid] || `类型 ${eidText}`;
+      return `<div class="map-legend-row">
+        <span class="map-legend-dot" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color}"></span>
+        <span class="map-legend-name">${esc(label)}</span>
+        <span class="map-legend-count">${Number(count).toLocaleString()}</span>
+      </div>`;
+    })
+    .join("");
+  panel.innerHTML = `<div class="map-legend-head"><b>${esc(data.map_name || "地图")}</b><span>${Number(data.unit_count || 0).toLocaleString()} 单位</span></div>${rows || `<div class="map-legend-empty">没有单位</div>`}`;
+}
+
+function updateMapLegendDots() {
+  document.querySelectorAll(".map-legend-dot").forEach((dot) => {
+    dot.style.width = `${mapView.dotSize}px`;
+    dot.style.height = `${mapView.dotSize}px`;
+  });
+}
+
 let audioPlayer = null;
 let audioCard = null;
 let audioPath = null;
@@ -1384,7 +2000,7 @@ async function showPreview(file) {
   $("preview-name").textContent = file.name;
   $("preview-badge").textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
   $("preview-badge").className = `badge ${displayKind(file.kind, file.ext)}`;
-  $("preview-media").classList.remove("swap-in");
+  $("preview-media").classList.remove("swap-in", "gmp-mode");
   $("preview-media").innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
   $("preview-meta").innerHTML = metaSkeleton();
   $("preview-note").textContent = "正在读取文件信息…";
@@ -1410,7 +2026,13 @@ async function showPreview(file) {
   const media = $("preview-media");
   const kind = info.kind;
   try {
-    if (kind === "image") {
+    if ((info.ext || "").toLowerCase() === ".gmp") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = "正在解析地图布局…";
+      const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
+      if (token !== previewToken) return;
+      renderGmpPreview(data, media);
+    } else if (kind === "image") {
       const url = apiUrl("/api/image", { path: file.path });
       media.innerHTML = `<div class="preview-image">
         <span class="preview-image-skeleton skeleton" aria-hidden="true"></span>
@@ -1475,6 +2097,8 @@ function openDrawerPanel() {
   drawer.classList.remove("hidden");
   overlay.classList.remove("hidden");
   drawer.setAttribute("aria-hidden", "false");
+  const body = drawer.querySelector(".drawer-body");
+  if (body) body.scrollTop = 0;
   void drawer.offsetWidth;
   void overlay.offsetWidth;
   drawer.classList.add("open");
@@ -1661,6 +2285,8 @@ function bind() {
     else if (viewer.mode === "text") {
       drawTextViewerMap($("viewer-text")?.textContent || "");
       updateTextViewerMap();
+    } else if (viewer.mode === "map") {
+      resizeMapCanvas();
     }
   });
   if (window.ResizeObserver) {
