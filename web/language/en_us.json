@@ -316,6 +316,7 @@
     "batch.eachHint": "{count} files will save in turn",
     "batch.done": "Downloads done",
     "batch.eachDoneHint": "Triggered {count} downloads",
-    "batch.failed": "Download failed"
+    "batch.failed": "Download failed",
+    "gmp.verts": "Vertices"
   }
 }

@@ -316,6 +316,7 @@
     "batch.eachHint": "{count} 個檔案將依序儲存",
     "batch.done": "下載完成",
     "batch.eachDoneHint": "已觸發 {count} 個檔案的下載",
-    "batch.failed": "下載失敗"
+    "batch.failed": "下載失敗",
+    "gmp.verts": "頂點"
   }
 }

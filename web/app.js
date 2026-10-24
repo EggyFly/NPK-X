@@ -299,6 +299,7 @@ function itemAction(file) {
   const kind = displayKind(file.kind, file.ext);
   const ext = (file.ext || "").toLowerCase();
   if (ext === ".gmp") return { name: "view", label: tr("action.map"), icon: "map" };
+  if (ext === ".gim") return { name: "gim", label: tr("action.view"), icon: "map" };
   if (ext === ".xn") return { name: "script", label: tr("action.script"), icon: "code" };
   if (kind === "audio") return { name: "play", label: tr("action.play"), icon: "play" };
   if (kind === "image" || isTextView(file)) return { name: "view", label: tr("action.view"), icon: "zoom" };
@@ -2533,6 +2534,42 @@ function renderNeoXPreview(data, container, file) {
     : tr("gmp.noteNoUnits");
 }
 
+async function openGimDirect(file) {
+  closeDrawer();
+  if (viewerCloseTimer) {
+    clearTimeout(viewerCloseTimer);
+    viewerCloseTimer = 0;
+  }
+  const node = $("viewer");
+  node.classList.remove("hidden", "closing", "open");
+  node.setAttribute("aria-hidden", "false");
+  viewer.token += 1;
+  const token = viewer.token;
+  viewer.file = file;
+  viewer.path = file.path;
+  viewer.mode = "image";
+  $("viewer-name").textContent = file.name;
+  $("viewer-foot").innerHTML = "";
+  $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  void node.offsetWidth;
+  node.classList.add("open");
+  lockViewerScroll();
+  try {
+    const data = await getJson(apiUrl("/api/neox", { path: file.path }));
+    if (token !== viewer.token) return;
+    if (!data.mesh_data) throw new Error(tr("gmp.noUnits"));
+    $("viewer-foot").innerHTML = `<div class="viewer-zoom">
+      <button class="icon-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
+    </div>`;
+    const reset = $("gim-reset");
+    if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
+    renderGim3D($("viewer-stage"), data.mesh_data, token);
+  } catch (error) {
+    if (token !== viewer.token) return;
+    $("viewer-stage").innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
 function openGimViewer(file, data) {
   closeDrawer();
   if (viewerCloseTimer) {
@@ -2563,7 +2600,7 @@ function openGimViewer(file, data) {
   }
 }
 
-const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null };
+const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null, indices: null };
 
 function renderGim3D(stage, meshData, token) {
   const verts = meshData.vertices || [];
@@ -2576,12 +2613,14 @@ function renderGim3D(stage, meshData, token) {
     const d = Math.hypot(v[0] - cx, v[1] - cy, v[2] - cz);
     if (d > radius) radius = d;
   }
+  const indices = (meshData.indices || []).filter((v) => v < verts.length);
   stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
-    <div class="map-hud">${Number(verts.length).toLocaleString()} verts</div>`;
+    <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${indices.length ? `${Math.floor(indices.length / 3)} tris` : "wire"}</div>`;
   const canvas = $("gim-canvas");
   const ctx = canvas.getContext("2d");
   gim3d.canvas = canvas;
   gim3d.verts = { verts, cx, cy, cz, radius };
+  gim3d.indices = indices;
   gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1;
   const reset = $("gim-reset");
   if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
@@ -2622,12 +2661,46 @@ function renderGim3D(stage, meshData, token) {
       return [w / 2 + x2 * zoom, h / 2 - y2 * zoom, z3];
     };
     const projected = vs.map(project);
+    const indices = gim3d.indices || [];
+    if (indices.length >= 3) {
+      // 深度排序后画三角形 (背面前置)
+      const tris = [];
+      for (let i = 0; i + 2 < indices.length; i += 3) {
+        const a = projected[indices[i]], b = projected[indices[i + 1]], c = projected[indices[i + 2]];
+        if (!a || !b || !c) continue;
+        const depth = (a[2] + b[2] + c[2]) / 3;
+        const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        tris.push({ a, b, c, depth, cross });
+      }
+      tris.sort((p, q) => p.depth - q.depth);
+      for (const tri of tris) {
+        if (tri.cross >= 0) continue;
+        ctx.fillStyle = `rgba(110,231,216,${0.25 + 0.45 * Math.max(0, 1 - Math.abs(tri.depth) / (rad * 2))})`;
+        ctx.beginPath();
+        ctx.moveTo(tri.a[0], tri.a[1]);
+        ctx.lineTo(tri.b[0], tri.b[1]);
+        ctx.lineTo(tri.c[0], tri.c[1]);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
     ctx.strokeStyle = "rgba(110,231,216,.45)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 0; i + 1 < vs.length; i += 1) {
-      ctx.moveTo(projected[i][0], projected[i][1]);
-      ctx.lineTo(projected[i + 1][0], projected[i + 1][1]);
+    if (indices.length >= 3) {
+      for (let i = 0; i + 2 < indices.length; i += 3) {
+        const a = projected[indices[i]], b = projected[indices[i + 1]], c = projected[indices[i + 2]];
+        if (!a || !b || !c) continue;
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.lineTo(c[0], c[1]);
+        ctx.closePath();
+      }
+    } else {
+      for (let i = 0; i + 1 < vs.length; i += 1) {
+        ctx.moveTo(projected[i][0], projected[i][1]);
+        ctx.lineTo(projected[i + 1][0], projected[i + 1][1]);
+      }
     }
     ctx.stroke();
     ctx.fillStyle = "rgba(255,209,102,.75)";
@@ -3049,6 +3122,7 @@ function bind() {
         if (action.dataset.action === "play") playAudio(match);
         else if (action.dataset.action === "view") openViewer(match);
         else if (action.dataset.action === "script") openScriptViewer(match);
+        else if (action.dataset.action === "gim") openGimDirect(match);
         else showPreview(match);
       }
       return;

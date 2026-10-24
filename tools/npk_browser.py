@@ -45,6 +45,7 @@ import bnk_parse
 import rebuild_data
 import resource_inspect
 import neox_object
+import mesh_parse
 import image_convert
 import gmp_parse
 import xn_crypto
@@ -1117,6 +1118,46 @@ class Handler(BaseHTTPRequestHandler):
             return self._waveform_thumb(row, width)
         raise ValueError("thumbnail not available for this type")
 
+    def _resolve_ref(self, base_path: str, ref: str) -> str | None:
+        target = [p for p in ref.replace("\\", "/").split("/") if p not in ("", ".")]
+        candidate = "/".join(target)
+        if self._row(candidate):
+            return candidate
+        stack = [p for p in base_path.split("/") if p]
+        if stack:
+            stack.pop()
+        for part in target:
+            if part == "..":
+                if stack:
+                    stack.pop()
+            else:
+                stack.append(part)
+        candidate = "/".join(stack)
+        if self._row(candidate):
+            return candidate
+        overlap = candidate.rfind(target[0]) if target else -1
+        if overlap > 0:
+            candidate = candidate[overlap:]
+            if self._row(candidate):
+                return candidate
+        return None
+
+    def _gim_bounds(self, data: dict) -> tuple[list | None, list | None]:
+        for obj in data.get("objects", []):
+            text = obj.get("BoundingInfo")
+            if not isinstance(text, str) or "),(" not in text:
+                continue
+            try:
+                left, right = text.split("),(", 1)
+                center = [float(v) for v in left.strip("()").split(",")]
+                half_text = right.split("),")[0]
+                half = [float(v) for v in half_text.strip("()").split(",")]
+                if len(center) == 3 and len(half) == 3:
+                    return center, half
+            except ValueError:
+                continue
+        return None, None
+
     def _gmp_data(self, row) -> dict:
         key = (row["path"], row["signature"], row["packed_hash"])
         with BrowserServer._gmp_cache_lock:
@@ -1613,6 +1654,35 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._error(f"NeoX parse failed: {exc}", 415)
                     return
+                mesh_ref = None
+                for obj in data.get("objects", []):
+                    value = obj.get("Mesh")
+                    if isinstance(value, str) and value:
+                        mesh_ref = value
+                        break
+                if mesh_ref:
+                    mesh_path = self._resolve_ref(row["path"], mesh_ref)
+                    data["mesh"] = mesh_path or mesh_ref.replace("\\", "/")
+                else:
+                    sibling = str(Path(row["path"]).with_suffix(".mesh")).replace("\\", "/")
+                    if self._row(sibling):
+                        mesh_path = sibling
+                        data["mesh"] = sibling
+                    else:
+                        mesh_path = None
+                if mesh_path and not data.get("mesh_data"):
+                    try:
+                        mesh_row = self._row(mesh_path)
+                        if mesh_row:
+                            mesh_payload = self._entry_payload(mesh_row)
+                            center, half = self._gim_bounds(data)
+                            parsed = mesh_parse.parse(mesh_payload)
+                            if center and half:
+                                parsed = mesh_parse.denormalize(parsed, center, half)
+                            data["mesh_data"] = parsed
+                    except Exception as exc:
+                        data["mesh_error"] = str(exc)
+                        data["mesh_data"] = None
                 data.update(
                     {
                         "path": row["path"], "package": row["package"],

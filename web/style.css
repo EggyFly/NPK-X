@@ -639,6 +639,8 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 .viewer-note { min-height: 14px; color: var(--muted); font-size: 11px; }
 .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .map-canvas.dragging { cursor: grabbing; }
+.gim-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.gim-canvas.dragging { cursor: grabbing; }
 .map-hud {
   position: absolute; top: 32px; left: 50%; transform: translateX(-50%); z-index: 3;
   padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
@@ -723,7 +725,6 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 @keyframes toast-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
 
 .file:has(.pick-box) { position: relative; }
-.file-row-thumb:has(.pick-box) { position: relative; }
 .pick-box {
   position: absolute; top: 7px; left: 7px; z-index: 4;
   width: 18px; height: 18px; border-radius: 5px;
@@ -733,7 +734,11 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 }
 .pick-box .icon { width: 12px; height: 12px; }
 .pick-box.on { background: var(--accent-2); border-color: var(--accent-2); }
-.file-row .pick-box { top: -7px; left: -7px; width: 16px; height: 16px; border-radius: 4px; }
+.file-list.picking .file-row { grid-template-columns: 22px 44px minmax(0, 1fr) 90px 82px 30px; }
+.file-row .pick-box {
+  position: static; top: auto; left: auto; z-index: auto;
+  width: 16px; height: 16px; border-radius: 4px; justify-self: center;
+}
 .file-row .pick-box .icon { width: 10px; height: 10px; }
 .file.picked {
   border-color: rgba(110,231,216,.8); background: rgba(110,231,216,.07);
@@ -813,6 +818,7 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
   .index-dirs { max-height: 180px; }
   .sort-select { max-width: 132px; }
   .file-row { grid-template-columns: 44px minmax(0,1fr) 70px 30px; }
+  .file-list.picking .file-row { grid-template-columns: 22px 44px minmax(0,1fr) 70px 30px; }
   .file-row-pkg { display: none; }
   .drawer { width: 100vw; }
   .viewer { padding: 8px; }
