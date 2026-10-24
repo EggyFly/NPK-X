@@ -49,6 +49,7 @@ import xn_crypto
 import xn_parse
 import xn_decompile
 import xn_bootstrap
+import cache_clean
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -1524,6 +1525,7 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--rebuild-catalog", action="store_true")
     parser.add_argument("--refresh-pathdict", action="store_true")
+    parser.add_argument("--force", action="store_true", help="clear cache and rebuild from the local client")
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
 
@@ -1533,6 +1535,12 @@ def main() -> int:
         print(f"no NPK files under {game_root}", file=sys.stderr)
         return 4
     cache_root = args.cache_dir or default_cache_dir()
+    if args.force:
+        try:
+            cache_clean.clear_cache(cache_root, game_root, log=print)
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: could not clear cache: {exc}", file=sys.stderr)
+            return 2
     cache_root.mkdir(parents=True, exist_ok=True)
 
     profile_path = args.profile
