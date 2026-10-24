@@ -290,6 +290,9 @@
     "update.available": "检测到新版本 {version} 点击查看",
     "update.toast": "检测到新版本 {version}",
     "update.current": "当前版本 {version}",
-    "update.view": "查看更新"
+    "update.view": "查看更新",
+    "xn.modulePlaceholder": "输入模块名, 例如 custom.client.xxx",
+    "xn.tryModule": "尝试解密",
+    "xn.moduleRequired": "请先输入模块名"
   }
 }

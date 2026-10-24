@@ -1055,6 +1055,33 @@ function xnPreviewText(data) {
   return lines.join("\n");
 }
 
+async function tryXnModule(file, container) {
+  const input = container.querySelector("#xn-module");
+  const note = container.querySelector("#xn-module-note");
+  const button = container.querySelector("#xn-module-try");
+  const module = input ? input.value.trim() : "";
+  if (!module) {
+    if (note) note.textContent = tr("xn.moduleRequired");
+    if (input) input.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (note) note.textContent = tr("drawer.note.script");
+  try {
+    const data = await getJson(apiUrl("/api/xn", { path: file.path, module }));
+    if (state.previewPath !== file.path) return;
+    if (!data.decrypted) {
+      if (note) note.textContent = backendText(data.reason, data.detail) || tr("xn.cannotDecrypt");
+      return;
+    }
+    renderXnPreview(data, container, file);
+  } catch (error) {
+    if (note) note.textContent = error.message;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function renderXnPreview(data, container, file) {
   const p = data.preview || {};
   if (!data.decrypted) {
@@ -1062,7 +1089,22 @@ function renderXnPreview(data, container, file) {
       <div class="xn-fail-title">${icon("code")}${tr("xn.title")}</div>
       <p>${esc(backendText(data.reason, data.detail) || tr("xn.cannotDecrypt"))}</p>
       <p class="note">${tr("xn.needModule")}</p>
+      <div class="xn-module-row">
+        <input id="xn-module" class="xn-module-input" type="text" placeholder="${tr("xn.modulePlaceholder")}" autocomplete="off" spellcheck="false">
+        <button id="xn-module-try" class="mini-btn" type="button">${tr("xn.tryModule")}</button>
+      </div>
+      <p class="note" id="xn-module-note"></p>
     </div>`;
+    const input = container.querySelector("#xn-module");
+    const button = container.querySelector("#xn-module-try");
+    if (button) button.addEventListener("click", () => tryXnModule(file, container));
+    if (input) {
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        tryXnModule(file, container);
+      });
+    }
     $("preview-note").textContent = tr("xn.notIndexed");
     return;
   }
@@ -1380,6 +1422,7 @@ function clearViewerContent() {
   $("viewer-name").textContent = "";
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
+  unlockViewerScroll();
 }
 
 function closeViewer() {

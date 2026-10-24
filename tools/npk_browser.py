@@ -928,9 +928,14 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._xn_names_mtime = mtime
             return BrowserServer._xn_names
 
-    def _xn_data(self, row) -> dict:
+    def _xn_data(self, row, module: str | None = None) -> dict:
         signature = int(row["signature"])
-        salt = self._xn_name_map().get(signature)
+        override = (module or "").strip().replace("\\", ".").replace("/", ".")
+        if override.endswith(".py"):
+            override = override[:-3]
+        if override.startswith("clients."):
+            override = override[8:]
+        salt = override or self._xn_name_map().get(signature)
         result = {"path": row["path"], "signature": f"{signature:08x}", "module": salt}
         payload = self._entry_payload(row)
         sizes = xn_crypto.header(payload)
@@ -1361,7 +1366,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(self._xn_disasm(row, (query.get("func", [""])[0] or "")))
                     return
                 try:
-                    data = self._xn_data(row)
+                    module = (query.get("module", [""])[0] or "").strip()
+                    data = self._xn_data(row, module[:200])
                 except Exception as exc:
                     self._error(f"XN decrypt failed: {exc}", 415)
                     return

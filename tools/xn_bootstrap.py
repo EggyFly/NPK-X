@@ -3,7 +3,6 @@
 import json
 import sqlite3
 import sys
-import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -15,7 +14,8 @@ import xn_crypto
 import xn_parse
 
 OPCODE_SIGNATURE = 0xDC830DF0
-INDEX_VERSION = 2
+INDEX_VERSION = 3
+BUNDLED_SEED = Path(__file__).with_name("xn_seed.json")
 SEEDS = (
     "opcode", "game", "init", "redirect",
     "client_consts", "common.mobilecommon", "custom.client", "public.consts",
@@ -125,6 +125,8 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
         schedule(seed)
     for name in set(name_map.values()):
         schedule(name)
+    if len(name_map) > 1000:
+        known_queue.clear()
 
     started = time.time()
     decrypted = 0
@@ -138,8 +140,7 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
         try:
             payload = _read_entry(packages[row["package"]], row["offset"], row["packed"], row["unpacked"], row["compression"])
             sizes = xn_crypto.header(payload)
-            # 大于 4KB 的脚本会用纯 Python 解密很久, 只从小脚本收集模块名, 避免索引线程卡死.
-            if not sizes or sizes[1] > 4 * 1024:
+            if not sizes or sizes[0] > 256 * 1024:
                 continue
             plain = xn_crypto.decrypt(payload, salt)
         except Exception:
@@ -152,6 +153,9 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
             if decrypted % 500 == 0:
                 _write_json(output, {"version": INDEX_VERSION, "complete": False, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
                 log("XN name index: %d modules, queue %d, %.0fs" % (decrypted, len(new_queue) + len(known_queue), time.time() - started))
+        # 大于 64KB 的脚本解析候选名太慢, 只索引它本身, 不继续展开导入关系.
+        if sizes[1] > 64 * 1024:
+            continue
         try:
             for candidate in xn_parse.candidates(plain):
                 schedule(candidate)
@@ -189,9 +193,25 @@ def _index_complete(path: Path) -> bool:
     return bool(data.get("complete")) if isinstance(data, dict) else False
 
 
+def _merged_map(paths: list[Path]) -> dict:
+    merged = {}
+    for path in paths:
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.get("map", {}).items():
+            merged[int(key)] = value
+    return merged
+
+
 def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, log=print) -> tuple[Path, Path]:
     opmap_path = cache_root / "xn_opmap.json"
     names_path = cache_root / "xn_names.json"
+    if seed_path is None or not seed_path.is_file():
+        seed_path = BUNDLED_SEED if BUNDLED_SEED.is_file() else seed_path
     if not opmap_path.is_file():
         try:
             build_opmap(db_path, opmap_path, log)
@@ -211,14 +231,16 @@ def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budge
         except (OSError, ValueError):
             pass
     if need_build:
-        seed_for_build = names_path if names_path.is_file() else seed_path
-        if seed_path and seed_path.is_file() and _map_count(seed_path) > _map_count(names_path):
-            seed_for_build = seed_path
-        thread = threading.Thread(
-            target=build_names,
-            args=(db_path, names_path, budget, 50000, seed_for_build, log),
-            name="xn-name-index",
-            daemon=True,
-        )
-        thread.start()
+        sources = [path for path in (names_path, seed_path, BUNDLED_SEED) if path and path.is_file()]
+        merged = _merged_map(sources)
+        if merged:
+            _write_json(names_path, {"version": INDEX_VERSION, "complete": False, "map": {str(key): value for key, value in merged.items()}})
+            seed_for_build = names_path
+        else:
+            seed_for_build = names_path if names_path.is_file() else seed_path
+        log("XN name index building before startup...")
+        try:
+            build_names(db_path, names_path, budget, 50000, seed_for_build, log)
+        except Exception as exc:
+            log("XN name index failed: %s" % exc)
     return opmap_path, names_path

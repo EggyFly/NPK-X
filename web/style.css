@@ -461,6 +461,12 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 .xn-fail { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.02); }
 .xn-fail-title { display: flex; align-items: center; gap: 8px; color: #ff9d9d; font-size: 12px; }
 .xn-fail p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.xn-module-row { display: flex; gap: 6px; margin-top: 4px; }
+.xn-module-input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 9px; outline: none;
+  border: 1px solid var(--line); border-radius: 7px; background: #0b131c; color: var(--text); font-size: 12px;
+}
+.xn-module-input:focus { border-color: rgba(110,231,216,.55); }
 .xn-panel { display: flex; flex-direction: column; gap: 8px; }
 .xn-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .xn-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
