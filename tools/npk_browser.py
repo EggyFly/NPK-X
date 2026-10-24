@@ -1679,6 +1679,7 @@ def main() -> int:
         cache_root,
         data_seed if data_seed.is_file() else None,
         600.0,
+        game_root,
         print,
     )
     xn_parse.OPMAP_PATH = str(opmap_path)

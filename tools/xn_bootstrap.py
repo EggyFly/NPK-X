@@ -1,6 +1,7 @@
 """Build XN opcode and module-name indexes from the local game catalog."""
 
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -21,6 +22,8 @@ SEEDS = (
     "client_consts", "common.mobilecommon", "custom.client", "public.consts",
     "patch.patch_mgr", "version", "utils", "random", "json",
 )
+CLIENT_LOG_HINT = re.compile(r"module\s+(?:\[')?([A-Za-z_][\w.]+)")
+HOTFIX_HINT = re.compile(r"hotfix_module_begin:([\w.]+)")
 
 
 def _read_entry(package_path: str, offset: int, packed: int, unpacked: int, compression: int) -> bytes:
@@ -43,6 +46,19 @@ def _write_json(path: Path, value: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), "utf-8")
     tmp.replace(path)
+
+
+def _client_hint_names(game_root: Path) -> list[str]:
+    names = set()
+    try:
+        logs = [game_root / "log.txt"] + sorted(game_root.glob("log_old_*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for log in logs[:4]:
+            text = log.read_text("utf-8", errors="ignore")
+            names.update(CLIENT_LOG_HINT.findall(text))
+            names.update(HOTFIX_HINT.findall(text))
+    except OSError:
+        return []
+    return [name for name in names if 2 <= len(name) <= 90 and not name.endswith(".py")]
 
 
 def build_opmap(db_path: Path, output: Path, log=print) -> bool:
@@ -72,7 +88,7 @@ def build_opmap(db_path: Path, output: Path, log=print) -> bool:
         connection.close()
 
 
-def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int = 20000, seed_path: Path | None = None, log=print) -> int:
+def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int = 20000, seed_path: Path | None = None, game_root: Path | None = None, log=print) -> int:
     connection = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -111,6 +127,8 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
                 signature = mmh3.hash(path, 0x9747B28C, signed=False)
                 if signature in entries and signature not in scheduled:
                     scheduled.add(signature)
+                    if signature in name_map and name_map[signature] != salt:
+                        continue
                     target = known_queue if signature in name_map else new_queue
                     target.append((signature, salt))
 
@@ -125,8 +143,22 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
         schedule(seed)
     for name in set(name_map.values()):
         schedule(name)
+    if game_root is not None:
+        for name in _client_hint_names(game_root):
+            schedule(name)
     if len(name_map) > 1000:
         known_queue.clear()
+    # 已索引模块的任意父包都可能是 __init__.nxs, 对未命中签名单独重放这些 salt.
+    package_salts = set()
+    for name in set(name_map.values()):
+        parts = name.split(".")
+        for index in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:index])
+            if 2 <= len(prefix) <= 90:
+                package_salts.add(prefix)
+    tested.clear()
+    for salt in sorted(package_salts):
+        schedule(salt)
 
     started = time.time()
     decrypted = 0
@@ -161,8 +193,9 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
                 schedule(candidate)
         except Exception:
             continue
-    _write_json(output, {"version": INDEX_VERSION, "complete": not new_queue and not known_queue, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
-    log("XN name index generated: %s (%d modules)" % (output, len(name_map)))
+    complete = not new_queue and not known_queue
+    _write_json(output, {"version": INDEX_VERSION, "complete": complete, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
+    log("XN name index generated: %s (%d modules%s)" % (output, len(name_map), "" if complete else ", partial"))
     return len(name_map)
 
 
@@ -207,7 +240,7 @@ def _merged_map(paths: list[Path]) -> dict:
     return merged
 
 
-def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, log=print) -> tuple[Path, Path]:
+def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, game_root: Path | None = None, log=print) -> tuple[Path, Path]:
     opmap_path = cache_root / "xn_opmap.json"
     names_path = cache_root / "xn_names.json"
     if seed_path is None or not seed_path.is_file():
@@ -240,7 +273,7 @@ def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budge
             seed_for_build = names_path if names_path.is_file() else seed_path
         log("XN name index building before startup...")
         try:
-            build_names(db_path, names_path, budget, 50000, seed_for_build, log)
+            build_names(db_path, names_path, budget, 50000, seed_for_build, game_root, log)
         except Exception as exc:
             log("XN name index failed: %s" % exc)
     return opmap_path, names_path
