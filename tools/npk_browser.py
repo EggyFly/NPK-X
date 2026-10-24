@@ -51,6 +51,7 @@ import xn_decompile
 import xn_bootstrap
 import cache_clean
 import update_check
+import startup_progress
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -238,12 +239,20 @@ def build_catalog(
     dir_stats: dict[str, list[int]] = {}
     seen: set[str] = set()
     total = 0
-    for package in packages:
+    package_total = len(packages)
+    startup_progress.begin("catalog", f"0/{package_total} packages")
+    for package_index, package in enumerate(packages, 1):
+        startup_progress.update("catalog", package_index - 1, package_total, package.name)
         header, entries = N.read_index(package, key, validate=True, resolver=resolver)
         package_name = package.name
         package_bytes = 0
         rows = []
-        for entry in entries:
+        entry_total = len(entries)
+        entry_started = time.monotonic()
+        for entry_index, entry in enumerate(entries, 1):
+            if time.monotonic() - entry_started >= 0.05 or entry_index == entry_total:
+                startup_progress.sub("catalog", entry_index, entry_total, package_name)
+                entry_started = time.monotonic()
             real = resolver.resolve(entry.signature)[0]
             if package_name in E.SCRIPT_PACKAGES:
                 real = None
@@ -302,7 +311,8 @@ def build_catalog(
             (package_name, str(package), len(entries), package_bytes),
         )
         connection.commit()
-        print(f"catalog: {package_name} {len(entries)} entries", flush=True)
+        startup_progress.note(f"catalog: {package_name} {len(entries)} entries")
+        startup_progress.sub("catalog", 0, 1, "")
     connection.executemany(
         "INSERT INTO dirs(path,parent,file_count,bytes) VALUES (?,?,?,?)",
         [(path, path.rsplit("/", 1)[0] if "/" in path else "", value[0], value[1]) for path, value in dir_stats.items()],
@@ -315,6 +325,7 @@ def build_catalog(
     connection.execute("PRAGMA optimize")
     connection.close()
     os.replace(tmp, db_path)
+    startup_progress.finish("catalog", f"{total} files")
     print(f"catalog ready: {db_path} ({total} files)", flush=True)
     return meta
 
@@ -340,6 +351,8 @@ def ensure_catalog(
                 stored = json.loads(row[0])
                 # Older catalogs also stored a toolkit version; ignore extra keys.
                 if all(stored.get(key) == value for key, value in wanted.items()):
+                    startup_progress.begin("catalog", "checking fingerprint")
+                    startup_progress.finish("catalog", "reused")
                     print(f"catalog reused: {db_path}", flush=True)
                     return wanted
         except Exception:
@@ -1613,6 +1626,7 @@ def main() -> int:
     cache_root.mkdir(parents=True, exist_ok=True)
 
     profile_path = args.profile
+    startup_progress.begin("profile", args.profile.name if profile_path else "auto from client")
     if profile_path is not None and not Path(profile_path).is_file():
         print(f"warning: profile not found: {profile_path}; generating from local client", file=sys.stderr)
         profile_path = None
@@ -1623,10 +1637,11 @@ def main() -> int:
             tmp_profile = generated_profile.with_name(generated_profile.name + ".tmp")
             tmp_profile.write_text(json.dumps(generated_data, ensure_ascii=False, indent=2) + "\n", "utf-8")
             tmp_profile.replace(generated_profile)
-            print(f"profile={generated_data.get('name')} (generated from local client)")
+            startup_progress.note(f"profile={generated_data.get('name')} (generated from local client)")
             profile_path = generated_profile
         except (OSError, ValueError) as exc:
             print(f"warning: could not generate profile: {exc}", file=sys.stderr)
+    startup_progress.finish("profile", profile_path.name if profile_path else "built-in defaults")
     if profile_path is None:
         candidate = E.PACKAGE_ROOT / "data" / "mode3_profile.json"
         if candidate.is_file():
@@ -1644,6 +1659,7 @@ def main() -> int:
             tables_path = Path(profile_path).parent / tables_path
         N.install_tables(tables_path)
     path_dict = None if args.refresh_pathdict else E.find_path_dict(args.path_dict)
+    startup_progress.begin("pathdict", "checking cache")
     if path_dict is None:
         generated = cache_root / "pathdict.generated.txt.gz"
         try:
@@ -1653,14 +1669,18 @@ def main() -> int:
             newest = max((path.stat().st_mtime for path in sources), default=0)
             if generated.is_file() and generated.stat().st_mtime >= newest:
                 path_dict = generated
-                print(f"path dictionary={generated} (generated cache)")
+                startup_progress.finish("pathdict", "generated cache")
             else:
-                print("path dictionary not found; rebuilding it from the game's PPK shards...", flush=True)
-                data = rebuild_data.find_path_dictionary(game_root, log=print)
-                path_dict = rebuild_data.write_path_dictionary(data, generated, log=print)
+                with startup_progress.ticker("pathdict", "rebuilding from PPK shards"):
+                    data = rebuild_data.find_path_dictionary(game_root, log=startup_progress.note)
+                    path_dict = rebuild_data.write_path_dictionary(data, generated, log=startup_progress.note)
+                startup_progress.finish("pathdict", "rebuilt")
         except (OSError, FileNotFoundError) as exc:
+            startup_progress.finish("pathdict", "unavailable")
             print(f"warning: could not rebuild the path dictionary: {exc}", file=sys.stderr)
             print("warning: entries will use hash names", file=sys.stderr)
+    else:
+        startup_progress.finish("pathdict", path_dict.name)
     resolver = N.PathResolver.from_file(path_dict, seed) if path_dict else N.PathResolver([], seed)
     db_path = cache_root / "catalog.sqlite"
     print(f"game={game_root}")
@@ -1680,16 +1700,19 @@ def main() -> int:
         data_seed if data_seed.is_file() else None,
         600.0,
         game_root,
-        print,
+        startup_progress.note,
+        progress=startup_progress,
     )
     xn_parse.OPMAP_PATH = str(opmap_path)
     xn_parse._OPMAP_CACHE = None
+    startup_progress.begin("artifacts", "preparing cache dirs")
     artifacts_root = cache_root / "artifacts"
     artifacts = artifacts_root / hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest()[:16]
     artifacts.mkdir(parents=True, exist_ok=True)
     for old in artifacts_root.iterdir() if artifacts_root.exists() else []:
         if old.is_dir() and old.name != artifacts.name:
             shutil.rmtree(old, ignore_errors=True)
+    startup_progress.finish("artifacts", artifacts.name)
     server_class = type(
         "ConfiguredBrowserServer",
         (BrowserServer,),

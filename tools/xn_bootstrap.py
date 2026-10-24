@@ -88,7 +88,8 @@ def build_opmap(db_path: Path, output: Path, log=print) -> bool:
         connection.close()
 
 
-def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int = 20000, seed_path: Path | None = None, game_root: Path | None = None, log=print) -> int:
+def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int = 20000, seed_path: Path | None = None, game_root: Path | None = None, log=print, progress=None) -> int:
+    pending_total = 0
     connection = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -163,11 +164,16 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
     started = time.time()
     decrypted = 0
     scanned = set()
+    if progress is not None:
+        pending_total = len(new_queue)
+        progress.begin("xn index", f"0/{pending_total} candidates")
     while (new_queue or known_queue) and decrypted < limit and time.time() - started < budget:
         signature, salt = new_queue.popleft() if new_queue else known_queue.popleft()
         if signature in scanned:
             continue
         scanned.add(signature)
+        if progress is not None and pending_total:
+            progress.update("xn index", min(len(scanned), pending_total), pending_total, f"found {decrypted}")
         row = entries[signature][0]
         try:
             payload = _read_entry(packages[row["package"]], row["offset"], row["packed"], row["unpacked"], row["compression"])
@@ -194,6 +200,8 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
         except Exception:
             continue
     complete = not new_queue and not known_queue
+    if progress is not None:
+        progress.finish("xn index", f"{len(name_map)} modules")
     _write_json(output, {"version": INDEX_VERSION, "complete": complete, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
     log("XN name index generated: %s (%d modules%s)" % (output, len(name_map), "" if complete else ", partial"))
     return len(name_map)
@@ -240,7 +248,7 @@ def _merged_map(paths: list[Path]) -> dict:
     return merged
 
 
-def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, game_root: Path | None = None, log=print) -> tuple[Path, Path]:
+def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, game_root: Path | None = None, log=print, progress=None) -> tuple[Path, Path]:
     opmap_path = cache_root / "xn_opmap.json"
     names_path = cache_root / "xn_names.json"
     if seed_path is None or not seed_path.is_file():
@@ -273,7 +281,9 @@ def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budge
             seed_for_build = names_path if names_path.is_file() else seed_path
         log("XN name index building before startup...")
         try:
-            build_names(db_path, names_path, budget, 50000, seed_for_build, game_root, log)
+            build_names(db_path, names_path, budget, 50000, seed_for_build, game_root, log, progress)
         except Exception as exc:
+            if progress is not None:
+                progress.finish("xn index", "failed")
             log("XN name index failed: %s" % exc)
     return opmap_path, names_path
