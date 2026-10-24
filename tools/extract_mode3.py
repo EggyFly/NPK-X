@@ -38,11 +38,18 @@ import image_convert
 import nxpk_mode3 as N
 
 TOOLKIT_ROOT = Path(__file__).resolve().parent
-PACKAGE_ROOT = (
-    TOOLKIT_ROOT.parent
-    if not (TOOLKIT_ROOT / "data").is_dir() and (TOOLKIT_ROOT.parent / "data").is_dir()
-    else TOOLKIT_ROOT
-)
+if (TOOLKIT_ROOT / "web" / "index.html").is_file():
+    PACKAGE_ROOT = TOOLKIT_ROOT
+elif (TOOLKIT_ROOT.parent / "web" / "index.html").is_file():
+    PACKAGE_ROOT = TOOLKIT_ROOT.parent
+elif (TOOLKIT_ROOT / "data").is_dir():
+    PACKAGE_ROOT = TOOLKIT_ROOT
+elif (TOOLKIT_ROOT.parent / "data").is_dir():
+    PACKAGE_ROOT = TOOLKIT_ROOT.parent
+elif (TOOLKIT_ROOT.parent / "bin").is_dir():
+    PACKAGE_ROOT = TOOLKIT_ROOT.parent
+else:
+    PACKAGE_ROOT = TOOLKIT_ROOT
 DEFAULT_GAME_ROOTS = [
     Path(r"D:\FeverApps\party_pc"),
     Path.cwd(),

@@ -1536,6 +1536,9 @@ def main() -> int:
     cache_root.mkdir(parents=True, exist_ok=True)
 
     profile_path = args.profile
+    if profile_path is not None and not Path(profile_path).is_file():
+        print(f"warning: profile not found: {profile_path}; generating from local client", file=sys.stderr)
+        profile_path = None
     if profile_path is None:
         candidate = E.PACKAGE_ROOT / "data" / "mode3_profile.json"
         if candidate.is_file():
@@ -1552,7 +1555,7 @@ def main() -> int:
         if generated_profile.is_file():
             profile_path = generated_profile
     if profile_path is not None and not Path(profile_path).is_file():
-        print(f"warning: profile not found: {profile_path}; using built-in defaults", file=sys.stderr)
+        print("warning: generated profile unavailable; using built-in defaults", file=sys.stderr)
         profile_path = None
     profile = N.load_profile(profile_path)
     key = N.profile_key(profile, args.key_hex)

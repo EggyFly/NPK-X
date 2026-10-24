@@ -10,6 +10,6 @@ set "EXTRA="
 if not "%~2"=="" set "EXTRA=%2 %3 %4 %5 %6 %7 %8 %9"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-"%PY%" "%PKG%tools\npk_browser.py" --game-root "%GAME_ROOT%" --path-dict "%PKG%data\pathdict.txt.gz" --profile "%PKG%data\mode3_profile.json" --cache-dir "%LOCALAPPDATA%\EggyNpkBrowser" %EXTRA%
+"%PY%" "%PKG%tools\npk_browser.py" --game-root "%GAME_ROOT%" --cache-dir "%LOCALAPPDATA%\EggyNpkBrowser" %EXTRA%
 echo.
 pause
