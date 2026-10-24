@@ -531,7 +531,8 @@ function pickBoxMarkup(file) {
 function fileRowMarkup(file) {
   const act = itemAction(file);
   return `<div class="file-row${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}">
-    <div class="file-row-thumb">${pickBoxMarkup(file)}${thumbMarkup(file, true)}</div>
+    ${pickBoxMarkup(file)}
+    <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
     <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
     <div class="file-row-size">${formatBytes(file.size)}</div>
     <div class="file-row-pkg">${esc(file.package)}</div>
@@ -559,7 +560,7 @@ function fileCardMarkup(file) {
 function renderFiles(files) {
   if (!files.length) return "";
   if (state.view === "list") {
-    return `<div class="file-list">${files.map(fileRowMarkup).join("")}</div>`;
+    return `<div class="file-list${state.selectMode ? " picking" : ""}">${files.map(fileRowMarkup).join("")}</div>`;
   }
   return `<div class="file-grid">${files.map(fileCardMarkup).join("")}</div>`;
 }
@@ -2476,6 +2477,166 @@ async function stepPreview(delta) {
   showPreview(state.files[next]);
 }
 
+function renderNeoXPreview(data, container, file) {
+  container.classList.add("gmp-mode");
+  const objects = data.objects || [];
+  const refs = [];
+  const seen = new Set();
+  for (const obj of objects) {
+    for (const value of Object.values(obj)) {
+      if (typeof value === "string" && value.includes("\\") && value.length < 240 && !seen.has(value)) {
+        seen.add(value);
+        refs.push(value);
+      }
+    }
+  }
+  const meshData = data.mesh_data || null;
+  const chips = [
+    `<span class="bank-chip">${tr("gmp.units")} <b>${Number(objects.length).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">${tr("gmp.refs")} <b>${refs.length}</b></span>`,
+  ];
+  if (meshData) {
+    chips.push(`<span class="bank-chip">${tr("gmp.verts")} <b>${Number(meshData.vertex_count).toLocaleString()}</b></span>`);
+  }
+  chips.join("");
+  const objRows = objects.slice(0, 60).map((obj, index) => {
+    const entries = Object.entries(obj).slice(0, 6);
+    const detail = entries.map(([key, value]) => `${esc(key)}=${esc(String(value))}`).join(" · ") || "—";
+    return `<div class="gmp-unit" title="${esc(detail)}">
+      <span class="gmp-unit-name">${esc(tr("common.unit"))} ${index}</span>
+      <span class="gmp-unit-meta">${esc(detail.slice(0, 110))}</span>
+    </div>`;
+  }).join("");
+  const refRows = refs.slice(0, 60).map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("");
+  container.innerHTML = `<div class="gmp-preview">
+    <div class="gmp-head">
+      <div class="gmp-title">
+        <b>${esc(file.name)}</b>
+        <span>${tr("gmp.unitSummary", { units: Number(objects.length).toLocaleString(), chunks: refs.length })}</span>
+      </div>
+      ${meshData
+        ? `<button class="btn primary" id="neox-open-3d" type="button">${icon("map")}${tr("gmp.openCanvas")}</button>`
+        : ""}
+    </div>
+    <div class="bank-chips">${chips.join("")}</div>
+    ${objects.length
+      ? `<div class="section-title">${tr("gmp.unitList", { count: Math.min(objects.length, 60) })}</div><div class="gmp-units">${objRows}</div>`
+      : `<div class="note">${tr("gmp.noUnits")}</div>`}
+    ${refs.length ? `<div class="section-title">${tr("gmp.refs")}</div><div class="inspect-refs">${refRows}</div>` : ""}
+  </div>`;
+  const open = container.querySelector("#neox-open-3d");
+  if (open) {
+    open.addEventListener("click", () => openGimViewer(file, data));
+  }
+  $("preview-note").textContent = meshData
+    ? tr("gmp.note", { count: Number(meshData.vertex_count).toLocaleString() })
+    : tr("gmp.noteNoUnits");
+}
+
+function openGimViewer(file, data) {
+  closeDrawer();
+  if (viewerCloseTimer) {
+    clearTimeout(viewerCloseTimer);
+    viewerCloseTimer = 0;
+  }
+  const node = $("viewer");
+  node.classList.remove("hidden", "closing", "open");
+  node.setAttribute("aria-hidden", "false");
+  viewer.token += 1;
+  const token = viewer.token;
+  viewer.file = file;
+  viewer.path = file.path;
+  viewer.mode = "image";
+  $("viewer-name").textContent = file.name;
+  $("viewer-foot").innerHTML = `<div class="viewer-zoom">
+    <button class="icon-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
+  </div>`;
+  const stage = $("viewer-stage");
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  void node.offsetWidth;
+  node.classList.add("open");
+  lockViewerScroll();
+  try {
+    renderGim3D(stage, data.mesh_data, token);
+  } catch (error) {
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null };
+
+function renderGim3D(stage, meshData, token) {
+  const verts = meshData.vertices || [];
+  if (!verts.length) throw new Error("no vertices");
+  let cx = 0, cy = 0, cz = 0;
+  for (const v of verts) { cx += v[0]; cy += v[1]; cz += v[2]; }
+  cx /= verts.length; cy /= verts.length; cz /= verts.length;
+  let radius = 0.001;
+  for (const v of verts) {
+    const d = Math.hypot(v[0] - cx, v[1] - cy, v[2] - cz);
+    if (d > radius) radius = d;
+  }
+  stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
+    <div class="map-hud">${Number(verts.length).toLocaleString()} verts</div>`;
+  const canvas = $("gim-canvas");
+  const ctx = canvas.getContext("2d");
+  gim3d.canvas = canvas;
+  gim3d.verts = { verts, cx, cy, cz, radius };
+  gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1;
+  const reset = $("gim-reset");
+  if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
+  canvas.addEventListener("pointerdown", (e) => {
+    gim3d.drag = true; gim3d.px = e.clientX; gim3d.py = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!gim3d.drag) return;
+    gim3d.x += (e.clientX - gim3d.px) * 0.01;
+    gim3d.y -= (e.clientY - gim3d.py) * 0.01;
+    gim3d.px = e.clientX; gim3d.py = e.clientY;
+  });
+  const up = () => { gim3d.drag = false; };
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    gim3d.scale *= e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  }, { passive: false });
+  const draw = () => {
+    if (token !== viewer.token) return;
+    const w = canvas.clientWidth || 800;
+    const h = canvas.clientHeight || 500;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    ctx.fillStyle = "#080e15";
+    ctx.fillRect(0, 0, w, h);
+    const { verts: vs, cx: acx, cy: acy, cz: acz, radius: rad } = gim3d.verts;
+    const cosX = Math.cos(gim3d.x), sinX = Math.sin(gim3d.x);
+    const cosY = Math.cos(gim3d.y), sinY = Math.sin(gim3d.y);
+    const zoom = (Math.min(w, h) * 0.38 * gim3d.scale) / rad;
+    const project = (v) => {
+      let x = v[0] - acx, y = v[1] - acy, z = v[2] - acz;
+      let y2 = y * cosX - z * sinX;
+      let z2 = y * sinX + z * cosX;
+      let x2 = x * cosY - z2 * sinY;
+      let z3 = x * sinY + z2 * cosY;
+      return [w / 2 + x2 * zoom, h / 2 - y2 * zoom, z3];
+    };
+    const projected = vs.map(project);
+    ctx.strokeStyle = "rgba(110,231,216,.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i + 1 < vs.length; i += 1) {
+      ctx.moveTo(projected[i][0], projected[i][1]);
+      ctx.lineTo(projected[i + 1][0], projected[i + 1][1]);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,209,102,.75)";
+    for (const p of projected) ctx.fillRect(p[0] - 1, p[1] - 1, 2, 2);
+    gim3d.raf = requestAnimationFrame(draw);
+  };
+  draw();
+}
+
 async function showPreview(file) {
   const token = ++previewToken;
   state.previewPath = file.path;
@@ -2510,12 +2671,19 @@ async function showPreview(file) {
   const media = $("preview-media");
   const kind = info.kind;
   try {
-    if ((info.ext || "").toLowerCase() === ".gmp") {
+    const ext = (info.ext || "").toLowerCase();
+    if (ext === ".gmp") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("gmp.loading");
       const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
       if (token !== previewToken) return;
       renderGmpPreview(data, media);
+    } else if (ext === ".gim" || ext === ".mtg") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("gmp.loading");
+      const data = await getJson(apiUrl("/api/neox", { path: file.path }));
+      if (token !== previewToken) return;
+      renderNeoXPreview(data, media, file);
     } else if (kind === "script") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("drawer.note.script");
@@ -2655,13 +2823,33 @@ function rerenderFilesOnly() {
   syncPickStates();
 }
 
+function applyPickBoxes() {
+  const list = document.querySelector("#content .file-list");
+  if (list) list.classList.toggle("picking", state.selectMode);
+  document.querySelectorAll("#content [data-file]").forEach((node) => {
+    let box = node.querySelector(".pick-box");
+    if (state.selectMode) {
+      if (!box) {
+        box = document.createElement("span");
+        box.className = "pick-box";
+        box.dataset.pick = node.dataset.file;
+        if (node.classList.contains("file-row")) node.prepend(box);
+        else node.insertBefore(box, node.querySelector(".file-info"));
+      }
+    } else if (box) {
+      box.remove();
+    }
+    node.classList.remove("picked");
+  });
+}
+
 function setSelectMode(on) {
   state.selectMode = on;
   state.selected = new Set();
   $("select-mode").classList.toggle("active", on);
   $("batch-bar").classList.toggle("hidden", !on);
   closeBatchMenu();
-  rerenderFilesOnly();
+  applyPickBoxes();
   updateBatchBar();
 }
 
