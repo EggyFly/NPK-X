@@ -285,6 +285,11 @@
     "backend.decompileFailed": "反編譯失敗: {message}",
     "error.loadMore": "載入失敗：{message}",
     "language.autoLabel": "自動({name})",
-    "backend.openFailed": "開啟檔案失敗: {message}"
+    "backend.openFailed": "開啟檔案失敗: {message}",
+    "update.title": "專案與更新",
+    "update.available": "偵測到新版本 {version} 點擊查看",
+    "update.toast": "偵測到新版本 {version}",
+    "update.current": "目前版本 {version}",
+    "update.view": "查看更新"
   }
 }

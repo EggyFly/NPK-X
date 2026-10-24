@@ -50,6 +50,7 @@ import xn_parse
 import xn_decompile
 import xn_bootstrap
 import cache_clean
+import update_check
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -374,6 +375,11 @@ class BrowserServer(ThreadingHTTPServer):
     _xn_names_mtime = 0.0
     xn_names_path = None
     xn_opmap_path = None
+    version: str | None = None
+    update_state: dict = {}
+    update_repo: str = update_check.DEFAULT_REPO
+    update_proxy: str | None = None
+    _update_lock = threading.Lock()
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
@@ -1159,6 +1165,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(204)
                 self.end_headers()
                 return
+            if route == "/api/update":
+                self._json(dict(self.server.update_state))
+                return
             if route == "/api/stats":
                 connection = db_connect(self.server.db_path)
                 try:
@@ -1184,6 +1193,7 @@ class Handler(BaseHTTPRequestHandler):
                         "kinds": kinds,
                         "profile": meta.get("profile"),
                         "game_version": getattr(self.server, "profile", {}).get("tested_client"),
+                        "version": self.server.version,
                         "platform": sys.platform,
                         "cache_mb": round(self.server.cache_limit / 1024 / 1024, 1),
                     }
@@ -1529,6 +1539,24 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
 
+def refresh_update(server: BrowserServer) -> None:
+    try:
+        info = update_check.check(
+            server.cache_root / update_check.CACHE_NAME,
+            server.version,
+            repo=server.update_repo,
+            proxy=server.update_proxy,
+        )
+    except Exception:
+        info = update_check.initial_state(server.version, server.update_repo, False, "error")
+    with BrowserServer._update_lock:
+        server.update_state = info
+    if info.get("available"):
+        url = update_check.releases_url(server.update_repo)
+        print("你正在运行过时的 NPK-X! 请前往Github下载最新版本: " + url, flush=True)
+        print("You are running an outdated NPK-X! Please download the latest version from GitHub: " + url, flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local Eggy Party NPK browser")
     parser.add_argument("--game-root", type=Path, default=None)
@@ -1543,8 +1571,26 @@ def main() -> int:
     parser.add_argument("--rebuild-catalog", action="store_true")
     parser.add_argument("--refresh-pathdict", action="store_true")
     parser.add_argument("--force", action="store_true", help="clear cache and rebuild from the local client")
+    parser.add_argument("--no-update-check", action="store_true", help="disable the GitHub release check")
+    parser.add_argument("--update-repo", default=None, help="GitHub repository in owner/name form")
+    parser.add_argument("--proxy", default=None, help="proxy URL used by the release check")
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
+
+    repo_value = args.update_repo or os.environ.get("NPKX_UPDATE_REPO") or update_check.DEFAULT_REPO
+    update_repo = update_check.normalize_repo(repo_value)
+    if not update_repo:
+        parser.error("--update-repo must look like owner/name")
+    current_version = update_check.read_version(PACKAGE_ROOT)
+    check_update = not args.no_update_check and bool(current_version)
+    update_state = update_check.initial_state(
+        current_version,
+        update_repo,
+        check_update,
+        "pending" if check_update else "disabled",
+    )
+    if not args.no_update_check and not current_version:
+        print("warning: VERSION file not found; update check disabled", file=sys.stderr)
 
     game_root = E.find_game_root(args.game_root)
     packages = sorted(game_root.glob("*.npk"))
@@ -1648,6 +1694,10 @@ def main() -> int:
             "profile": profile,
             "xn_names_path": str(names_path),
             "xn_opmap_path": str(opmap_path),
+            "version": current_version,
+            "update_state": update_state,
+            "update_repo": update_repo,
+            "update_proxy": args.proxy,
         },
     )
     server = None
@@ -1665,6 +1715,8 @@ def main() -> int:
     print("Press Ctrl+C to stop.")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("WARNING: server is listening on a non-loopback address", file=sys.stderr)
+    if check_update:
+        threading.Thread(target=refresh_update, args=(server,), daemon=True).start()
     if not args.no_open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

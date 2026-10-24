@@ -12,6 +12,7 @@ CACHE_FILES = (
     "xn_names.json",
     "xn_opmap.json",
     "mode3_profile.json",
+    "update_check.json",
 )
 CACHE_DIRS = ("artifacts", "open", "tmp")
 

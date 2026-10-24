@@ -29,7 +29,12 @@ let moreObserver = null;
 
 const I18N_CODES = ["zh_cn", "zh_tw", "en_us"];
 const I18N_STORAGE = "npk-language";
+const PROJECT_URL = "https://github.com/EggyFly/NPK-X";
+const RELEASES_URL = `${PROJECT_URL}/releases`;
+const UPDATE_TOAST_STORAGE = "npk-update-toast";
 const i18nState = { choice: "auto", detected: "zh_cn", code: "zh_cn", data: {}, catalog: {} };
+let lastUpdateInfo = null;
+let updateToastTimer = 0;
 
 function detectLanguage() {
   const tag = String((navigator.languages && navigator.languages[0]) || navigator.language || "en-US").toLowerCase();
@@ -114,6 +119,57 @@ function refreshLabelMaps() {
   MAP_EID_LABEL[900001] = tr("map.eid.floor");
 }
 
+function renderUpdate(info, toast = true) {
+  lastUpdateInfo = info || null;
+  const version = info?.current;
+  const projectUrl = info?.project_url || PROJECT_URL;
+  const releasesUrl = info?.releases_url || RELEASES_URL;
+  $("project-version").textContent = version ? `v${version}` : "v—";
+  const link = $("project-link");
+  const badge = $("project-update");
+  if (info?.available && info.latest) {
+    link.href = info.url || releasesUrl;
+    badge.textContent = tr("update.available", { version: info.latest });
+    badge.classList.remove("hidden");
+    const toastNode = $("update-toast");
+    if (toastNode && !toastNode.classList.contains("hidden")) {
+      $("update-toast-title").textContent = tr("update.toast", { version: info.latest });
+      $("update-toast-text").textContent = tr("update.current", { version: info.current || "—" });
+    }
+    if (toast) showUpdateToast(info);
+  } else {
+    link.href = projectUrl;
+    badge.classList.add("hidden");
+    badge.textContent = "";
+  }
+}
+
+function showUpdateToast(info) {
+  const key = `${info.latest}|${info.url || ""}`;
+  let seen = null;
+  try { seen = JSON.parse(localStorage.getItem(UPDATE_TOAST_STORAGE) || "null"); } catch (_) {}
+  if (seen && seen.key === key && Date.now() - Number(seen.at || 0) < 86400000) return;
+  const toast = $("update-toast");
+  $("update-toast-title").textContent = tr("update.toast", { version: info.latest });
+  $("update-toast-text").textContent = tr("update.current", { version: info.current || "—" });
+  $("update-toast-link").href = info.url || info.releases_url || RELEASES_URL;
+  toast.classList.remove("hidden", "closing");
+  void toast.offsetWidth;
+  clearTimeout(updateToastTimer);
+  try { localStorage.setItem(UPDATE_TOAST_STORAGE, JSON.stringify({ key, at: Date.now() })); } catch (_) {}
+}
+
+function hideUpdateToast() {
+  clearTimeout(updateToastTimer);
+  const toast = $("update-toast");
+  if (!toast || toast.classList.contains("hidden")) return;
+  toast.classList.add("closing");
+  updateToastTimer = setTimeout(() => {
+    toast.classList.add("hidden");
+    toast.classList.remove("closing");
+  }, 240);
+}
+
 async function setLanguage(choice, rerender = true) {
   const detected = i18nState.detected;
   const code = choice === "auto" ? detected : (i18nState.catalog[choice] ? choice : "zh_cn");
@@ -124,6 +180,7 @@ async function setLanguage(choice, rerender = true) {
   document.documentElement.lang = code.replace("_", "-");
   refreshLabelMaps();
   applyStaticI18n();
+  if (lastUpdateInfo) renderUpdate(lastUpdateInfo, false);
   renderLanguageOptions();
   if (!rerender) return;
   const preview = state.previewPath;
@@ -697,6 +754,7 @@ async function loadStats() {
   try {
     const stats = await getJson("/api/stats");
     state.platform = stats.platform || "win32";
+    if (stats.version) $("project-version").textContent = `v${stats.version}`;
     $("stat-files").textContent = Number(stats.files).toLocaleString();
     $("stat-size").textContent = formatBytes(stats.bytes);
     renderRoots(stats.roots);
@@ -705,6 +763,18 @@ async function loadStats() {
     $("stat-files").textContent = "—";
     $("stat-size").textContent = "—";
     $("roots").innerHTML = "";
+  }
+}
+
+async function loadUpdate(retries = 2) {
+  try {
+    const info = await getJson("/api/update");
+    renderUpdate(info);
+    if (info.checking && retries > 0) {
+      setTimeout(() => loadUpdate(retries - 1), 2500);
+    }
+  } catch (error) {
+    console.warn("update check failed", error);
   }
 }
 
@@ -2607,6 +2677,7 @@ function bind() {
   $("prev-file").addEventListener("click", () => stepPreview(-1));
   $("next-file").addEventListener("click", () => stepPreview(1));
   $("copy-path").addEventListener("click", copyPath);
+  $("update-toast-close").addEventListener("click", hideUpdateToast);
   $("open-actions").addEventListener("click", (event) => {
     const button = event.target.closest("[data-open]");
     if (button) openWith(button.dataset.open);
@@ -2653,6 +2724,7 @@ async function init() {
   </div>`).join("");
   const path = new URLSearchParams(location.search).get("path") || "";
   const statsPromise = loadStats();
+  loadUpdate();
   await loadList(path, false);
   await statsPromise;
 }

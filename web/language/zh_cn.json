@@ -285,6 +285,11 @@
     "backend.decompileFailed": "反编译失败: {message}",
     "error.loadMore": "加载失败：{message}",
     "language.autoLabel": "自动({name})",
-    "backend.openFailed": "打开文件失败: {message}"
+    "backend.openFailed": "打开文件失败: {message}",
+    "update.title": "项目与更新",
+    "update.available": "检测到新版本 {version} 点击查看",
+    "update.toast": "检测到新版本 {version}",
+    "update.current": "当前版本 {version}",
+    "update.view": "查看更新"
   }
 }

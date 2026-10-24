@@ -285,6 +285,11 @@
     "backend.decompileFailed": "Decompilation failed: {message}",
     "error.loadMore": "Loading failed: {message}",
     "language.autoLabel": "Auto ({name})",
-    "backend.openFailed": "Failed to open the file: {message}"
+    "backend.openFailed": "Failed to open the file: {message}",
+    "update.title": "Project and updates",
+    "update.available": "New version {version} available, click to view",
+    "update.toast": "New version {version} detected",
+    "update.current": "Current version {version}",
+    "update.view": "View update"
   }
 }
