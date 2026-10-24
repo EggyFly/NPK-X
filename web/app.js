@@ -939,7 +939,54 @@ async function openScriptViewer(file) {
     }
     const text = xnPreviewText(data);
     $("viewer-stage").innerHTML = `<div class="script-viewer"><pre class="script-preview">${esc(text)}</pre></div>`;
-    $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-copy" type="button">复制预览</button>`;
+    $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-decompile" type="button">反编译</button><button class="mini-btn" id="xn-disasm" type="button">反汇编</button><button class="mini-btn" id="xn-copy" type="button">复制预览</button>`;
+    const decompile = $("xn-decompile");
+    if (decompile) {
+      decompile.addEventListener("click", async () => {
+        if (decompile.dataset.loaded === "1") return;
+        decompile.disabled = true;
+        decompile.textContent = "反编译中…";
+        try {
+          const result = await getJson(apiUrl("/api/xn", { path: file.path, decompile: 1 }));
+          if (token !== viewer.token) return;
+          if (result.error) throw new Error(result.error);
+          const block = document.createElement("pre");
+          block.className = "script-preview";
+          block.textContent = `\n\n## decompiled source (${result.module})\n${result.source}`;
+          $("viewer-stage").querySelector(".script-viewer")?.appendChild(block);
+          decompile.dataset.loaded = "1";
+          decompile.textContent = "源码已加载";
+          block.scrollIntoView({ behavior: "smooth", block: "start" });
+        } catch (error) {
+          decompile.textContent = "反编译失败";
+        } finally {
+          decompile.disabled = false;
+        }
+      });
+    }
+    const disasm = $("xn-disasm");
+    if (disasm) {
+      disasm.addEventListener("click", async () => {
+        if (disasm.dataset.loaded === "1") return;
+        disasm.disabled = true;
+        disasm.textContent = "反汇编中…";
+        try {
+          const result = await getJson(apiUrl("/api/xn", { path: file.path, disasm: 1 }));
+          if (token !== viewer.token) return;
+          if (result.error) throw new Error(result.error);
+          const block = document.createElement("pre");
+          block.className = "script-preview";
+          block.textContent = `\n\n## disassembly (${result.function})\n${result.disassembly}`;
+          $("viewer-stage").querySelector(".script-viewer")?.appendChild(block);
+          disasm.dataset.loaded = "1";
+          disasm.textContent = "反汇编已加载";
+        } catch (error) {
+          disasm.textContent = "反汇编失败";
+        } finally {
+          disasm.disabled = false;
+        }
+      });
+    }
     const copy = $("xn-copy");
     if (copy) {
       copy.addEventListener("click", async () => {
@@ -954,7 +1001,8 @@ async function openScriptViewer(file) {
   }
 }
 
-function metadataRows(info) {  const rows = [
+function metadataRows(info) {
+  const rows = [
     ["路径", info.path],
     ["资源包", info.package],
     ["类型", `${KIND_LABEL[displayKind(info.kind, info.ext)] || info.kind} ${info.ext || ""}`],
@@ -1705,14 +1753,17 @@ function drawMapUnits(ctx, w, h, scale) {
       ctx.arc(sx, sy, iconSize / 2 + 1.5, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(8, 14, 21, .88)";
       ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
+      ctx.stroke();
       ctx.drawImage(icon, sx - iconSize / 2, sy - iconSize / 2, iconSize, iconSize);
     } else {
       ctx.beginPath();
       ctx.arc(sx, sy, radius, 0, Math.PI * 2);
       ctx.fillStyle = mapUnitColor(unit);
       ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = "#0b1219";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
       ctx.stroke();
     }
     const marker = icon ? iconSize / 2 : radius;
@@ -1981,11 +2032,12 @@ function buildMapLegend() {
     .map(([eidText, count]) => {
       const eid = Number(eidText);
       const color = tints[eid] || mapColor(eid);
-      const label = MAP_EID_LABEL[eid] || labels[eid] || `类型 ${eidText}`;
+      const typeColor = mapColor(eid);
+      const label = labels[eid] || MAP_EID_LABEL[eid] || `类型 ${eidText}`;
       const icon = mapIconUrl(eid);
       const swatch = icon
-        ? `<span class="map-legend-icon" style="background-image:url('${icon}')"></span>`
-        : `<span class="map-legend-swatch" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color}"></span>`;
+        ? `<span class="map-legend-icon" title="${esc(label)} 分类贴图" style="background-image:url('${icon}')"></span>`
+        : `<span class="map-legend-swatch" title="${esc(label)} 涂装颜色" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color};border-color:${typeColor}"></span>`;
       return `<div class="map-legend-row">
         ${swatch}
         <span class="map-legend-name">${esc(label)}</span>

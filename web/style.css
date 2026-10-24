@@ -468,6 +468,7 @@ a:hover { text-decoration: underline; }
 .xn-item { max-width: 100%; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: #c2d0e0; font: 10px/1.5 ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .script-viewer { position: absolute; inset: 0; overflow: auto; padding: 22px 26px; }
 .script-preview { margin: 0; color: #c7d4e4; font: 12px/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.script-preview + .script-preview { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
 .gmp-units {
   display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: #0a1119; padding: 4px;
