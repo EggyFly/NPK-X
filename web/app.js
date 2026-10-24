@@ -1,6 +1,10 @@
 const $ = (id) => document.getElementById(id);
 const NL = String.fromCharCode(10);
 const PAGE_SIZE = 1500;
+const BATCH_RAW_MAX = 2000;
+const BATCH_CONVERT_MAX = 200;
+const IMAGE_FORMATS = ["png", "jpg", "ico"];
+const AUDIO_FORMATS = ["wav", "flac", "mp3"];
 const SORT_KEYS = new Set(["name_asc", "name_desc", "size_asc", "size_desc", "type", "package"]);
 const storedView = localStorage.getItem("npk-view") || "grid";
 const storedSort = localStorage.getItem("npk-sort") || "name_asc";
@@ -20,7 +24,14 @@ const state = {
   searchTotal: 0,
   searchQuery: "",
   loadingMore: false,
+  selectMode: false,
+  selected: new Set(),
 };
+
+const batchPick = { img: "png", aud: "wav" };
+let batchMenuOpen = false;
+let batchMenuPage = "main";
+let batchToastTimer = 0;
 
 let previewToken = 0;
 let drawerCloseTimer = 0;
@@ -512,10 +523,15 @@ function renderFolders(dirs) {
     </button>`).join("")}</div>`;
 }
 
+function pickBoxMarkup(file) {
+  if (!state.selectMode) return "";
+  return `<span class="pick-box${state.selected.has(file.path) ? " on" : ""}" data-pick="${esc(file.path)}">${state.selected.has(file.path) ? icon("check") : ""}</span>`;
+}
+
 function fileRowMarkup(file) {
   const act = itemAction(file);
-  return `<div class="file-row" data-file="${esc(file.path)}">
-    <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
+  return `<div class="file-row${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}">
+    <div class="file-row-thumb">${pickBoxMarkup(file)}${thumbMarkup(file, true)}</div>
     <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
     <div class="file-row-size">${formatBytes(file.size)}</div>
     <div class="file-row-pkg">${esc(file.package)}</div>
@@ -527,8 +543,9 @@ function fileRowMarkup(file) {
 
 function fileCardMarkup(file) {
   const act = itemAction(file);
-  return `<div class="file" data-file="${esc(file.path)}" title="${esc(file.path)}">
+  return `<div class="file${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}" title="${esc(file.path)}">
     ${thumbMarkup(file)}
+    ${pickBoxMarkup(file)}
     <div class="file-info">
       <div class="file-text">
         <div class="file-name">${esc(file.name)}</div>
@@ -822,6 +839,11 @@ async function loadList(path, push = true, keepKind = false) {
     state.dirSummary = data.dir_summary || null;
     state.kindCounts = data.kind_counts || {};
     state.fileTotal = Number(data.file_total ?? state.files.length);
+    if (state.selectMode) {
+      state.selected = new Set();
+      closeBatchMenu();
+      updateBatchBar();
+    }
     renderCrumbs(data.breadcrumbs);
     $("where").innerHTML = state.path
       ? `${esc(state.path.split("/").pop())}<span class="sub">${esc(state.path)}</span>`
@@ -872,6 +894,11 @@ async function search(query) {
     state.dirs = [];
     state.kindCounts = data.kind_counts || {};
     state.searchTotal = Number(data.total ?? state.files.length);
+    if (state.selectMode) {
+      state.selected = new Set();
+      closeBatchMenu();
+      updateBatchBar();
+    }
     renderCrumbs([]);
     updateCounts();
     $("content").innerHTML = renderFiles(state.files) || `<div class="empty">${tr("list.noMatches")}</div>`;
@@ -2618,10 +2645,184 @@ function syncTopbarHeight() {
   document.documentElement.style.setProperty("--content-topbar-height", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
 }
 
+function rerenderFilesOnly() {
+  const wrap = document.querySelector("#content .file-list, #content .file-grid");
+  if (!wrap) return;
+  const body = renderFiles(state.files) || `<div class="empty">${tr(state.searchMode ? "list.noMatches" : "list.empty")}</div>`;
+  $("content").innerHTML = (state.searchMode ? "" : renderFolders(state.dirs)) + body;
+  hydrateThumbs($("content"));
+  ensureSentinel();
+  syncPickStates();
+}
+
+function setSelectMode(on) {
+  state.selectMode = on;
+  state.selected = new Set();
+  $("select-mode").classList.toggle("active", on);
+  $("batch-bar").classList.toggle("hidden", !on);
+  closeBatchMenu();
+  rerenderFilesOnly();
+  updateBatchBar();
+}
+
+function togglePick(path) {
+  if (state.selected.has(path)) state.selected.delete(path);
+  else state.selected.add(path);
+  syncPickStates();
+}
+
+function syncPickStates() {
+  document.querySelectorAll("#content [data-file]").forEach((node) => {
+    const on = state.selected.has(node.dataset.file);
+    node.classList.toggle("picked", on);
+    const box = node.querySelector(".pick-box");
+    if (box) {
+      box.classList.toggle("on", on);
+      box.innerHTML = on ? icon("check") : "";
+    }
+  });
+  updateBatchBar();
+}
+
+function updateBatchBar() {
+  const count = state.selected.size;
+  $("batch-count").textContent = count.toLocaleString();
+  $("batch-clear").disabled = count === 0;
+  $("batch-download").disabled = count === 0;
+  const allLoaded = state.files.length > 0 && state.files.every((item) => state.selected.has(item.path));
+  $("batch-all").disabled = allLoaded;
+  if (batchMenuOpen) renderBatchMenu();
+}
+
+function renderBatchMenu() {
+  const menu = $("batch-menu");
+  const count = state.selected.size;
+  const rawOk = count > 0 && count <= BATCH_RAW_MAX;
+  const convOk = count > 0 && count <= BATCH_CONVERT_MAX;
+  const limitNote = (ok, max) => (ok ? "" : `<span class="batch-limit">${tr("batch.overLimit", { max: max.toLocaleString() })}</span>`);
+  if (batchMenuPage === "convert") {
+    menu.innerHTML = `
+      <button class="batch-item batch-back" data-batch-page="main">${icon("chevron-left")}<span>${tr("batch.back")}</span></button>
+      <div class="batch-group">
+        <div class="batch-group-title">${tr("batch.imageFormat")}</div>
+        <div class="batch-chips">${IMAGE_FORMATS.map((fmt) => `<button type="button" class="kind-chip batch-chip${batchPick.img === fmt ? " active" : ""}" data-batch-img="${fmt}">${fmt.toUpperCase()}</button>`).join("")}</div>
+      </div>
+      <div class="batch-group">
+        <div class="batch-group-title">${tr("batch.audioFormat")}</div>
+        <div class="batch-chips">${AUDIO_FORMATS.map((fmt) => `<button type="button" class="kind-chip batch-chip${batchPick.aud === fmt ? " active" : ""}" data-batch-aud="${fmt}">${fmt.toUpperCase()}</button>`).join("")}</div>
+      </div>
+      <button type="button" class="batch-item primary${convOk ? "" : " disabled"}" data-batch-run="each">${icon("download")}<span>${tr("batch.convertEach")}</span>${limitNote(convOk, BATCH_CONVERT_MAX)}</button>
+      <button type="button" class="batch-item primary${convOk ? "" : " disabled"}" data-batch-run="zip">${icon("package")}<span>${tr("batch.convertZip")}</span>${limitNote(convOk, BATCH_CONVERT_MAX)}</button>`;
+    return;
+  }
+  menu.innerHTML = `
+    <button type="button" class="batch-item primary${rawOk ? "" : " disabled"}" data-batch-run="zip-raw">${icon("package")}<span>${tr("batch.zipRaw")}</span>${limitNote(rawOk, BATCH_RAW_MAX)}</button>
+    <button type="button" class="batch-item primary${rawOk ? "" : " disabled"}" data-batch-run="each-raw">${icon("download")}<span>${tr("batch.eachRaw")}</span>${limitNote(rawOk, BATCH_RAW_MAX)}</button>
+    <button type="button" class="batch-item" data-batch-page="convert">${icon("zoom")}<span>${tr("batch.convertEach")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>
+    <button type="button" class="batch-item" data-batch-page="convert">${icon("zoom")}<span>${tr("batch.convertZip")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>`;
+}
+
+function openBatchMenu() {
+  batchMenuOpen = true;
+  batchMenuPage = "main";
+  renderBatchMenu();
+  $("batch-menu").classList.remove("hidden");
+}
+
+function closeBatchMenu() {
+  batchMenuOpen = false;
+  $("batch-menu").classList.add("hidden");
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function downloadBatchZip(mode) {
+  const count = state.selected.size;
+  showBatchToast(tr("batch.zipping"), tr("batch.zippingHint", { count: count.toLocaleString() }), true);
+  try {
+    const response = await fetch("/api/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: Array.from(state.selected), mode, img: batchPick.img, aud: batchPick.aud }),
+    });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    saveBlob(blob, `npkx_batch_${Date.now()}.zip`);
+    showBatchToast(tr("batch.zipDone"), tr("batch.zipDoneHint", { size: formatBytes(blob.size) }), false);
+  } catch (error) {
+    showBatchToast(tr("batch.failed"), error.message, false);
+  }
+}
+
+async function downloadEachItem(convert) {
+  const paths = Array.from(state.selected);
+  showBatchToast(tr("batch.downloading"), tr("batch.eachHint", { count: paths.length.toLocaleString() }), true);
+  for (const path of paths) {
+    const url = convert
+      ? apiUrl("/api/convert", { path, img: batchPick.img, aud: batchPick.aud })
+      : apiUrl("/api/download", { path });
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  showBatchToast(tr("batch.done"), tr("batch.eachDoneHint", { count: paths.length.toLocaleString() }), false);
+}
+
+function runBatch(kind) {
+  if (state.selected.size === 0) return;
+  if (kind === "zip-raw") return downloadBatchZip("raw");
+  if (kind === "each-raw") return downloadEachItem(false);
+  if (kind === "zip") return downloadBatchZip("convert");
+  if (kind === "each") return downloadEachItem(true);
+}
+
+function showBatchToast(title, text, spinning) {
+  const toast = $("batch-toast");
+  clearTimeout(batchToastTimer);
+  $("batch-toast-title").textContent = title;
+  $("batch-toast-text").textContent = text || "";
+  $("batch-toast-spin").classList.toggle("hidden", !spinning);
+  toast.classList.remove("hidden", "closing");
+  void toast.offsetWidth;
+  if (!spinning) batchToastTimer = setTimeout(hideBatchToast, 5200);
+}
+
+function hideBatchToast() {
+  clearTimeout(batchToastTimer);
+  const toast = $("batch-toast");
+  if (!toast || toast.classList.contains("hidden")) return;
+  toast.classList.add("closing");
+  batchToastTimer = setTimeout(() => {
+    toast.classList.add("hidden");
+    toast.classList.remove("closing");
+  }, 240);
+}
+
 function setView(view) {
   state.view = view;
   localStorage.setItem("npk-view", view);
   updateViewButtons();
+  if (state.selectMode) {
+    rerenderFilesOnly();
+    return;
+  }
   if (state.searchMode) {
     const query = $("search").value.trim();
     if (query.length >= 2) { search(query); return; }
@@ -2645,6 +2846,11 @@ function bind() {
   $("content").addEventListener("click", (event) => {
     if (event.target.closest("#retry-more")) {
       loadMore();
+      return;
+    }
+    if (state.selectMode) {
+      const pick = event.target.closest("[data-file]");
+      if (pick) togglePick(pick.dataset.file);
       return;
     }
     const action = event.target.closest("[data-action]");
@@ -2721,6 +2927,49 @@ function bind() {
   });
   $("view-grid").addEventListener("click", () => setView("grid"));
   $("view-list").addEventListener("click", () => setView("list"));
+  $("select-mode").addEventListener("click", () => setSelectMode(!state.selectMode));
+  $("batch-exit").addEventListener("click", () => setSelectMode(false));
+  $("batch-all").addEventListener("click", () => {
+    state.files.forEach((item) => state.selected.add(item.path));
+    syncPickStates();
+  });
+  $("batch-clear").addEventListener("click", () => {
+    state.selected.clear();
+    syncPickStates();
+  });
+  $("batch-download").addEventListener("click", () => {
+    if (batchMenuOpen) closeBatchMenu();
+    else openBatchMenu();
+  });
+  $("batch-menu").addEventListener("click", (event) => {
+    const page = event.target.closest("[data-batch-page]");
+    if (page) {
+      batchMenuPage = page.dataset.batchPage;
+      renderBatchMenu();
+      return;
+    }
+    const img = event.target.closest("[data-batch-img]");
+    if (img) {
+      batchPick.img = img.dataset.batchImg;
+      renderBatchMenu();
+      return;
+    }
+    const aud = event.target.closest("[data-batch-aud]");
+    if (aud) {
+      batchPick.aud = aud.dataset.batchAud;
+      renderBatchMenu();
+      return;
+    }
+    const run = event.target.closest("[data-batch-run]");
+    if (run && !run.classList.contains("disabled")) {
+      closeBatchMenu();
+      runBatch(run.dataset.batchRun);
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (batchMenuOpen && !event.target.closest(".batch-download-wrap")) closeBatchMenu();
+  });
+  $("batch-toast-close").addEventListener("click", hideBatchToast);
   $("close-drawer").addEventListener("click", closeDrawer);
   $("overlay").addEventListener("click", closeDrawer);
   $("viewer-close").addEventListener("click", closeViewer);
@@ -2759,7 +3008,8 @@ function bind() {
   }
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (viewerIsOpen()) closeViewer();
+      if (batchMenuOpen) closeBatchMenu();
+      else if (viewerIsOpen()) closeViewer();
       else if (!$("drawer").classList.contains("hidden")) closeDrawer();
       else if ($("search").value) { $("search").value = ""; loadList(state.path, false); }
     }

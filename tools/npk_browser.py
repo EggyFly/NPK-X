@@ -29,6 +29,7 @@ import threading
 import time
 import uuid
 import webbrowser
+import zipfile
 import zstandard
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,6 +44,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 import bnk_parse
 import rebuild_data
 import resource_inspect
+import neox_object
 import image_convert
 import gmp_parse
 import xn_crypto
@@ -95,6 +97,34 @@ MIME = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
     ".txt": "text/plain; charset=utf-8", ".json": "application/json",
 }
+IMAGE_FORMATS = {"png", "jpg", "ico"}
+AUDIO_FORMATS = {"wav", "flac", "mp3"}
+BATCH_RAW_MAX = 2000
+BATCH_CONVERT_MAX = 200
+BATCH_TIME_BUDGET = 600
+BATCH_BODY_LIMIT = 2 * 1024 * 1024
+
+
+def zip_arc_name(path: str) -> str:
+    parts = []
+    for part in str(path).replace("\\", "/").split("/"):
+        clean = re.sub(r'[<>:"|?*\x00-\x1f]', "_", part.strip(" ."))
+        if clean and clean not in (".", ".."):
+            parts.append(clean)
+    return "/".join(parts) or "entry.bin"
+
+
+def unique_arc_name(name: str, used: set) -> str:
+    if name not in used:
+        used.add(name)
+        return name
+    root, ext = os.path.splitext(name)
+    index = 2
+    while f"{root}_{index}{ext}" in used:
+        index += 1
+    final = f"{root}_{index}{ext}"
+    used.add(final)
+    return final
 
 
 def default_cache_dir() -> Path:
@@ -614,6 +644,25 @@ class Handler(BaseHTTPRequestHandler):
             payload["detail"] = detail
         self._json(payload, status)
 
+    def _send_file(self, path: Path, content_type: str, filename: str, download: bool = True):
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        disposition = "attachment" if download else "inline"
+        self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quote(filename)}")
+        self.end_headers()
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(256 * 1024)
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+
     def _entry_payload(self, row) -> bytes:
         return read_entry_bytes(row["package_path"], row)
 
@@ -713,6 +762,168 @@ class Handler(BaseHTTPRequestHandler):
             if media:
                 raise ValueError("no embedded media in this bank")
         return self._decode_wwise(payload, ".bnk" if ext == ".bnk" else ".wem")
+
+    def _image_bytes(self, row, fmt: str) -> tuple[bytes, str]:
+        data, _ = self._ensure_png(row)
+        if fmt == "png":
+            return data, ".png"
+        image = Image.open(io.BytesIO(data))
+        image.load()
+        buffer = io.BytesIO()
+        if fmt == "jpg":
+            if image.mode in ("RGBA", "LA", "P"):
+                image = image.convert("RGBA")
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1])
+                image = background
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            image.save(buffer, "JPEG", quality=92)
+            return buffer.getvalue(), ".jpg"
+        if fmt == "ico":
+            image.thumbnail((256, 256))
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA")
+            image.save(buffer, "ICO")
+            return buffer.getvalue(), ".ico"
+        raise ValueError(f"unsupported image format {fmt}")
+
+    def _encode_audio(self, wav_path: Path, fmt: str) -> bytes:
+        if fmt == "wav":
+            return wav_path.read_bytes()
+        if _soundfile is None:
+            raise ValueError("soundfile not available")
+        samples, rate = _soundfile.read(str(wav_path), dtype="int16", always_2d=True)
+        buffer = io.BytesIO()
+        if fmt == "flac":
+            _soundfile.write(buffer, samples, rate, format="FLAC", subtype="PCM_16")
+        elif fmt == "mp3":
+            _soundfile.write(buffer, samples, rate, format="MP3")
+        else:
+            raise ValueError(f"unsupported audio format {fmt}")
+        return buffer.getvalue()
+
+    def _audio_entries(self, row, fmt: str) -> list[tuple[str, bytes]]:
+        ext = (row["ext"] or "").lower()
+        base = Path(row["path"])
+        payload = self._entry_payload(row)
+        if ext in (".wav", ".flac", ".ogg", ".mp3", ".m4a", ".aac", ".opus"):
+            if ext == f".{fmt}" or ext in (".m4a", ".aac", ".opus") or _soundfile is None:
+                return [(str(base), payload)]
+            try:
+                samples, rate = _soundfile.read(io.BytesIO(payload), dtype="int16", always_2d=True)
+                buffer = io.BytesIO()
+                if fmt == "flac":
+                    _soundfile.write(buffer, samples, rate, format="FLAC", subtype="PCM_16")
+                elif fmt == "mp3":
+                    _soundfile.write(buffer, samples, rate, format="MP3")
+                else:
+                    _soundfile.write(buffer, samples, rate, format="WAV", subtype="PCM_16")
+                return [(str(base.with_suffix(f".{fmt}")), buffer.getvalue())]
+            except Exception:
+                return [(str(base), payload)]
+        if ext not in (".wem", ".bnk"):
+            raise ValueError("not an audio entry")
+        wav = None
+        try:
+            if ext == ".bnk":
+                try:
+                    bank = bnk_parse.parse_bank(payload)
+                except bnk_parse.BankFormatError:
+                    bank = None
+                if bank is not None and bank.media:
+                    entries = []
+                    single = len(bank.media) == 1
+                    for index in range(len(bank.media)):
+                        _, media_payload = bank.media_payload(index=index)
+                        wav = self._decode_wav_file(media_payload, ".wem")
+                        if single:
+                            arc = str(base.with_suffix(f".{fmt}"))
+                        else:
+                            arc = str(base.with_name(f"{base.stem}_{bank.media[index].media_id}.{fmt}"))
+                        entries.append((arc, self._encode_audio(wav, fmt)))
+                        try:
+                            wav.unlink()
+                        except FileNotFoundError:
+                            pass
+                        wav = None
+                    return entries
+            wav = self._decode_wav_file(payload, ".bnk" if ext == ".bnk" else ".wem")
+            return [(str(base.with_suffix(f".{fmt}")), self._encode_audio(wav, fmt))]
+        finally:
+            if wav is not None:
+                try:
+                    wav.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _convert_entries(self, row, image_format: str, audio_format: str) -> list[tuple[str, bytes]]:
+        ext = (row["ext"] or "").lower()
+        if row["kind"] == "image" or ext in IMAGE_EXT:
+            try:
+                data, suffix = self._image_bytes(row, image_format)
+                return [(str(Path(row["path"]).with_suffix(suffix)), data)]
+            except Exception:
+                return [(row["path"], self._entry_payload(row))]
+        if row["kind"] in ("audio", "bank") or ext in AUDIO_EXT:
+            try:
+                return self._audio_entries(row, audio_format)
+            except Exception:
+                return [(row["path"], self._entry_payload(row))]
+        return [(row["path"], self._entry_payload(row))]
+
+    def _batch_zip(self, body) -> Path:
+        paths = body.get("paths")
+        mode = body.get("mode")
+        image_format = body.get("img", "png")
+        audio_format = body.get("aud", "wav")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("paths required")
+        if mode not in ("raw", "convert"):
+            raise ValueError("invalid mode")
+        if image_format not in IMAGE_FORMATS:
+            raise ValueError("invalid image format")
+        if audio_format not in AUDIO_FORMATS:
+            raise ValueError("invalid audio format")
+        limit = BATCH_RAW_MAX if mode == "raw" else BATCH_CONVERT_MAX
+        if len(paths) > limit:
+            raise ValueError(f"too many files (max {limit})")
+        wanted = [str(item)[:1024] for item in paths if isinstance(item, str) and item][:limit]
+        started = time.monotonic()
+        tmpdir = self.server.cache_root / "tmp"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        target = tmpdir / f"batch_{uuid.uuid4().hex}.zip"
+        used: set = set()
+        errors: list[str] = []
+        try:
+            with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as bundle:
+                for item in wanted:
+                    row = self._row(item)
+                    if row is None:
+                        errors.append(f"{item}: not found")
+                        continue
+                    try:
+                        if mode == "raw" or time.monotonic() - started > BATCH_TIME_BUDGET:
+                            entries = [(row["path"], self._entry_payload(row))]
+                        else:
+                            entries = self._convert_entries(row, image_format, audio_format)
+                    except Exception as exc:
+                        try:
+                            entries = [(row["path"], self._entry_payload(row))]
+                        except Exception:
+                            errors.append(f"{row['path']}: {exc}")
+                            continue
+                    for arc, data in entries:
+                        bundle.writestr(unique_arc_name(zip_arc_name(arc), used), data)
+                if errors:
+                    bundle.writestr("_batch_errors.txt", "\n".join(errors) + "\n")
+            return target
+        except Exception:
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
     def _materialize(self, row) -> tuple[Path, bool]:
         payload = self._entry_payload(row)
@@ -1116,6 +1327,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route, _ = self._query()
+        if route == "/api/batch":
+            origin = self.headers.get("Origin")
+            if origin:
+                try:
+                    if urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+                        self._error("origin not allowed", 403)
+                        return
+                except Exception:
+                    self._error("bad origin", 403)
+                    return
+            if "application/json" not in (self.headers.get("Content-Type") or ""):
+                self._error("expected application/json", 415)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length <= 0 or length > BATCH_BODY_LIMIT:
+                    raise ValueError("invalid body length")
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                zip_path = self._batch_zip(body)
+            except ValueError as exc:
+                self._error(str(exc), 400)
+                return
+            except Exception as exc:
+                self._error(f"batch failed: {exc}", 500)
+                return
+            try:
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                self._send_file(zip_path, "application/zip", f"npkx_batch_{stamp}.zip")
+            finally:
+                try:
+                    zip_path.unlink()
+                except FileNotFoundError:
+                    pass
+            return
         if route != "/api/open":
             self._error("not found", 404)
             return
@@ -1353,6 +1598,29 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json(data)
                 return
+            if route == "/api/neox":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() not in (".gim", ".mtg"):
+                    self._error("not a NeoX object file", 415)
+                    return
+                try:
+                    payload = self._entry_payload(row)
+                    data = neox_object.parse(payload)
+                except Exception as exc:
+                    self._error(f"NeoX parse failed: {exc}", 415)
+                    return
+                data.update(
+                    {
+                        "path": row["path"], "package": row["package"],
+                        "kind": row["kind"], "ext": row["ext"], "size": row["unpacked"],
+                    }
+                )
+                self._json(data)
+                return
             if route == "/api/xn":
                 client = (self.client_address[0] or "").lower()
                 try:
@@ -1533,6 +1801,29 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self._entry_payload(row)
                 ext = (row["ext"] or "").lower()
                 self._send(payload, MIME.get(ext, "video/mp4"), filename=row["name"])
+                return
+            if route == "/api/convert":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                image_format = query.get("img", ["png"])[0] or "png"
+                audio_format = query.get("aud", ["wav"])[0] or "wav"
+                if image_format not in IMAGE_FORMATS:
+                    self._error("invalid image format", 400)
+                    return
+                if audio_format not in AUDIO_FORMATS:
+                    self._error("invalid audio format", 400)
+                    return
+                try:
+                    entries = self._convert_entries(row, image_format, audio_format)
+                except Exception as exc:
+                    self._error(f"convert failed: {exc}", 415)
+                    return
+                arc, data = entries[0]
+                suffix = Path(arc).suffix.lower()
+                self._send(data, MIME.get(suffix, "application/octet-stream"), filename=Path(arc).name, download=True)
                 return
             if route == "/api/download":
                 path = (query.get("path", [""])[0] or "").strip("/")

@@ -722,6 +722,76 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes toast-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
 
+.file:has(.pick-box) { position: relative; }
+.file-row-thumb:has(.pick-box) { position: relative; }
+.pick-box {
+  position: absolute; top: 7px; left: 7px; z-index: 4;
+  width: 18px; height: 18px; border-radius: 5px;
+  border: 1.5px solid rgba(232,238,247,.72); background: rgba(6,10,15,.58);
+  display: grid; place-items: center; color: #10161f; pointer-events: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+.pick-box .icon { width: 12px; height: 12px; }
+.pick-box.on { background: var(--accent-2); border-color: var(--accent-2); }
+.file-row .pick-box { top: -7px; left: -7px; width: 16px; height: 16px; border-radius: 4px; }
+.file-row .pick-box .icon { width: 10px; height: 10px; }
+.file.picked {
+  border-color: rgba(110,231,216,.8); background: rgba(110,231,216,.07);
+  box-shadow: 0 0 0 2px rgba(110,231,216,.16);
+}
+.file.picked .file-name { color: #ecfffc; }
+.file-row.picked { background: rgba(110,231,216,.14); }
+.file-row.picked::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-2);
+}
+.file-row.picked .file-row-name { color: #ecfffc; }
+
+.batch-bar {
+  position: sticky; top: calc(var(--content-topbar-height, 120px) + 10px); z-index: 14;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 9px 10px 9px 8px;
+  border: 1px solid rgba(110,231,216,.32); border-radius: 12px;
+  background: rgba(14,24,34,.95); backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.3);
+  animation: bar-in .26s cubic-bezier(.22,.8,.25,1);
+}
+.batch-count { display: flex; align-items: baseline; gap: 5px; margin: 0 2px; font-size: 11px; color: var(--muted); }
+.batch-count b { color: var(--accent-2); font-size: 15px; font-variant-numeric: tabular-nums; }
+.batch-download-wrap { position: relative; margin-left: auto; }
+.batch-download-wrap .btn { display: inline-flex; align-items: center; gap: 6px; }
+
+.batch-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30;
+  width: 250px; padding: 6px; border-radius: 12px;
+  background: rgba(16,25,37,.98); border: 1px solid #2c3f57;
+  box-shadow: 0 18px 44px rgba(0,0,0,.5); backdrop-filter: blur(14px);
+  display: flex; flex-direction: column; gap: 2px;
+  animation: menu-in .18s cubic-bezier(.22,.8,.25,1);
+}
+.batch-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: transparent; color: #c7d4e4; cursor: pointer;
+  padding: 8px 10px; border-radius: 8px; font-size: 12px; text-align: left;
+  transition: background .14s ease, color .14s ease;
+}
+.batch-item:hover { background: var(--panel-2); color: var(--text); }
+.batch-item .icon { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.batch-item:hover .icon { color: var(--accent-2); }
+.batch-item .chev { margin-left: auto; }
+.batch-item.disabled { opacity: .45; cursor: default; }
+.batch-item.disabled:hover { background: transparent; color: #c7d4e4; }
+.batch-item.disabled:hover .icon { color: var(--muted); }
+.batch-limit { margin-left: auto; color: var(--danger); font-size: 10px; white-space: nowrap; }
+.batch-back { color: var(--muted); font-size: 11px; padding: 6px 10px; }
+.batch-back:hover { color: var(--text); }
+.batch-group { padding: 7px 10px 5px; }
+.batch-group-title { color: var(--muted); font-size: 10px; letter-spacing: .8px; text-transform: uppercase; margin-bottom: 6px; }
+.batch-chips { display: flex; gap: 5px; }
+.batch-menu .kind-chip { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.batch-toast-spin { width: 15px; height: 15px; flex: none; margin-left: 2px; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes bar-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important;
@@ -758,4 +828,5 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
   .project-corner { right: 10px; bottom: 10px; max-width: calc(100vw - 20px); }
   .project-update { max-width: 150px; }
   .update-toast { right: 10px; bottom: 54px; width: calc(100vw - 20px); }
+  .batch-menu { width: min(250px, calc(100vw - 60px)); }
 }
