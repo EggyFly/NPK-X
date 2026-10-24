@@ -17,3 +17,4 @@ AGENTS.md
 TASK.md
 .env.*
 !.env.example
+data/

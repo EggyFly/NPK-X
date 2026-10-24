@@ -164,7 +164,7 @@ def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> d
             continue
     profile.update(
         {
-            "name": f"generated-{time.strftime('%Y-%m-%d')}",
+            "name": "generated-local-client",
             "format": "NXPK mode 3, 28-byte entries",
             "path_dict": path_dict_name,
             "known_packages": known,

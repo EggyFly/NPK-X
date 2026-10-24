@@ -48,6 +48,7 @@ import gmp_parse
 import xn_crypto
 import xn_parse
 import xn_decompile
+import xn_bootstrap
 import nxpk_mode3 as N
 import extract_mode3 as E
 
@@ -369,6 +370,9 @@ class BrowserServer(ThreadingHTTPServer):
     _xn_decompile_sem = threading.Semaphore(1)
     _xn_names_lock = threading.Lock()
     _xn_names = None
+    _xn_names_mtime = 0.0
+    xn_names_path = None
+    xn_opmap_path = None
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
@@ -897,15 +901,21 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def _xn_name_map(self) -> dict:
+        path = Path(self.server.xn_names_path) if self.server.xn_names_path else Path(__file__).resolve().parent.parent / "data" / "xn_names.json"
+        try:
+            mtime = path.stat().st_mtime if path.is_file() else 0.0
+        except OSError:
+            mtime = 0.0
         with BrowserServer._xn_names_lock:
-            if BrowserServer._xn_names is None:
+            if BrowserServer._xn_names is None or mtime != BrowserServer._xn_names_mtime:
                 mapping = {}
                 try:
-                    payload = json.loads((Path(__file__).resolve().parent.parent / "data" / "xn_names.json").read_text("utf-8"))
+                    payload = json.loads(path.read_text("utf-8"))
                     mapping = {int(key): value for key, value in payload.get("map", {}).items()}
                 except (OSError, ValueError, TypeError):
                     mapping = {}
                 BrowserServer._xn_names = mapping
+                BrowserServer._xn_names_mtime = mtime
             return BrowserServer._xn_names
 
     def _xn_data(self, row) -> dict:
@@ -1517,11 +1527,30 @@ def main() -> int:
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
 
+    game_root = E.find_game_root(args.game_root)
+    packages = sorted(game_root.glob("*.npk"))
+    if not packages:
+        print(f"no NPK files under {game_root}", file=sys.stderr)
+        return 4
+    cache_root = args.cache_dir or default_cache_dir()
+    cache_root.mkdir(parents=True, exist_ok=True)
+
     profile_path = args.profile
     if profile_path is None:
         candidate = E.PACKAGE_ROOT / "data" / "mode3_profile.json"
         if candidate.is_file():
             profile_path = candidate
+    if profile_path is None:
+        generated_profile = cache_root / "mode3_profile.json"
+        if not generated_profile.is_file():
+            try:
+                generated = rebuild_data.build_profile(game_root, "pathdict.txt.gz")
+                generated_profile.write_text(json.dumps(generated, ensure_ascii=False, indent=2) + "\n", "utf-8")
+                print(f"generated profile={generated_profile}")
+            except (OSError, ValueError) as exc:
+                print(f"warning: could not generate profile: {exc}", file=sys.stderr)
+        if generated_profile.is_file():
+            profile_path = generated_profile
     if profile_path is not None and not Path(profile_path).is_file():
         print(f"warning: profile not found: {profile_path}; using built-in defaults", file=sys.stderr)
         profile_path = None
@@ -1534,13 +1563,6 @@ def main() -> int:
         if not tables_path.is_absolute() and profile_path:
             tables_path = Path(profile_path).parent / tables_path
         N.install_tables(tables_path)
-    game_root = E.find_game_root(args.game_root)
-    packages = sorted(game_root.glob("*.npk"))
-    if not packages:
-        print(f"no NPK files under {game_root}", file=sys.stderr)
-        return 4
-    cache_root = args.cache_dir or default_cache_dir()
-    cache_root.mkdir(parents=True, exist_ok=True)
     path_dict = None if args.refresh_pathdict else E.find_path_dict(args.path_dict)
     if path_dict is None:
         generated = cache_root / "pathdict.generated.txt.gz"
@@ -1569,6 +1591,16 @@ def main() -> int:
     except (N.Mode3FormatError, ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 5
+    data_seed = E.PACKAGE_ROOT / "data" / "xn_names.json"
+    opmap_path, names_path = xn_bootstrap.ensure(
+        db_path,
+        cache_root,
+        data_seed if data_seed.is_file() else None,
+        240.0,
+        print,
+    )
+    xn_parse.OPMAP_PATH = str(opmap_path)
+    xn_parse._OPMAP_CACHE = None
     artifacts_root = cache_root / "artifacts"
     artifacts = artifacts_root / hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest()[:16]
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -1585,6 +1617,8 @@ def main() -> int:
             "cache_limit": args.cache_limit_mb * 1024 * 1024,
             "vgmstream": E.find_vgmstream(),
             "fingerprint": meta,
+            "xn_names_path": str(names_path),
+            "xn_opmap_path": str(opmap_path),
         },
     )
     server = None

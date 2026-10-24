@@ -247,6 +247,7 @@ def candidates(plain: bytes, limit: int = 6000) -> set[str]:
 
 
 _OPMAP_CACHE = None
+OPMAP_PATH = None
 HAVE_ARGUMENT = 90
 EXTRA_ARG = 131
 FUSED_FAST_CONST = 0xAD
@@ -257,7 +258,7 @@ def opmap():
     if _OPMAP_CACHE is None:
         base, opext, std = {}, {}, {}
         try:
-            path = Path(__file__).resolve().parent.parent / "data" / "xn_opmap.json"
+            path = Path(OPMAP_PATH) if OPMAP_PATH else Path(__file__).resolve().parent.parent / "data" / "xn_opmap.json"
             raw = json.loads(path.read_text("utf-8"))
             std = raw.get("std", {})
             base = {int(key): value for key, value in raw.get("base", {}).items()}
@@ -266,6 +267,36 @@ def opmap():
             pass
         _OPMAP_CACHE = (base, opext, std)
     return _OPMAP_CACHE
+
+
+def build_opmap(plain: bytes) -> dict:
+    from xn_decompile import STD, split_opext
+
+    root = load(plain)
+    if not isinstance(root, Code):
+        raise ValueError("opcode module is not a code object")
+    pairs = []
+    consts = root.consts
+    index = 0
+    while index < len(consts):
+        name = consts[index]
+        if isinstance(name, bytes) and index + 1 < len(consts) and isinstance(consts[index + 1], int):
+            pairs.append((name.decode("latin1"), consts[index + 1]))
+            index += 2
+        else:
+            index += 1
+    base = {}
+    opext = {}
+    for name, code in pairs:
+        if not 0 <= code < 256:
+            continue
+        if name.startswith("OPEXT_"):
+            opext[code] = split_opext(name)
+        else:
+            base[code] = name
+    base.setdefault(90, "DELETE_FAST")
+    base.setdefault(126, "EXTENDED_ARG")
+    return {"std": STD, "base": base, "opext": opext}
 
 
 def lnotab_map(code: Code) -> dict:
