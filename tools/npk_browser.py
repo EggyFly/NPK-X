@@ -1167,6 +1167,7 @@ class Handler(BaseHTTPRequestHandler):
                         "roots": roots,
                         "kinds": kinds,
                         "profile": meta.get("profile"),
+                        "game_version": getattr(self.server, "profile", {}).get("tested_client"),
                         "platform": sys.platform,
                         "cache_mb": round(self.server.cache_limit / 1024 / 1024, 1),
                     }
@@ -1548,20 +1549,20 @@ def main() -> int:
         print(f"warning: profile not found: {profile_path}; generating from local client", file=sys.stderr)
         profile_path = None
     if profile_path is None:
+        generated_profile = cache_root / "mode3_profile.json"
+        try:
+            generated_data = rebuild_data.build_profile(game_root, "pathdict.txt.gz")
+            tmp_profile = generated_profile.with_name(generated_profile.name + ".tmp")
+            tmp_profile.write_text(json.dumps(generated_data, ensure_ascii=False, indent=2) + "\n", "utf-8")
+            tmp_profile.replace(generated_profile)
+            print(f"profile={generated_data.get('name')} (generated from local client)")
+            profile_path = generated_profile
+        except (OSError, ValueError) as exc:
+            print(f"warning: could not generate profile: {exc}", file=sys.stderr)
+    if profile_path is None:
         candidate = E.PACKAGE_ROOT / "data" / "mode3_profile.json"
         if candidate.is_file():
             profile_path = candidate
-    if profile_path is None:
-        generated_profile = cache_root / "mode3_profile.json"
-        if not generated_profile.is_file():
-            try:
-                generated = rebuild_data.build_profile(game_root, "pathdict.txt.gz")
-                generated_profile.write_text(json.dumps(generated, ensure_ascii=False, indent=2) + "\n", "utf-8")
-                print(f"generated profile={generated_profile}")
-            except (OSError, ValueError) as exc:
-                print(f"warning: could not generate profile: {exc}", file=sys.stderr)
-        if generated_profile.is_file():
-            profile_path = generated_profile
     if profile_path is not None and not Path(profile_path).is_file():
         print("warning: generated profile unavailable; using built-in defaults", file=sys.stderr)
         profile_path = None
@@ -1628,6 +1629,7 @@ def main() -> int:
             "cache_limit": args.cache_limit_mb * 1024 * 1024,
             "vgmstream": E.find_vgmstream(),
             "fingerprint": meta,
+            "profile": profile,
             "xn_names_path": str(names_path),
             "xn_opmap_path": str(opmap_path),
         },

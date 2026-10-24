@@ -14,6 +14,7 @@ import argparse
 import gzip
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -148,7 +149,63 @@ def write_path_dictionary(data: bytes, output: Path, log=print) -> Path:
     return output
 
 
+VERSION_PATTERNS = {
+    "package_version": r"(?:package_version|PKG_REV)['\"]?\s*[:=]\s*['\"]?([0-9][\w.]*)",
+    "engine_ver": r"(?:ENGINE_VERSION|engine_ver|#ENGINE_VER)['\"]?\s*[:=]\s*['\"]?(\d+)",
+    "a50_version": r"a50_version['\"]?\s*[:=]\s*['\"]?([0-9][0-9\- :]*)",
+    "res_rev": r"(?:RES_VERSION|res_rev|RS_VER)['\"]?\s*[:=]\s*['\"]?(\d+)",
+    "client_ver": r"client_ver['\"]?\s*[:=]\s*['\"]?(\d+)",
+    "svn_branch": r"svn_branch['\"]?\s*[:=]\s*['\"]?([0-9A-Za-z_.-]+)",
+    "game_ver_str": r"game_ver_str['\"]?\s*[:=]\s*['\"]?([0-9A-Za-z_.()-]+)",
+}
+
+
+def detect_client_version(game_root: Path) -> tuple[str, dict, dict]:
+    game_root = Path(game_root)
+    logs = []
+    main_log = game_root / "log.txt"
+    if main_log.is_file():
+        logs.append(main_log)
+    old_logs = sorted(game_root.glob("log_old_*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    logs.extend(old_logs)
+    text = ""
+    for log in logs:
+        try:
+            text = log.read_text("utf-8", errors="replace")
+        except OSError:
+            continue
+        if "package_version" in text or "PKG_REV" in text or "ENGINE_VER" in text:
+            break
+    fields = {}
+    for key, pattern in VERSION_PATTERNS.items():
+        matches = list(re.finditer(pattern, text))
+        if matches:
+            fields[key] = matches[-1].group(1).strip()
+    package = fields.get("package_version")
+    engine = fields.get("engine_ver")
+    a50 = fields.get("a50_version")
+    if package and engine:
+        name = "pc-%s-engine-%s" % (package, engine)
+        if a50:
+            tag = a50.split(":")[-1].strip()[-4:]
+            if tag:
+                name += "-a50-%s" % tag
+    else:
+        name = "generated-local-client"
+    tested = {
+        "engine_ver": engine or "",
+        "package_version": package or "",
+        "a50_version": a50 or "",
+        "res_rev": int(fields["res_rev"]) if str(fields.get("res_rev", "")).isdigit() else None,
+        "client_ver": int(fields["client_ver"]) if str(fields.get("client_ver", "")).isdigit() else None,
+        "svn_branch": fields.get("svn_branch", ""),
+        "game_ver_str": fields.get("game_ver_str", ""),
+    }
+    return name, tested, fields
+
+
 def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> dict:
+    name, tested, version = detect_client_version(game_root)
     profile = N.load_profile(None)
     known = {}
     for package in sorted(Path(game_root).glob("*.npk")):
@@ -164,10 +221,12 @@ def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> d
             continue
     profile.update(
         {
-            "name": "generated-local-client",
+            "name": name,
             "format": "NXPK mode 3, 28-byte entries",
+            "tested_client": tested,
             "path_dict": path_dict_name,
             "known_packages": known,
+            "version": version,
             "notes": "Generated from the local client. The mode-3 key is build-bound; refresh it if index validation fails.",
         }
     )
