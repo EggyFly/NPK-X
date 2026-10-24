@@ -1096,6 +1096,16 @@ function renderXnPreview(data, container, file) {
   $("preview-note").textContent = tr("xn.structure");
 }
 
+function lockViewerScroll() {
+  document.documentElement.classList.add("viewer-open");
+  document.body.classList.add("viewer-open");
+}
+
+function unlockViewerScroll() {
+  document.documentElement.classList.remove("viewer-open");
+  document.body.classList.remove("viewer-open");
+}
+
 async function openScriptViewer(file) {
   closeDrawer();
   if (viewerCloseTimer) {
@@ -1115,6 +1125,7 @@ async function openScriptViewer(file) {
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
+  lockViewerScroll();
   try {
     const data = await getJson(apiUrl("/api/xn", { path: file.path }));
     if (token !== viewer.token) return;
@@ -1339,6 +1350,7 @@ function openViewer(file) {
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
+  lockViewerScroll();
   if (viewer.mode === "map") {
     openMapViewer(file, token);
   } else if (viewer.mode === "image") {
@@ -1381,6 +1393,7 @@ function closeViewer() {
   node.setAttribute("aria-hidden", "true");
   if (node.classList.contains("hidden")) {
     clearViewerContent();
+    unlockViewerScroll();
     return;
   }
   node.classList.remove("open");
@@ -1392,6 +1405,7 @@ function closeViewer() {
     node.classList.add("hidden");
     node.classList.remove("closing");
     clearViewerContent();
+    unlockViewerScroll();
   }, 340);
 }
 

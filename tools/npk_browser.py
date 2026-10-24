@@ -1666,11 +1666,13 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 5
     data_seed = E.PACKAGE_ROOT / "data" / "xn_names.json"
+    if not data_seed.is_file():
+        data_seed = E.PACKAGE_ROOT / "dataa" / "xn_names.json"
     opmap_path, names_path = xn_bootstrap.ensure(
         db_path,
         cache_root,
         data_seed if data_seed.is_file() else None,
-        240.0,
+        600.0,
         print,
     )
     xn_parse.OPMAP_PATH = str(opmap_path)

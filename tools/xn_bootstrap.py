@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import mmh3
@@ -14,6 +15,7 @@ import xn_crypto
 import xn_parse
 
 OPCODE_SIGNATURE = 0xDC830DF0
+INDEX_VERSION = 2
 SEEDS = (
     "opcode", "game", "init", "redirect",
     "client_consts", "common.mobilecommon", "custom.client", "public.consts",
@@ -84,26 +86,33 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
     for row in rows:
         entries.setdefault(row["signature"], []).append(row)
     name_map = {}
-    queue = []
+    new_queue = deque()
+    known_queue = deque()
     scheduled = set()
     tested = set()
 
     def schedule(name: str) -> None:
-        if name in tested or not (2 <= len(name) <= 90):
+        if not (2 <= len(name) <= 90):
             return
-        tested.add(name)
-        relative = name.replace(".", "\\") + ".nxs"
-        forms = (
-            (relative, name),
-            (relative + "\\__init__.nxs", name + ".__init__"),
-            ("clients\\" + relative, name),
-            ("clients\\" + relative + "\\__init__.nxs", name + ".__init__"),
-        )
-        for path, salt in forms:
-            signature = mmh3.hash(path, 0x9747B28C, signed=False)
-            if signature in entries and signature not in name_map and signature not in scheduled:
-                scheduled.add(signature)
-                queue.append((signature, salt))
+        parts = name.split(".")
+        for index in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:index])
+            if not (2 <= len(prefix) <= 90) or prefix in tested:
+                continue
+            tested.add(prefix)
+            base = prefix.replace(".", "\\")
+            forms = (
+                (base + ".nxs", prefix),
+                (base + "\\__init__.nxs", prefix + ".__init__"),
+                ("clients\\" + base + ".nxs", prefix),
+                ("clients\\" + base + "\\__init__.nxs", prefix + ".__init__"),
+            )
+            for path, salt in forms:
+                signature = mmh3.hash(path, 0x9747B28C, signed=False)
+                if signature in entries and signature not in scheduled:
+                    scheduled.add(signature)
+                    target = known_queue if signature in name_map else new_queue
+                    target.append((signature, salt))
 
     if seed_path and seed_path.is_file():
         try:
@@ -114,36 +123,73 @@ def build_names(db_path: Path, output: Path, budget: float = 240.0, limit: int =
             pass
     for seed in SEEDS:
         schedule(seed)
+    for name in set(name_map.values()):
+        schedule(name)
 
     started = time.time()
     decrypted = 0
-    while queue and decrypted < limit and time.time() - started < budget:
-        signature, salt = queue.pop(0)
-        if signature in name_map:
+    scanned = set()
+    while (new_queue or known_queue) and decrypted < limit and time.time() - started < budget:
+        signature, salt = new_queue.popleft() if new_queue else known_queue.popleft()
+        if signature in scanned:
             continue
+        scanned.add(signature)
         row = entries[signature][0]
         try:
             payload = _read_entry(packages[row["package"]], row["offset"], row["packed"], row["unpacked"], row["compression"])
+            sizes = xn_crypto.header(payload)
+            # 大于 4KB 的脚本会用纯 Python 解密很久, 只从小脚本收集模块名, 避免索引线程卡死.
+            if not sizes or sizes[1] > 4 * 1024:
+                continue
             plain = xn_crypto.decrypt(payload, salt)
         except Exception:
             continue
         if not plain:
             continue
-        name_map[signature] = salt
-        decrypted += 1
-        if decrypted % 100 == 0:
-            log("XN name index: %d modules, queue %d, %.0fs" % (decrypted, len(queue), time.time() - started))
+        if signature not in name_map:
+            name_map[signature] = salt
+            decrypted += 1
+            if decrypted % 500 == 0:
+                _write_json(output, {"version": INDEX_VERSION, "complete": False, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
+                log("XN name index: %d modules, queue %d, %.0fs" % (decrypted, len(new_queue) + len(known_queue), time.time() - started))
         try:
             for candidate in xn_parse.candidates(plain):
                 schedule(candidate)
         except Exception:
             continue
-    _write_json(output, {"map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
+    _write_json(output, {"version": INDEX_VERSION, "complete": not new_queue and not known_queue, "map": {str(key): value for key, value in name_map.items()}, "decrypted": decrypted})
     log("XN name index generated: %s (%d modules)" % (output, len(name_map)))
     return len(name_map)
 
 
-def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 240.0, log=print) -> tuple[Path, Path]:
+def _map_count(path: Path) -> int:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return 0
+    return len(data.get("map", {})) if isinstance(data, dict) else 0
+
+
+def _index_version(path: Path) -> int:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return 0
+    try:
+        return int(data.get("version") or 0) if isinstance(data, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _index_complete(path: Path) -> bool:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(data.get("complete")) if isinstance(data, dict) else False
+
+
+def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budget: float = 600.0, log=print) -> tuple[Path, Path]:
     opmap_path = cache_root / "xn_opmap.json"
     names_path = cache_root / "xn_names.json"
     if not opmap_path.is_file():
@@ -151,17 +197,26 @@ def ensure(db_path: Path, cache_root: Path, seed_path: Path | None = None, budge
             build_opmap(db_path, opmap_path, log)
         except Exception as exc:
             log("XN opcode index failed: %s" % exc)
-    need_build = not names_path.is_file()
-    if need_build and seed_path and seed_path.is_file():
+    need_build = (
+        not names_path.is_file()
+        or _index_version(names_path) < INDEX_VERSION
+        or not _index_complete(names_path)
+    )
+    if not need_build and seed_path and seed_path.is_file() and _map_count(seed_path) > _map_count(names_path):
+        need_build = True
+    if need_build and not names_path.is_file() and seed_path and seed_path.is_file():
         try:
             _write_json(names_path, json.loads(seed_path.read_text("utf-8")))
             log("XN name index seeded from %s" % seed_path)
         except (OSError, ValueError):
             pass
     if need_build:
+        seed_for_build = names_path if names_path.is_file() else seed_path
+        if seed_path and seed_path.is_file() and _map_count(seed_path) > _map_count(names_path):
+            seed_for_build = seed_path
         thread = threading.Thread(
             target=build_names,
-            args=(db_path, names_path, budget, 20000, names_path if names_path.is_file() else seed_path, log),
+            args=(db_path, names_path, budget, 50000, seed_for_build, log),
             name="xn-name-index",
             daemon=True,
         )

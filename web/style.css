@@ -38,6 +38,7 @@ button, input { font: inherit; color: inherit; }
 a { color: var(--accent-2); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .hidden { display: none !important; }
+html.viewer-open, body.viewer-open { overflow: hidden; }
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 .icon {
   width: 1em; height: 1em; display: inline-block; vertical-align: -.125em; flex: none;
@@ -467,7 +468,7 @@ a:hover { text-decoration: underline; }
 .xn-head span { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xn-list { display: flex; flex-wrap: wrap; gap: 5px; max-height: 220px; overflow: auto; padding: 2px 0; }
 .xn-item { max-width: 100%; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: #c2d0e0; font: 10px/1.5 ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.script-viewer { position: absolute; inset: 0; overflow: auto; padding: 22px 26px; }
+.script-viewer { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: 22px 26px; }
 .script-preview { margin: 0; color: #c7d4e4; font: 12px/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 .script-preview + .script-preview { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
 .gmp-units {
@@ -622,7 +623,7 @@ a:hover { text-decoration: underline; }
   position: absolute; border: 1px solid var(--accent-2); background: rgba(110, 231, 216, .12);
   pointer-events: none; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .16);
 }
-.viewer-text-wrap { position: absolute; inset: 0; overflow: auto; }
+.viewer-text-wrap { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .viewer-text {
   margin: 0; padding: 14px 18px; color: #c7d4e4;
   font: 12px/1.6 ui-monospace, Consolas, monospace; white-space: pre; tab-size: 4;
