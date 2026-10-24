@@ -27,6 +27,123 @@ let drawerCloseTimer = 0;
 let listToken = 0;
 let moreObserver = null;
 
+const I18N_CODES = ["zh_cn", "zh_tw", "en_us"];
+const I18N_STORAGE = "npk-language";
+const i18nState = { choice: "auto", detected: "zh_cn", code: "zh_cn", data: {}, catalog: {} };
+
+function detectLanguage() {
+  const tag = String((navigator.languages && navigator.languages[0]) || navigator.language || "en-US").toLowerCase();
+  if (tag.startsWith("zh")) return /(tw|hk|mo)/.test(tag) ? "zh_tw" : "zh_cn";
+  if (tag.startsWith("en")) return "en_us";
+  return "en_us";
+}
+
+function tr(key, vars = {}) {
+  let text = i18nState.data[key];
+  if (text === undefined) text = key;
+  return String(text).replace(/\{(\w+)\}/g, (_, name) => (vars[name] !== undefined ? String(vars[name]) : `{${name}}`));
+}
+
+function backendText(key, detail) {
+  if (!key) return "";
+  return detail ? tr(key, { message: detail }) : tr(key);
+}
+
+async function loadI18nCatalog() {
+  const entries = await Promise.all(I18N_CODES.map(async (code) => {
+    try {
+      const response = await fetch(`/language/${code}.json`, { cache: "no-store" });
+      if (!response.ok) throw new Error(String(response.status));
+      return [code, await response.json()];
+    } catch (error) {
+      console.warn(`language ${code} failed`, error);
+      return [code, { intro: { display: code, region: "" }, i18n: {} }];
+    }
+  }));
+  i18nState.catalog = Object.fromEntries(entries);
+}
+
+function applyStaticI18n() {
+  document.querySelectorAll("[data-i18n]").forEach((node) => {
+    if (node.id === "preview-name" && state.previewPath) return;
+    node.textContent = tr(node.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.placeholder = tr(node.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    node.title = tr(node.dataset.i18nTitle);
+  });
+  document.querySelectorAll("[data-i18n-aria]").forEach((node) => {
+    node.setAttribute("aria-label", tr(node.dataset.i18nAria));
+  });
+}
+
+function renderLanguageOptions() {
+  const select = $("language");
+  if (!select) return;
+  const autoName = i18nState.catalog[i18nState.detected]?.intro?.display || i18nState.detected;
+  select.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "auto";
+  auto.textContent = tr("language.autoLabel", { name: autoName });
+  select.appendChild(auto);
+  for (const code of I18N_CODES) {
+    const info = i18nState.catalog[code];
+    if (!info) continue;
+    const option = document.createElement("option");
+    option.value = code;
+    option.textContent = info.intro?.display || code;
+    select.appendChild(option);
+  }
+  select.value = i18nState.choice;
+}
+
+function refreshLabelMaps() {
+  for (const kind of ["image", "audio", "bank", "video", "text", "script", "model", "binary", "dir"]) {
+    KIND_LABEL[kind] = tr(`kind.${kind}`);
+  }
+  ROOT_LABEL._script = tr("root.script");
+  ROOT_LABEL._unresolved = tr("root.unresolved");
+  MAP_EID_LABEL[100001] = tr("map.eid.trigger");
+  MAP_EID_LABEL[100007] = tr("map.eid.spawn");
+  MAP_EID_LABEL[100008] = tr("map.eid.mixer");
+  MAP_EID_LABEL[100024] = tr("map.eid.corner");
+  MAP_EID_LABEL[100029] = tr("map.eid.gear");
+  MAP_EID_LABEL[100060] = tr("map.eid.box");
+  MAP_EID_LABEL[900001] = tr("map.eid.floor");
+}
+
+async function setLanguage(choice, rerender = true) {
+  const detected = i18nState.detected;
+  const code = choice === "auto" ? detected : (i18nState.catalog[choice] ? choice : "zh_cn");
+  i18nState.choice = choice;
+  i18nState.code = code;
+  i18nState.data = i18nState.catalog[code]?.i18n || {};
+  localStorage.setItem(I18N_STORAGE, choice);
+  document.documentElement.lang = code.replace("_", "-");
+  refreshLabelMaps();
+  applyStaticI18n();
+  renderLanguageOptions();
+  if (!rerender) return;
+  const preview = state.previewPath;
+  const previewFile = preview ? state.files.find((item) => item.path === preview) : null;
+  if (viewerIsOpen()) closeViewer();
+  if (state.searchMode) await search(state.searchQuery);
+  else await loadList(state.path, false, true);
+  if (previewFile) showPreview(previewFile);
+}
+
+async function initI18n() {
+  i18nState.detected = detectLanguage();
+  await loadI18nCatalog();
+  i18nState.choice = localStorage.getItem(I18N_STORAGE) || "auto";
+  if (i18nState.choice !== "auto" && !i18nState.catalog[i18nState.choice]) i18nState.choice = "auto";
+  await setLanguage(i18nState.choice, false);
+  const select = $("language");
+  if (select) select.addEventListener("change", () => setLanguage(select.value, true));
+}
+
 function icon(name) {
   return `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 }
@@ -67,15 +184,8 @@ async function getJson(url) {
   return response.json();
 }
 
-const KIND_LABEL = {
-  image: "图片", audio: "音频", bank: "音频包", video: "视频", text: "文本",
-  script: "脚本", model: "模型", binary: "二进制", dir: "目录",
-};
-
-const ROOT_LABEL = {
-  _script: "脚本资源",
-  _unresolved: "未识别资源",
-};
+const KIND_LABEL = {};
+const ROOT_LABEL = {};
 
 const EXT_KIND = {
   ".gim": "binary", ".mtg": "binary", ".sfx": "binary", ".efx": "binary",
@@ -120,11 +230,11 @@ function isTextView(file) {
 function itemAction(file) {
   const kind = displayKind(file.kind, file.ext);
   const ext = (file.ext || "").toLowerCase();
-  if (ext === ".gmp") return { name: "view", label: "地图预览", icon: "map" };
-  if (ext === ".xn") return { name: "script", label: "脚本预览", icon: "code" };
-  if (kind === "audio") return { name: "play", label: "播放", icon: "play" };
-  if (kind === "image" || isTextView(file)) return { name: "view", label: "放大查看", icon: "zoom" };
-  return { name: "preview", label: "放大查看", icon: "zoom" };
+  if (ext === ".gmp") return { name: "view", label: tr("action.map"), icon: "map" };
+  if (ext === ".xn") return { name: "script", label: tr("action.script"), icon: "code" };
+  if (kind === "audio") return { name: "play", label: tr("action.play"), icon: "play" };
+  if (kind === "image" || isTextView(file)) return { name: "view", label: tr("action.view"), icon: "zoom" };
+  return { name: "preview", label: tr("action.view"), icon: "zoom" };
 }
 
 function thumbMarkup(file, small = false) {
@@ -315,7 +425,7 @@ function loadThumbVideo(thumb) {
 
 function renderCrumbs(crumbs) {
   const node = $("crumb");
-  const parts = [`<button data-dir="">全部资源</button>`];
+  const parts = [`<button data-dir="">${tr("index.all")}</button>`];
   for (const crumb of crumbs || []) {
     parts.push('<span class="sep">/</span>');
     parts.push(`<button data-dir="${esc(crumb.path)}">${esc(crumb.name)}</button>`);
@@ -340,7 +450,7 @@ function renderFolders(dirs) {
       <span class="folder-ico"></span>
       <span class="folder-text">
         <span class="folder-name">${esc(dir.name)}</span>
-        <span class="folder-meta">${Number(dir.count).toLocaleString()} 个文件 · ${formatBytes(dir.bytes)}</span>
+        <span class="folder-meta">${Number(dir.count).toLocaleString()} ${tr("stats.files")} · ${formatBytes(dir.bytes)}</span>
       </span>
     </button>`).join("")}</div>`;
 }
@@ -432,20 +542,22 @@ function updateCounts() {
   const loaded = state.files.length;
   if (state.searchMode) {
     const total = state.searchTotal;
-    $("count").textContent = `${total.toLocaleString()} 个结果${loaded < total ? ` · 已加载 ${loaded.toLocaleString()}` : ""}`;
-    $("index-summary").textContent = `${total.toLocaleString()} 个结果${loaded < total ? `（已加载 ${loaded.toLocaleString()}）` : ""}`;
+    const loadedText = loaded < total ? ` · ${tr("list.loaded", { loaded: loaded.toLocaleString(), total: total.toLocaleString() })}` : "";
+    $("count").textContent = `${tr("list.results", { count: total.toLocaleString() })}${loadedText}`;
+    $("index-summary").textContent = `${tr("list.results", { count: total.toLocaleString() })}${loadedText}`;
     return;
   }
   const total = state.fileTotal;
   const activeKind = state.kind ? ` · ${KIND_LABEL[state.kind] || state.kind}` : "";
-  $("count").textContent = `${Number(state.dirs.length).toLocaleString()} 个目录 · ${total.toLocaleString()} 个文件${activeKind}${loaded < total ? ` · 已加载 ${loaded.toLocaleString()}` : ""}`;
+  const loadedText = loaded < total ? ` · ${tr("list.loaded", { loaded: loaded.toLocaleString(), total: total.toLocaleString() })}` : "";
+  $("count").textContent = `${tr("list.dirs", { count: Number(state.dirs.length).toLocaleString() })} · ${tr("list.files", { count: total.toLocaleString() })}${activeKind}${loadedText}`;
 }
 
 function setSentinelIdle() {
   const sentinel = $("list-sentinel");
   if (!sentinel) return;
   sentinel.className = "list-sentinel";
-  sentinel.innerHTML = `<span class="load-hint">继续滚动加载更多</span>`;
+  sentinel.innerHTML = `<span class="load-hint">${tr("list.scrollMore")}</span>`;
 }
 
 function checkSentinel() {
@@ -491,7 +603,7 @@ function showLoadError(message) {
   const sentinel = $("list-sentinel");
   if (!sentinel) return;
   sentinel.className = "list-sentinel failed";
-  sentinel.innerHTML = `<span>加载失败：${esc(message)}</span><button id="retry-more" class="mini-btn">重试</button>`;
+  sentinel.innerHTML = `<span>${tr("error.loadMore", { message: esc(message) })}</span><button id="retry-more" class="mini-btn">${tr("list.retry")}</button>`;
 }
 
 async function loadMore() {
@@ -503,7 +615,7 @@ async function loadMore() {
   const sentinel = $("list-sentinel");
   if (sentinel) {
     sentinel.className = "list-sentinel";
-    sentinel.innerHTML = `<span class="spinner"></span>正在加载…`;
+    sentinel.innerHTML = `<span class="spinner"></span>${tr("status.loading")}`;
   }
   try {
     const data = state.searchMode
@@ -541,7 +653,7 @@ function parentPath(path) {
 
 function renderKindChips(kinds, total, interactive = true) {
   const entries = Object.entries(kinds || {}).sort((a, b) => b[1] - a[1]);
-  const chips = [`${interactive ? `<button class="kind-chip ${state.kind === "" ? "active" : ""}" data-kind="">` : `<span class="kind-chip ${state.kind === "" ? "active" : ""}">`}全部 <b>${Number(total || 0).toLocaleString()}</b>${interactive ? "</button>" : "</span>"}`];
+  const chips = [`${interactive ? `<button class="kind-chip ${state.kind === "" ? "active" : ""}" data-kind="">` : `<span class="kind-chip ${state.kind === "" ? "active" : ""}">`}${tr("index.all")} <b>${Number(total || 0).toLocaleString()}</b>${interactive ? "</button>" : "</span>"}`];
   for (const [kind, count] of entries) {
     const active = state.kind === kind ? "active" : "";
     const label = `${esc(KIND_LABEL[kind] || kind)} <b>${Number(count).toLocaleString()}</b>`;
@@ -554,29 +666,30 @@ function renderKindChips(kinds, total, interactive = true) {
 
 function renderIndex(data, search = false, query = "") {
   const path = data.path || "";
-  $("index-path").textContent = search ? `搜索：${query}` : (path || "全部资源");
+  $("index-path").textContent = search ? tr("index.search", { query }) : (path || tr("index.all"));
   const loaded = (data.files || []).length;
   const matchTotal = Number(data.file_total ?? loaded);
+  const loadedText = loaded < matchTotal ? ` · ${tr("list.loaded", { loaded: loaded.toLocaleString(), total: matchTotal.toLocaleString() })}` : "";
   const summary = search
-    ? `${matchTotal.toLocaleString()} 个结果${loaded < matchTotal ? `（已加载 ${loaded.toLocaleString()}）` : ""}`
-    : `${Number(data.dir_summary?.files || 0).toLocaleString()} 个文件（含子目录） · ${formatBytes(data.dir_summary?.bytes || 0)}`;
+    ? `${tr("index.results", { count: matchTotal.toLocaleString() })}${loadedText}`
+    : tr("index.filesWithDirs", { count: Number(data.dir_summary?.files || 0).toLocaleString(), size: formatBytes(data.dir_summary?.bytes || 0) });
   $("index-summary").textContent = summary;
   $("index-up").disabled = search || !path;
   $("index-up").dataset.parent = parentPath(path);
   $("copy-index").disabled = search && !query;
-  $("copy-index").textContent = search ? "复制关键词" : "复制路径";
+  $("copy-index").textContent = search ? tr("list.copyKeyword") : tr("index.copyPath");
   const kinds = data.kind_counts || {};
   const total = Object.values(kinds).reduce((sum, n) => sum + Number(n), 0);
   $("index-kinds").innerHTML = renderKindChips(kinds, total, !search);
   if (search) {
-    $("index-dirs").innerHTML = `<div class="muted" style="font-size:11px">搜索结果不显示子目录。</div>`;
+    $("index-dirs").innerHTML = `<div class="muted" style="font-size:11px">${tr("index.searchNoSubdirs")}</div>`;
   } else {
     const dirs = data.dirs || [];
     $("index-dirs").innerHTML = dirs.length
       ? dirs.map((dir) => `<button class="index-dir" data-dir="${esc(dir.path)}">
           <span>${esc(dir.name)}</span><span>${Number(dir.count).toLocaleString()}</span>
         </button>`).join("")
-      : `<div class="muted" style="font-size:11px">没有子目录。</div>`;
+      : `<div class="muted" style="font-size:11px">${tr("index.noSubdirs")}</div>`;
   }
 }
 
@@ -622,11 +735,11 @@ async function loadList(path, push = true, keepKind = false) {
     else url.searchParams.delete("path");
     history.pushState({ path: state.path }, "", url);
   }
-  $("content").innerHTML = skeletonScreen("正在读取目录…");
-  $("where").textContent = state.path || "全部资源";
-  $("index-path").textContent = state.path || "全部资源";
+  $("content").innerHTML = skeletonScreen(tr("status.loadingDir"));
+  $("where").textContent = state.path || tr("index.all");
+  $("index-path").textContent = state.path || tr("index.all");
   $("count").textContent = "";
-  $("index-summary").textContent = "正在读取…";
+  $("index-summary").textContent = tr("status.loadingDir");
   $("index-kinds").innerHTML = "";
   $("index-dirs").innerHTML = "";
   try {
@@ -642,9 +755,9 @@ async function loadList(path, push = true, keepKind = false) {
     renderCrumbs(data.breadcrumbs);
     $("where").innerHTML = state.path
       ? `${esc(state.path.split("/").pop())}<span class="sub">${esc(state.path)}</span>`
-      : `全部资源`;
+      : tr("index.all");
     updateCounts();
-    $("content").innerHTML = renderFolders(state.dirs) + renderFiles(state.files) || `<div class="empty">这个目录没有可显示的项目。</div>`;
+    $("content").innerHTML = renderFolders(state.dirs) + renderFiles(state.files) || `<div class="empty">${tr("list.empty")}</div>`;
     hydrateThumbs($("content"));
     renderIndex(data);
     ensureSentinel();
@@ -654,7 +767,7 @@ async function loadList(path, push = true, keepKind = false) {
     });
   } catch (error) {
     if (token !== listToken) return;
-    $("content").innerHTML = `<div class="errorbox">读取失败：${esc(error.message)}</div>`;
+    $("content").innerHTML = `<div class="errorbox">${tr("error.read", { message: esc(error.message) })}</div>`;
     $("index-summary").textContent = "";
     $("index-kinds").innerHTML = "";
     $("index-dirs").innerHTML = "";
@@ -676,11 +789,11 @@ async function search(query) {
   state.previewPath = null;
   document.querySelectorAll(".root").forEach((node) => node.classList.remove("active"));
   closeDrawer();
-  $("where").innerHTML = `搜索结果<span class="sub">${esc(query)}</span>`;
-  $("index-path").textContent = `搜索：${query}`;
+  $("where").innerHTML = `${tr("list.searchResults")}<span class="sub">${esc(query)}</span>`;
+  $("index-path").textContent = tr("index.search", { query });
   $("count").textContent = "";
-  $("content").innerHTML = skeletonScreen("正在搜索…");
-  $("index-summary").textContent = "正在搜索…";
+  $("content").innerHTML = skeletonScreen(tr("index.searching"));
+  $("index-summary").textContent = tr("index.searching");
   $("index-kinds").innerHTML = "";
   try {
     const data = await getJson(apiUrl("/api/search", { q: query, limit: PAGE_SIZE, offset: 0, sort: state.sort }));
@@ -691,22 +804,22 @@ async function search(query) {
     state.searchTotal = Number(data.total ?? state.files.length);
     renderCrumbs([]);
     updateCounts();
-    $("content").innerHTML = renderFiles(state.files) || `<div class="empty">没有匹配的路径。</div>`;
+    $("content").innerHTML = renderFiles(state.files) || `<div class="empty">${tr("list.noMatches")}</div>`;
     hydrateThumbs($("content"));
     renderIndex({ path: "", dirs: [], files: state.files, file_total: state.searchTotal, kind_counts: state.kindCounts }, true, query);
     ensureSentinel();
   } catch (error) {
     if (token !== listToken) return;
-    $("content").innerHTML = `<div class="errorbox">搜索失败：${esc(error.message)}</div>`;
+    $("content").innerHTML = `<div class="errorbox">${tr("error.search", { message: esc(error.message) })}</div>`;
   }
 }
 
 function bankMediaDetail(media) {
   const parts = [];
   if (media.codec) parts.push(media.codec);
-  if (media.channels) parts.push(`${media.channels} 声道`);
+  if (media.channels) parts.push(`${media.channels} ${tr("bank.channels")}`);
   if (media.sample_rate) parts.push(`${Number(media.sample_rate).toLocaleString()} Hz`);
-  return parts.join(" · ") || "内嵌 WEM";
+  return parts.join(" · ") || tr("bank.embedded");
 }
 
 async function showBankPreview(file, container, token) {
@@ -726,26 +839,26 @@ async function showBankPreview(file, container, token) {
           <span class="bank-media-main">${esc(bankMediaDetail(item))}</span>
           <span class="bank-media-size">${formatBytes(item.size)}</span>
         </button>`).join("")}</div>`
-    : `<div class="bank-empty">这个音频包没有内嵌 WEM 音频，可能只包含事件或容器定义。</div>`;
+    : `<div class="bank-empty">${tr("bank.noWem")}</div>`;
   const hircTypes = (hirc.types || []).map((type) =>
     `<span class="bank-chip">${esc(type.name)} <b>${Number(type.count).toLocaleString()}</b></span>`).join("");
   container.innerHTML = `<div class="bank-summary">
     <div class="bank-head">
-      <div><b>Wwise Bank</b><span class="bank-sub">版本 ${esc(header.version ?? "—")} · ID ${esc(header.bank_id_hex || "—")}</span></div>
-      <div class="bank-stats">${entries.length.toLocaleString()} 个内嵌音频 · ${Number(hirc.count || 0).toLocaleString()} 个 HIRC 对象</div>
+      <div><b>Wwise Bank</b><span class="bank-sub">${tr("bank.version")} ${esc(header.version ?? "—")} · ${tr("bank.id")} ${esc(header.bank_id_hex || "—")}</span></div>
+      <div class="bank-stats">${tr("bank.embeddedAudio", { count: entries.length.toLocaleString() })} · ${tr("bank.hircObjects", { count: Number(hirc.count || 0).toLocaleString() })}</div>
     </div>
     ${audio}
     ${rows}
-    <div class="section-title">结构与数据块</div>
+    <div class="section-title">${tr("bank.structure")}</div>
     <div class="bank-chips">${(bank.chunks || []).map((chunk) =>
       `<span class="bank-chip">${esc(chunk.id)} <b>${formatBytes(chunk.size)}</b></span>`).join("")}</div>
-    ${hircTypes ? `<div class="section-title">HIRC 对象类型</div><div class="bank-chips">${hircTypes}</div>` : ""}
+    ${hircTypes ? `<div class="section-title">${tr("bank.hircTypes")}</div><div class="bank-chips">${hircTypes}</div>` : ""}
     ${(bank.warnings || []).length ? `<div class="note">${esc(bank.warnings.join("；"))}</div>` : ""}
   </div>`;
   swapPreview(container);
   $("preview-note").textContent = entries.length
-    ? "BNK 是 Wwise 音频包；内嵌 WEM 按需解码为 FLAC，不会保存到磁盘。"
-    : "这个 Bank 没有内嵌 WEM 音频，可能只包含事件或容器定义。";
+    ? tr("bank.note")
+    : tr("bank.noWem");
   const list = container.querySelector(".bank-media-list");
   if (!list) return;
   list.addEventListener("click", (event) => {
@@ -756,7 +869,7 @@ async function showBankPreview(file, container, token) {
     list.querySelectorAll(".bank-media-row").forEach((node) => node.classList.toggle("active", node === row));
     audioNode.src = apiUrl("/api/audio", { path: file.path, media: row.dataset.media });
     audioNode.play().catch(() => {});
-    $("preview-note").textContent = `正在播放内嵌音频 ${row.dataset.media}；按需解码，不会保存到磁盘。`;
+    $("preview-note").textContent = tr("bank.playEmbedded", { name: row.dataset.media });
   });
 }
 
@@ -767,11 +880,13 @@ function swapPreview(container) {
 }
 
 function renderInspect(info, container) {
+  const formatText = tr(info.format);
+  const summaryText = tr(info.summary);
   if (info.text !== null && info.text !== undefined) {
     container.innerHTML = `<pre>${esc(info.text)}${info.text_truncated ? NL + "…" : ""}</pre>`;
     swapPreview(container);
     const refs = info.references || [];
-    $("preview-note").textContent = `${info.summary}${refs.length ? ` 共找到 ${refs.length} 个引用路径。` : ""}${info.text_truncated ? " 内容较大，仅显示开头部分。" : ""}`;
+    $("preview-note").textContent = `${summaryText}${refs.length ? ` ${tr("inspect.refsFound", { count: refs.length })}` : ""}${info.text_truncated ? ` ${tr("text.tooLarge")}` : ""}`;
     return;
   }
   const header = info.header || {};
@@ -783,23 +898,23 @@ function renderInspect(info, container) {
   const strings = info.strings || [];
   container.innerHTML = `<div class="inspect-card">
     <div class="inspect-head">
-      <div class="inspect-format">${esc(info.format)}</div>
+      <div class="inspect-format">${esc(formatText)}</div>
       <div class="inspect-size">${formatBytes(info.size)}</div>
     </div>
-    <div class="inspect-summary">${esc(info.summary)}</div>
+    <div class="inspect-summary">${esc(summaryText)}</div>
     ${headerChips ? `<div class="bank-chips">${headerChips}</div>` : ""}
-    ${references.length ? `<div class="section-title">引用资源</div><div class="inspect-refs">${references.map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
-    ${strings.length ? `<div class="section-title">可读字段</div><pre class="inspect-strings">${esc(strings.join(NL))}${info.strings_truncated ? NL + "…" : ""}</pre>` : ""}
+    ${references.length ? `<div class="section-title">${tr("inspect.references")}</div><div class="inspect-refs">${references.map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
+    ${strings.length ? `<div class="section-title">${tr("inspect.fields")}</div><pre class="inspect-strings">${esc(strings.join(NL))}${info.strings_truncated ? NL + "…" : ""}</pre>` : ""}
     <details class="inspect-hex">
-      <summary>原始 Hex（前 4 KB）</summary>
+      <summary>${tr("inspect.hex")}</summary>
       <pre>${esc((info.hex_lines || []).join(NL))}${info.hex_truncated ? NL + "…" : ""}</pre>
     </details>
-    ${info.renderable === "none" ? `<div class="note">这个格式主要保存参数和引用关系，不是可直接显示的图片或模型；完整可视化需要对应的引擎模块。</div>` : ""}
+    ${info.renderable === "none" ? `<div class="note">${tr("inspect.renderNone")}</div>` : ""}
   </div>`;
   swapPreview(container);
   $("preview-note").textContent = strings.length || references.length
-    ? "已提取可读字段和引用资源；原始 Hex 可展开查看。"
-    : "未找到可读字段；可以展开 Hex 或下载原文件。";
+    ? tr("text.fields")
+    : tr("text.hexNote");
 }
 
 function renderGmpPreview(data, container) {
@@ -807,14 +922,14 @@ function renderGmpPreview(data, container) {
   const units = data.units || [];
   const refs = data.references || [];
   const chips = [
-    `<span class="bank-chip">单位 <b>${Number(data.unit_count || 0).toLocaleString()}</b></span>`,
-    `<span class="bank-chip">块 <b>${Number((data.chunks || []).length).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">${tr("gmp.units")} <b>${Number(data.unit_count || 0).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">${tr("gmp.chunks")} <b>${Number((data.chunks || []).length).toLocaleString()}</b></span>`,
     `<span class="bank-chip">MessagePack <b>${Number(data.parsed_chunks || 0).toLocaleString()}</b></span>`,
-    `<span class="bank-chip">二进制 <b>${Number(data.binary_chunks || 0).toLocaleString()}</b></span>`,
+    `<span class="bank-chip">${tr("gmp.binary")} <b>${Number(data.binary_chunks || 0).toLocaleString()}</b></span>`,
   ].join("");
   const unitRows = units.slice(0, 200).map((unit) => {
     const position = (unit.position || []).map((value) => Number(value).toFixed(1)).join(", ");
-    const label = unit.name || `单位 ${unit.id}`;
+    const label = unit.name || `${tr("common.unit")} ${unit.id}`;
     return `<div class="gmp-unit" title="${esc(label)}">
       <span class="gmp-unit-name">${esc(label)}</span>
       <span class="gmp-unit-meta">${esc(String(unit.eid ?? unit.type ?? "—"))} · ${esc(position)}</span>
@@ -823,16 +938,16 @@ function renderGmpPreview(data, container) {
   container.innerHTML = `<div class="gmp-preview">
     <div class="gmp-head">
       <div class="gmp-title">
-        <b>${esc(data.map_name || "地图")}</b>
-        <span>${Number(data.unit_count || 0).toLocaleString()} 个单位 · ${Number((data.chunks || []).length).toLocaleString()} 个数据块</span>
+        <b>${esc(data.map_name || tr("gmp.mapName"))}</b>
+        <span>${tr("gmp.unitSummary", { units: Number(data.unit_count || 0).toLocaleString(), chunks: Number((data.chunks || []).length).toLocaleString() })}</span>
       </div>
-      <button class="btn primary" id="gmp-open-map" type="button">${icon("map")}地图画布</button>
+      <button class="btn primary" id="gmp-open-map" type="button">${icon("map")}${tr("gmp.openCanvas")}</button>
     </div>
     <div class="bank-chips">${chips}</div>
     ${units.length
-      ? `<div class="section-title">单位（${Math.min(units.length, 200)}${units.length > 200 ? " / " + units.length : ""}）</div><div class="gmp-units">${unitRows}</div>`
-      : `<div class="note">没有解析到可显示的单位坐标。</div>`}
-    ${refs.length ? `<div class="section-title">引用资源</div><div class="inspect-refs">${refs.slice(0, 80).map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
+      ? `<div class="section-title">${tr("gmp.unitList", { count: `${Math.min(units.length, 200)}${units.length > 200 ? " / " + units.length : ""}` })}</div><div class="gmp-units">${unitRows}</div>`
+      : `<div class="note">${tr("gmp.noUnits")}</div>`}
+    ${refs.length ? `<div class="section-title">${tr("gmp.refs")}</div><div class="inspect-refs">${refs.slice(0, 80).map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
   </div>`;
   const open = container.querySelector("#gmp-open-map");
   if (open) {
@@ -842,8 +957,8 @@ function renderGmpPreview(data, container) {
     });
   }
   $("preview-note").textContent = units.length
-    ? `地图布局：${Number(data.unit_count || 0).toLocaleString()} 个单位；点击“地图画布”可拖动、缩放查看。`
-    : "已读取地图块，但没有可绘制的单位坐标；可下载原文件进一步分析。";
+    ? tr("gmp.note", { count: Number(data.unit_count || 0).toLocaleString() })
+    : tr("gmp.noteNoUnits");
 }
 
 function xnPreviewText(data) {
@@ -874,11 +989,11 @@ function renderXnPreview(data, container, file) {
   const p = data.preview || {};
   if (!data.decrypted) {
     container.innerHTML = `<div class="xn-fail">
-      <div class="xn-fail-title">${icon("code")}XN 加密脚本</div>
-      <p>${esc(data.reason || "无法解密")}</p>
-      <p class="note">容器结构已识别；该文件需要对应的模块名才能派生解密密钥。</p>
+      <div class="xn-fail-title">${icon("code")}${tr("xn.title")}</div>
+      <p>${esc(backendText(data.reason, data.detail) || tr("xn.cannotDecrypt"))}</p>
+      <p class="note">${tr("xn.needModule")}</p>
     </div>`;
-    $("preview-note").textContent = "脚本模块名尚未索引，暂时无法解密。";
+    $("preview-note").textContent = tr("xn.notIndexed");
     return;
   }
   const names = (p.names || []).slice(0, 80);
@@ -887,28 +1002,28 @@ function renderXnPreview(data, container, file) {
   container.innerHTML = `<div class="xn-panel">
     <div class="xn-head">
       <div>
-        <b>${esc(data.module || "未知模块")}</b>
+        <b>${esc(data.module || tr("xn.unknownModule"))}</b>
         <span>${esc(p.filename || (data.module ? data.module.replace(/\./g, "/") + ".nxs" : ""))}</span>
       </div>
-      <button class="btn primary" id="xn-open-viewer" type="button">${icon("code")}打开预览</button>
+      <button class="btn primary" id="xn-open-viewer" type="button">${icon("code")}${tr("xn.openPreview")}</button>
     </div>
     <div class="bank-chips">
-      <span class="bank-chip">代码对象 <b>${Number(p.code_objects || 0).toLocaleString()}</b></span>
-      <span class="bank-chip">函数 <b>${Number(p.function_count || 0).toLocaleString()}</b></span>
-      <span class="bank-chip">名称 <b>${Number(p.name_count || 0).toLocaleString()}</b></span>
-      <span class="bank-chip">字符串 <b>${Number(p.string_count || 0).toLocaleString()}</b></span>
-      <span class="bank-chip">解压后 <b>${formatBytes(data.original || 0)}</b></span>
+      <span class="bank-chip">${tr("xn.codeObjects")} <b>${Number(p.code_objects || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">${tr("xn.functions")} <b>${Number(p.function_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">${tr("xn.names")} <b>${Number(p.name_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">${tr("xn.strings")} <b>${Number(p.string_count || 0).toLocaleString()}</b></span>
+      <span class="bank-chip">${tr("xn.unpacked")} <b>${formatBytes(data.original || 0)}</b></span>
     </div>
-    <div class="section-title">函数 / 类</div>
+    <div class="section-title">${tr("xn.functionsClasses")}</div>
     <div class="xn-list">${functions.map((fn) => `<span class="xn-item" title="${esc(fn.name)}">${esc(fn.name)}(${esc((fn.args || []).join(", "))})</span>`).join("")}</div>
-    <div class="section-title">名称表</div>
+    <div class="section-title">${tr("xn.namesTable")}</div>
     <div class="xn-list">${names.map((name) => `<span class="xn-item" title="${esc(name)}">${esc(name)}</span>`).join("")}</div>
-    <div class="section-title">字符串常量</div>
+    <div class="section-title">${tr("xn.stringsTable")}</div>
     <div class="xn-list">${strings.map((text) => `<span class="xn-item" title="${esc(text)}">${esc(text)}</span>`).join("")}</div>
   </div>`;
   const open = container.querySelector("#xn-open-viewer");
   if (open) open.addEventListener("click", () => openScriptViewer(file));
-  $("preview-note").textContent = "已解密为 Python 2.7 marshal 结构（自定义字节码，展示名称与常量）。";
+  $("preview-note").textContent = tr("xn.structure");
 }
 
 async function openScriptViewer(file) {
@@ -926,7 +1041,7 @@ async function openScriptViewer(file) {
   viewer.path = file.path;
   viewer.mode = "script";
   $("viewer-name").textContent = file.name;
-  $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在解密脚本…</div>`;
+  $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("drawer.note.script")}</div>`;
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
@@ -934,31 +1049,31 @@ async function openScriptViewer(file) {
     const data = await getJson(apiUrl("/api/xn", { path: file.path }));
     if (token !== viewer.token) return;
     if (!data.decrypted) {
-      $("viewer-stage").innerHTML = `<div class="errorbox">${esc(data.reason || "无法解密")}</div>`;
+      $("viewer-stage").innerHTML = `<div class="errorbox">${esc(backendText(data.reason, data.detail) || tr("xn.cannotDecrypt"))}</div>`;
       return;
     }
     const text = xnPreviewText(data);
     $("viewer-stage").innerHTML = `<div class="script-viewer"><pre class="script-preview">${esc(text)}</pre></div>`;
-    $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-decompile" type="button">反编译</button><button class="mini-btn" id="xn-disasm" type="button">反汇编</button><button class="mini-btn" id="xn-copy" type="button">复制预览</button>`;
+    $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-decompile" type="button">${tr("xn.decompile")}</button><button class="mini-btn" id="xn-disasm" type="button">${tr("xn.disasm")}</button><button class="mini-btn" id="xn-copy" type="button">${tr("xn.copyPreview")}</button>`;
     const decompile = $("xn-decompile");
     if (decompile) {
       decompile.addEventListener("click", async () => {
         if (decompile.dataset.loaded === "1") return;
         decompile.disabled = true;
-        decompile.textContent = "反编译中…";
+        decompile.textContent = tr("xn.decompiling");
         try {
           const result = await getJson(apiUrl("/api/xn", { path: file.path, decompile: 1 }));
           if (token !== viewer.token) return;
-          if (result.error) throw new Error(result.error);
+          if (result.error) throw new Error(backendText(result.error, result.detail));
           const block = document.createElement("pre");
           block.className = "script-preview";
           block.textContent = `\n\n## decompiled source (${result.module})\n${result.source}`;
           $("viewer-stage").querySelector(".script-viewer")?.appendChild(block);
           decompile.dataset.loaded = "1";
-          decompile.textContent = "源码已加载";
+          decompile.textContent = tr("xn.sourceLoaded");
           block.scrollIntoView({ behavior: "smooth", block: "start" });
         } catch (error) {
-          decompile.textContent = "反编译失败";
+          decompile.textContent = tr("xn.decompileFailed");
         } finally {
           decompile.disabled = false;
         }
@@ -969,19 +1084,19 @@ async function openScriptViewer(file) {
       disasm.addEventListener("click", async () => {
         if (disasm.dataset.loaded === "1") return;
         disasm.disabled = true;
-        disasm.textContent = "反汇编中…";
+        disasm.textContent = tr("xn.disassembling");
         try {
           const result = await getJson(apiUrl("/api/xn", { path: file.path, disasm: 1 }));
           if (token !== viewer.token) return;
-          if (result.error) throw new Error(result.error);
+          if (result.error) throw new Error(backendText(result.error, result.detail));
           const block = document.createElement("pre");
           block.className = "script-preview";
           block.textContent = `\n\n## disassembly (${result.function})\n${result.disassembly}`;
           $("viewer-stage").querySelector(".script-viewer")?.appendChild(block);
           disasm.dataset.loaded = "1";
-          disasm.textContent = "反汇编已加载";
+          disasm.textContent = tr("xn.disasmLoaded");
         } catch (error) {
-          disasm.textContent = "反汇编失败";
+          disasm.textContent = tr("xn.disasmFailed");
         } finally {
           disasm.disabled = false;
         }
@@ -990,38 +1105,38 @@ async function openScriptViewer(file) {
     const copy = $("xn-copy");
     if (copy) {
       copy.addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(text); copy.textContent = "已复制"; }
-        catch (_) { copy.textContent = "复制失败"; }
-        setTimeout(() => { copy.textContent = "复制预览"; }, 1200);
+        try { await navigator.clipboard.writeText(text); copy.textContent = tr("xn.copied"); }
+        catch (_) { copy.textContent = tr("xn.copyFailed"); }
+        setTimeout(() => { copy.textContent = tr("xn.copyPreview"); }, 1200);
       });
     }
   } catch (error) {
     if (token !== viewer.token) return;
-    $("viewer-stage").innerHTML = `<div class="errorbox">脚本解密失败：${esc(error.message)}</div>`;
+    $("viewer-stage").innerHTML = `<div class="errorbox">${esc(tr("error.script", { message: error.message }))}</div>`;
   }
 }
 
 function metadataRows(info) {
   const rows = [
-    ["路径", info.path],
-    ["资源包", info.package],
-    ["类型", `${KIND_LABEL[displayKind(info.kind, info.ext)] || info.kind} ${info.ext || ""}`],
-    ["大小", formatBytes(info.unpacked)],
-    ["存储大小", formatBytes(info.packed)],
-    ["存储方式", info.compression === 3 ? "压缩" : "原始"],
-    ["标记", info.flags],
-    ["标识", info.signature],
-    ["位置", info.offset],
-    ["压缩校验", info.packed_hash],
-    ["原始校验", info.unpacked_hash],
+    [tr("drawer.meta.path"), info.path],
+    [tr("drawer.meta.package"), info.package],
+    [tr("drawer.meta.type"), `${KIND_LABEL[displayKind(info.kind, info.ext)] || info.kind} ${info.ext || ""}`],
+    [tr("drawer.meta.size"), formatBytes(info.unpacked)],
+    [tr("drawer.meta.storedSize"), formatBytes(info.packed)],
+    [tr("drawer.meta.storage"), info.compression === 3 ? tr("drawer.storage.compressed") : tr("drawer.storage.raw")],
+    [tr("drawer.meta.flags"), info.flags],
+    [tr("drawer.meta.signature"), info.signature],
+    [tr("drawer.meta.offset"), info.offset],
+    [tr("drawer.meta.compressedHash"), info.packed_hash],
+    [tr("drawer.meta.originalHash"), info.unpacked_hash],
   ];
   return rows.map(([key, value]) => `<div class="k">${esc(key)}</div><div class="v">${esc(value)}</div>`).join("");
 }
 
 function quickOpenActions() {
   const actions = [];
-  if (state.platform === "win32") actions.push(["explorer", "资源管理器"]);
-  if (state.platform === "darwin") actions.push(["finder", "访达"]);
+  if (state.platform === "win32") actions.push(["explorer", tr("drawer.open.explorer")]);
+  if (state.platform === "darwin") actions.push(["finder", tr("drawer.open.finder")]);
   actions.push(["vscode", "VS Code"], ["idea", "IDEA"]);
   return actions;
 }
@@ -1037,7 +1152,7 @@ function renderOpenActions() {
 
 async function openPathWith(path, app, note) {
   if (!path) return;
-  if (note) note.textContent = "正在打开…";
+  if (note) note.textContent = tr("common.opening");
   try {
     const response = await fetch("/api/open", {
       method: "POST",
@@ -1045,8 +1160,10 @@ async function openPathWith(path, app, note) {
       body: JSON.stringify({ path, app }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "打开失败");
-    if (note) note.textContent = result.converted ? `${result.message}（使用转换后的预览图）` : result.message;
+    if (!response.ok) throw new Error(backendText(result.error, result.detail) || tr("error.open"));
+    if (note) note.textContent = result.converted
+      ? tr("common.converted", { message: backendText(result.message) })
+      : backendText(result.message);
   } catch (error) {
     if (note) note.textContent = error.message;
   }
@@ -1077,10 +1194,7 @@ const mapView = {
   frame: 0,
 };
 
-const MAP_EID_LABEL = {
-  100001: "触发器", 100007: "出生点", 100008: "搅拌器",
-  100024: "拐角", 100029: "齿轮", 100060: "道具箱", 900001: "地砖",
-};
+const MAP_EID_LABEL = {};
 const MAP_EID_COLOR = {
   100001: "#ff8d8d", 100007: "#6ee7d8", 100008: "#ffd166",
   100024: "#8fc7ff", 100029: "#ffa0d2", 100060: "#ff9f43", 900001: "#5f7186",
@@ -1214,10 +1328,10 @@ function closeViewer() {
 function imageViewerFoot(file, mapUrl) {
   const mapSource = mapUrl || apiUrl("/api/thumb", { path: file.path, w: 360, v: 3 });
   return `<div class="viewer-zoom">
-    <button class="icon-btn" id="viewer-zoom-out" title="缩小" aria-label="缩小">${icon("minus")}</button>
+    <button class="icon-btn" id="viewer-zoom-out" title="${tr("viewer.zoomOut")}" aria-label="${tr("viewer.zoomOut")}">${icon("minus")}</button>
     <label class="viewer-zoom-value"><input id="viewer-zoom-input" type="number" min="5" max="800" step="1" value="100"><span>%</span></label>
-    <button class="icon-btn" id="viewer-zoom-in" title="放大" aria-label="放大">${icon("plus")}</button>
-    <button class="mini-btn" id="viewer-zoom-fit" title="适应窗口">${icon("fit")}适应</button>
+    <button class="icon-btn" id="viewer-zoom-in" title="${tr("viewer.zoomIn")}" aria-label="${tr("viewer.zoomIn")}">${icon("plus")}</button>
+    <button class="mini-btn" id="viewer-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("viewer.fitShort")}</button>
   </div>
   <div class="viewer-map" id="viewer-map">
     <img id="viewer-map-img" alt="" src="${esc(mapSource)}">
@@ -1229,7 +1343,7 @@ function openImageViewer(file, token, sourceUrl, mapUrl) {
   const stage = $("viewer-stage");
   const isMap = (file.ext || "").toLowerCase() === ".gmp";
   $("viewer-foot").innerHTML = imageViewerFoot(file, mapUrl);
-  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${isMap ? "正在解析地图…" : "正在加载原图…"}</div>`;
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${isMap ? tr("viewer.loadingMap") : tr("viewer.loadingImage")}</div>`;
   const img = new Image();
   img.id = "viewer-image";
   img.alt = file.name;
@@ -1246,7 +1360,7 @@ function openImageViewer(file, token, sourceUrl, mapUrl) {
   }, { once: true });
   img.addEventListener("error", () => {
     if (token !== viewer.token) return;
-    stage.innerHTML = `<div class="errorbox">${isMap ? "地图加载失败" : "图片加载失败"}</div>`;
+    stage.innerHTML = `<div class="errorbox">${isMap ? tr("error.map") : tr("error.image")}</div>`;
   }, { once: true });
   img.src = sourceUrl;
 }
@@ -1418,12 +1532,12 @@ async function openTextViewer(file, token) {
   $("viewer-foot").innerHTML = textViewerFoot();
   $("viewer-actions").innerHTML = quickOpenActions().map(([app, label]) =>
     `<button class="btn" data-viewer-open="${app}">${actionIcon(app)}${label}</button>`).join("");
-  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在读取文本…</div>`;
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("text.loading")}</div>`;
   try {
     const response = await fetch(apiUrl("/api/text", { path: file.path }));
     if (token !== viewer.token) return;
     if (!response.ok) {
-      stage.innerHTML = `<div class="errorbox">这个文件无法作为文本显示</div>`;
+      stage.innerHTML = `<div class="errorbox">${tr("text.cannotPreview")}</div>`;
       return;
     }
     const text = await response.text();
@@ -1439,7 +1553,7 @@ async function openTextViewer(file, token) {
     });
   } catch (error) {
     if (token !== viewer.token) return;
-    stage.innerHTML = `<div class="errorbox">读取失败：${esc(error.message)}</div>`;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.text", { message: error.message }))}</div>`;
   }
 }
 
@@ -1555,7 +1669,7 @@ async function openMapViewer(file, token) {
   mapView.data = null;
   const stage = $("viewer-stage");
   $("viewer-foot").innerHTML = "";
-  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>正在解析地图布局…</div>`;
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
   try {
     const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
     if (token !== viewer.token) return;
@@ -1563,16 +1677,16 @@ async function openMapViewer(file, token) {
     renderMapStage(file, data);
   } catch (error) {
     if (token !== viewer.token) return;
-    stage.innerHTML = `<div class="errorbox">地图解析失败：${esc(error.message)}</div>`;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.mapParse", { message: error.message }))}</div>`;
   }
 }
 
 function renderMapStage(file, data) {
   const stage = $("viewer-stage");
-  stage.innerHTML = `<canvas id="map-canvas" class="map-canvas" aria-label="地图画布"></canvas>
+  stage.innerHTML = `<canvas id="map-canvas" class="map-canvas" aria-label="${tr("map.canvas")}"></canvas>
     <div class="map-hud" id="map-hud"></div>
     <div class="map-legend" id="map-legend"></div>
-    ${!data.unit_count || !data.bounds ? `<div class="map-empty">没有可绘制的单位坐标；详情面板中有数据块统计</div>` : ""}`;
+    ${!data.unit_count || !data.bounds ? `<div class="map-empty">${tr("gmp.empty")}</div>` : ""}`;
   $("viewer-foot").innerHTML = mapFoot();
   mapView.stage = stage;
   mapView.canvas = $("map-canvas");
@@ -1590,11 +1704,11 @@ function renderMapStage(file, data) {
 
 function mapFoot() {
   return `<div class="viewer-zoom">
-    <button class="icon-btn" id="map-zoom-out" title="缩小" aria-label="缩小">${icon("minus")}</button>
+    <button class="icon-btn" id="map-zoom-out" title="${tr("map.zoomOut")}" aria-label="${tr("map.zoomOut")}">${icon("minus")}</button>
     <label class="viewer-zoom-value"><input id="map-zoom-input" type="number" min="5" max="2000" step="1" value="100"><span>%</span></label>
-    <button class="icon-btn" id="map-zoom-in" title="放大" aria-label="放大">${icon("plus")}</button>
-    <button class="mini-btn" id="map-zoom-fit" title="适应窗口">${icon("fit")}适应</button>
-    <label class="map-dot-control">点 <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
+    <button class="icon-btn" id="map-zoom-in" title="${tr("map.zoomIn")}" aria-label="${tr("map.zoomIn")}">${icon("plus")}</button>
+    <button class="mini-btn" id="map-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
+    <label class="map-dot-control">${tr("map.dot")} <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
   </div>
   <div class="viewer-map">
     <canvas id="map-minimap-canvas" class="viewer-map-canvas"></canvas>
@@ -2033,11 +2147,11 @@ function buildMapLegend() {
       const eid = Number(eidText);
       const color = tints[eid] || mapColor(eid);
       const typeColor = mapColor(eid);
-      const label = labels[eid] || MAP_EID_LABEL[eid] || `类型 ${eidText}`;
+      const label = labels[eid] || MAP_EID_LABEL[eid] || tr("map.unit", { eid: eidText });
       const icon = mapIconUrl(eid);
       const swatch = icon
-        ? `<span class="map-legend-icon" title="${esc(label)} 分类贴图" style="background-image:url('${icon}')"></span>`
-        : `<span class="map-legend-swatch" title="${esc(label)} 涂装颜色" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color};border-color:${typeColor}"></span>`;
+        ? `<span class="map-legend-icon" title="${esc(label)} ${tr("map.legend.kind")}" style="background-image:url('${icon}')"></span>`
+        : `<span class="map-legend-swatch" title="${esc(label)} ${tr("map.legend.paint")}" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color};border-color:${typeColor}"></span>`;
       return `<div class="map-legend-row">
         ${swatch}
         <span class="map-legend-name">${esc(label)}</span>
@@ -2045,7 +2159,7 @@ function buildMapLegend() {
       </div>`;
     })
     .join("");
-  panel.innerHTML = `<div class="map-legend-head"><b>${esc(data.map_name || "地图")}</b><span>${Number(data.unit_count || 0).toLocaleString()} 单位</span></div>${rows || `<div class="map-legend-empty">没有单位</div>`}`;
+  panel.innerHTML = `<div class="map-legend-head"><b>${esc(data.map_name || tr("gmp.mapName"))}</b><span>${tr("map.units", { count: Number(data.unit_count || 0).toLocaleString() })}</span></div>${rows || `<div class="map-legend-empty">${tr("map.noUnits")}</div>`}`;
 }
 
 function updateMapLegendDots() {
@@ -2219,11 +2333,11 @@ async function showPreview(file) {
   $("preview-media").classList.remove("swap-in", "gmp-mode");
   $("preview-media").innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
   $("preview-meta").innerHTML = metaSkeleton();
-  $("preview-note").textContent = "正在读取文件信息…";
+  $("preview-note").textContent = tr("drawer.note.info");
   $("open-image").classList.add("hidden");
   renderOpenActions();
   openDrawerPanel();
-  $("download-link").textContent = "下载文件";
+  $("download-link").textContent = tr("drawer.download");
   $("download-link").href = apiUrl("/api/download", { path: file.path });
   $("download-link").setAttribute("download", file.name);
 
@@ -2234,7 +2348,7 @@ async function showPreview(file) {
     if (token !== previewToken) return;
     $("preview-meta").innerHTML = "";
     $("preview-note").textContent = "";
-    $("preview-media").innerHTML = `<div class="errorbox">读取信息失败：${esc(error.message)}</div>`;
+    $("preview-media").innerHTML = `<div class="errorbox">${esc(tr("error.readInfo", { message: error.message }))}</div>`;
     return;
   }
   if (token !== previewToken) return;
@@ -2244,13 +2358,13 @@ async function showPreview(file) {
   try {
     if ((info.ext || "").toLowerCase() === ".gmp") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
-      $("preview-note").textContent = "正在解析地图布局…";
+      $("preview-note").textContent = tr("gmp.loading");
       const data = await getJson(apiUrl("/api/gmp", { path: file.path }));
       if (token !== previewToken) return;
       renderGmpPreview(data, media);
     } else if (kind === "script") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
-      $("preview-note").textContent = "正在解密脚本…";
+      $("preview-note").textContent = tr("drawer.note.script");
       const data = await getJson(apiUrl("/api/xn", { path: file.path }));
       if (token !== previewToken) return;
       renderXnPreview(data, media, file);
@@ -2265,24 +2379,24 @@ async function showPreview(file) {
       const ready = () => requestAnimationFrame(() => wrap && wrap.classList.add("ready"));
       img.addEventListener("load", ready, { once: true });
       img.addEventListener("error", () => {
-        media.innerHTML = `<div class="errorbox">图片加载失败</div>`;
+        media.innerHTML = `<div class="errorbox">${tr("error.image")}</div>`;
       }, { once: true });
       if (img.complete && img.naturalWidth > 0) ready();
       $("open-image").href = url;
       $("open-image").classList.remove("hidden");
-      $("preview-note").textContent = "首次打开可能需要一点时间。";
+      $("preview-note").textContent = tr("drawer.note.image");
     } else if (kind === "bank") {
-      $("download-link").textContent = "下载音频包";
-      $("preview-note").textContent = "正在解析 Bank 结构与内嵌音频…";
+      $("download-link").textContent = tr("drawer.downloadBank");
+      $("preview-note").textContent = tr("drawer.note.bank");
       await showBankPreview(file, media, token);
     } else if (kind === "audio") {
       const url = apiUrl("/api/audio", { path: file.path });
       media.innerHTML = `<audio controls autoplay preload="auto" src="${url}"></audio>`;
-      $("download-link").textContent = "下载 FLAC";
+      $("download-link").textContent = tr("drawer.downloadFlac");
       $("download-link").href = apiUrl("/api/audio", { path: file.path, download: 1 });
       $("preview-note").textContent = /^\d+\.wem$/i.test(file.name)
-        ? "这是 Wwise 媒体 Short ID；原始事件名未随客户端资源提供。音频按需加载。"
-        : "音频按需加载，直接播放。";
+        ? tr("audio.wemNote")
+        : tr("drawer.note.audio");
     } else if (kind === "video") {
       media.innerHTML = `<div class="preview-video">
         <span class="preview-video-skeleton skeleton" aria-hidden="true"></span>
@@ -2292,12 +2406,12 @@ async function showPreview(file) {
       const video = media.querySelector("video");
       video.addEventListener("loadedmetadata", () => requestAnimationFrame(() => wrap && wrap.classList.add("ready")), { once: true });
       video.addEventListener("error", () => {
-        media.innerHTML = `<div class="errorbox">视频加载失败</div>`;
+        media.innerHTML = `<div class="errorbox">${tr("error.video")}</div>`;
       }, { once: true });
-      $("preview-note").textContent = "可以直接播放并拖动进度。";
+      $("preview-note").textContent = tr("drawer.note.video");
     } else {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
-      $("preview-note").textContent = "正在读取资源结构…";
+      $("preview-note").textContent = tr("drawer.note.inspect");
       const data = await getJson(apiUrl("/api/inspect", { path: file.path }));
       if (token !== previewToken) return;
       renderInspect(data, media);
@@ -2305,7 +2419,7 @@ async function showPreview(file) {
   } catch (error) {
     if (token !== previewToken) return;
     $("preview-note").textContent = "";
-    media.innerHTML = `<div class="errorbox">预览失败：${esc(error.message)}<br>可以使用“下载文件”查看原始内容。</div>`;
+    media.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}<br>${tr("error.previewTip")}</div>`;
   }
 }
 
@@ -2359,16 +2473,16 @@ function closeDrawer() {
 async function copyText(text, button, label) {
   try {
     await navigator.clipboard.writeText(text);
-    button.textContent = "已复制";
+    button.textContent = tr("common.copied");
     setTimeout(() => { button.textContent = label; }, 1200);
   } catch (_) {
-    button.textContent = "复制失败";
+    button.textContent = tr("common.copyFailed");
   }
 }
 
 async function copyPath() {
   if (!state.previewPath) return;
-  await copyText(state.previewPath, $("copy-path"), "复制路径");
+  await copyText(state.previewPath, $("copy-path"), tr("drawer.copyPath"));
 }
 
 function syncTopbarHeight() {
@@ -2449,7 +2563,7 @@ function bind() {
     }
     if (event.target.closest("#copy-index")) {
       const search = state.searchMode;
-      copyText(search ? ($("search").value.trim()) : state.path, $("copy-index"), search ? "复制关键词" : "复制路径");
+      copyText(search ? ($("search").value.trim()) : state.path, $("copy-index"), search ? tr("list.copyKeyword") : tr("index.copyPath"));
     }
   });
   $("search").addEventListener("input", onSearchInput);
@@ -2543,4 +2657,9 @@ async function init() {
   await statsPromise;
 }
 
-init();
+async function boot() {
+  await initI18n();
+  await init();
+}
+
+boot();

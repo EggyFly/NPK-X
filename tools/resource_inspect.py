@@ -22,88 +22,88 @@ TEXT_EXTENSIONS = {
 
 FORMATS = {
     ".animgraph": (
-        "NeoX 动画状态图",
-        "XML 动画图/混合树，描述骨骼、变量、状态与过渡；本身不包含网格，需要配合模型和动画播放器才能显示动作。",
+        "inspect.format.animgraph",
+        "inspect.summary.animgraph",
         "text",
     ),
     ".animation": (
-        "NeoX 动画包装",
-        "XML 动画条目，引用同目录的 .rawanimation，并附加属性/事件；动态播放需要骨骼和模型渲染器。",
+        "inspect.format.animation",
+        "inspect.summary.animation",
         "text",
     ),
     ".animconfig": (
-        "NeoX 动画配置",
-        "XML 动画清单，列出角色可用的动画名称和文件名映射。",
+        "inspect.format.animconfig",
+        "inspect.summary.animconfig",
         "text",
     ),
     ".trackgroup": (
-        "NeoX 动作/特效轨道",
-        "XML 时间轴，按时间触发粒子、音效或动作事件，常与角色的 .animation 配套。",
+        "inspect.format.trackgroup",
+        "inspect.summary.trackgroup",
         "text",
     ),
     ".lod": (
-        "LOD/渲染配置",
-        "文本或 XML 的 LOD/材质/渲染参数，不是独立几何模型。",
+        "inspect.format.lod",
+        "inspect.summary.lod",
         "text",
     ),
     ".spr": (
-        "Sprite 图集描述",
-        "文本图集清单，记录纹理文件名、区域和帧信息，可据此裁切对应 PNG/KTA。",
+        "inspect.format.spr",
+        "inspect.summary.spr",
         "text",
     ),
     ".gim": (
-        "NeoX 对象/预制体",
-        "二进制对象配置，通常引用骨骼、子网格、材质和挂点/特效；它不是图片，也不能单独绘制。",
+        "inspect.format.gim",
+        "inspect.summary.gim",
         "none",
     ),
     ".mtg": (
-        "NeoX 材质配置",
-        "二进制材质参数，包含材质槽、贴图引用和着色器技术名；需要材质渲染器才能显示。",
+        "inspect.format.mtg",
+        "inspect.summary.mtg",
         "none",
     ),
     ".sfx": (
-        "NeoX 特效参数",
-        "二进制特效/关键帧参数，常引用粒子材质和贴图；需要特效播放器才能显示。",
+        "inspect.format.sfx",
+        "inspect.summary.sfx",
         "none",
     ),
     ".efx": (
-        "NeoX 粒子特效",
-        "二进制粒子系统，包含粒子资源、着色器和贴图引用；需要粒子渲染器才能显示。",
+        "inspect.format.efx",
+        "inspect.summary.efx",
         "none",
     ),
     ".gmp": (
-        "NeoX 地图数据",
-        "地图/场景二进制数据，不是独立模型文件；可视化需要地图地形、对象和材质格式。",
+        "inspect.format.gmp",
+        "inspect.summary.gmp",
         "none",
     ),
     ".xn": (
-        "NeoX 脚本容器",
-        "受保护的脚本/字节码容器，不是可视化资源；只能查看字符串、十六进制或下载。",
+        "inspect.format.xn",
+        "inspect.summary.xn",
         "none",
     ),
     ".qm": (
-        "Qt 翻译表",
-        "Qt Linguist 编译后的翻译文件，包含界面文案；不是游戏画面资源。",
+        "inspect.format.qm",
+        "inspect.summary.qm",
         "none",
     ),
     ".csb": (
-        "Cocos Studio UI",
-        "Cocos Studio 二进制 UI 布局，包含节点树、图片和动画引用；渲染需要 Cocos UI 运行时。",
+        "inspect.format.csb",
+        "inspect.summary.csb",
         "none",
     ),
     ".rawanimation": (
-        "NeoX 原始动画",
-        "二进制骨骼轨道关键帧，引用 .skeleton；动态显示需要骨骼蒙皮和动画播放器。",
+        "inspect.format.rawanimation",
+        "inspect.summary.rawanimation",
         "none",
     ),
     ".skeleton": (
-        "NeoX 骨骼",
-        "二进制关节层级与绑定矩阵；需要网格蒙皮渲染器才能显示。",
+        "inspect.format.skeleton",
+        "inspect.summary.skeleton",
         "none",
     ),
     ".mesh": (
-        "NeoX 网格模型",
-        "二进制网格，包含顶点、面、骨骼权重等；当前客户端的顶点数据有打包/量化变体，尚未接入通用 3D 预览。",
+        "inspect.format.mesh",
+        "inspect.summary.mesh",
         "none",
     ),
 }
@@ -266,7 +266,7 @@ def inspect(payload: bytes, ext: str, name: str = "") -> dict[str, Any]:
     ext = (ext or "").lower()
     label, summary, renderable = FORMATS.get(
         ext,
-        ("未知二进制资源", "暂未识别的资源格式；可以查看可读字符串和十六进制。", "none"),
+        ("inspect.format.unknown", "inspect.summary.unknown", "none"),
     )
     looks_text = ext in TEXT_EXTENSIONS or (
         payload[:4096].lstrip().startswith((b"<", b"{", b"["))

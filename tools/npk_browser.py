@@ -492,37 +492,37 @@ def launch_app(app: str, target: Path) -> tuple[bool, str]:
     target_s = str(target)
     if app == "explorer":
         if sys.platform != "win32":
-            return False, "资源管理器仅支持 Windows"
+            return False, "backend.explorerWindowsOnly"
         subprocess.Popen(["explorer", f"/select,{target_s}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        return True, "已在资源管理器中定位文件"
+        return True, "backend.explorerOpened"
     if app == "finder":
         if sys.platform != "darwin":
-            return False, "访达仅支持 macOS"
+            return False, "backend.finderMacOnly"
         subprocess.Popen(["open", "-R", target_s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        return True, "已在访达中定位文件"
+        return True, "backend.finderOpened"
     if app == "vscode":
         executable = find_vscode()
         if not executable:
-            return False, "未找到 VS Code，请先安装或把 code 加入 PATH"
+            return False, "backend.noVscode"
         command = [executable, target_s]
         if executable.lower().endswith((".cmd", ".bat")):
             command = ["cmd", "/c", executable, target_s]
         elif executable.lower().endswith(".sh"):
             command = ["bash", executable, target_s]
         subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        return True, "已用 VS Code 打开临时副本"
+        return True, "backend.vscodeOpened"
     if app == "idea":
         executable = find_idea()
         if not executable:
-            return False, "未找到 IntelliJ IDEA，请先安装或把 idea64.exe 加入 PATH"
+            return False, "backend.noIdea"
         command = [executable, target_s]
         if executable.lower().endswith(".bat"):
             command = ["cmd", "/c", executable, target_s]
         elif executable.lower().endswith(".sh"):
             command = ["bash", executable, target_s]
         subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        return True, "已用 IntelliJ IDEA 打开临时副本"
-    return False, "不支持的程序"
+        return True, "backend.ideaOpened"
+    return False, "backend.unsupported"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -589,8 +589,11 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, value, status: int = 200):
         self._send(json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
 
-    def _error(self, message: str, status: int = 400):
-        self._json({"error": message}, status)
+    def _error(self, message: str, status: int = 400, detail: str | None = None):
+        payload = {"error": message}
+        if detail:
+            payload["detail"] = detail
+        self._json(payload, status)
 
     def _entry_payload(self, row) -> bytes:
         return read_entry_bytes(row["package_path"], row)
@@ -926,11 +929,11 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._entry_payload(row)
         sizes = xn_crypto.header(payload)
         if not sizes:
-            result.update({"decrypted": False, "reason": "不是有效的 XN 容器"})
+            result.update({"decrypted": False, "reason": "backend.badContainer"})
             return result
         result["compressed"], result["original"] = sizes
         if not salt:
-            result.update({"decrypted": False, "reason": "模块名尚未索引，无法解密"})
+            result.update({"decrypted": False, "reason": "backend.moduleMissing"})
             return result
         key = (signature, salt, row["packed_hash"])
         with BrowserServer._xn_cache_lock:
@@ -940,12 +943,12 @@ class Handler(BaseHTTPRequestHandler):
         with BrowserServer._xn_sem:
             plain = xn_crypto.decrypt(payload, salt)
         if plain is None:
-            result.update({"decrypted": False, "reason": "解密失败"})
+            result.update({"decrypted": False, "reason": "backend.decryptFailed"})
             return result
         try:
             preview = xn_parse.preview(plain)
         except Exception as exc:
-            result.update({"decrypted": False, "reason": f"解析失败: {exc}"})
+            result.update({"decrypted": False, "reason": "backend.parseFailed", "detail": str(exc)})
             return result
         result["decrypted"] = True
         result["preview"] = preview
@@ -959,15 +962,15 @@ class Handler(BaseHTTPRequestHandler):
         signature = int(row["signature"])
         salt = self._xn_name_map().get(signature)
         if not salt:
-            return {"error": "模块名尚未索引", "signature": f"{signature:08x}"}
+            return {"error": "backend.moduleNotIndexed", "signature": f"{signature:08x}"}
         payload = self._entry_payload(row)
         plain = xn_crypto.decrypt(payload, salt)
         if plain is None:
-            return {"error": "解密失败", "signature": f"{signature:08x}"}
+            return {"error": "backend.decryptFailed", "signature": f"{signature:08x}"}
         try:
             text = xn_parse.disasm_text(plain, func, 1600)
         except Exception as exc:
-            return {"error": f"反汇编失败: {exc}", "signature": f"{signature:08x}"}
+            return {"error": "backend.disasmFailed", "detail": str(exc), "signature": f"{signature:08x}"}
         return {
             "path": row["path"],
             "signature": f"{signature:08x}",
@@ -993,7 +996,7 @@ class Handler(BaseHTTPRequestHandler):
         signature = int(row["signature"])
         salt = self._xn_name_map().get(signature)
         if not salt:
-            return {"error": "模块名尚未索引", "signature": f"{signature:08x}"}
+            return {"error": "backend.moduleNotIndexed", "signature": f"{signature:08x}"}
         key = (signature, salt, row["packed_hash"])
         with BrowserServer._xn_source_lock:
             cached = BrowserServer._xn_source_cache.get(key)
@@ -1003,14 +1006,14 @@ class Handler(BaseHTTPRequestHandler):
         with BrowserServer._xn_sem:
             plain = xn_crypto.decrypt(payload, salt)
         if plain is None:
-            return {"error": "解密失败", "signature": f"{signature:08x}"}
+            return {"error": "backend.decryptFailed", "signature": f"{signature:08x}"}
         try:
             pyc = xn_decompile.to_pyc(plain)
         except Exception as exc:
-            return {"error": f"字节码转换失败: {exc}", "signature": f"{signature:08x}"}
+            return {"error": "backend.bytecodeFailed", "detail": str(exc), "signature": f"{signature:08x}"}
         exe = self._uncompyle_exe()
         if not exe:
-            return {"error": "未找到 uncompyle6, 无法反编译", "signature": f"{signature:08x}"}
+            return {"error": "backend.noUncompyle", "signature": f"{signature:08x}"}
         tmp = self.server.cache_root / "tmp" / f"{uuid.uuid4().hex}.pyc"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1026,7 +1029,7 @@ class Handler(BaseHTTPRequestHandler):
                     cwd=str(tmp.parent),
                 )
         except subprocess.TimeoutExpired:
-            return {"error": "反编译超时", "signature": f"{signature:08x}"}
+            return {"error": "backend.decompileTimeout", "signature": f"{signature:08x}"}
         finally:
             try:
                 tmp.unlink()
@@ -1034,8 +1037,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         source = proc.stdout or ""
         if not source.strip():
-            message = (proc.stderr or "uncompyle6 没有输出").strip().splitlines()[-1]
-            return {"error": f"反编译失败: {message}", "signature": f"{signature:08x}"}
+            message = (proc.stderr or "").strip().splitlines()
+            if message:
+                return {"error": "backend.decompileFailed", "detail": message[-1], "signature": f"{signature:08x}"}
+            return {"error": "backend.noOutput", "signature": f"{signature:08x}"}
         result = {
             "path": row["path"],
             "signature": f"{signature:08x}",
@@ -1123,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
                 "file": str(target), "converted": converted,
             })
         except Exception as exc:
-            self._error(f"open failed: {exc}", 500)
+            self._error("backend.openFailed", 500, str(exc))
 
     def do_GET(self):
         route, query = self._query()
@@ -1138,6 +1143,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
                 self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
+                return
+            if route.startswith("/language/"):
+                name = route[len("/language/"):]
+                if not re.fullmatch(r"[a-z0-9_]+\.json", name):
+                    self._error("not found", 404)
+                    return
+                path = WEB_DIR / "language" / name
+                if not path.is_file():
+                    self._error("not found", 404)
+                    return
+                self._send(path.read_bytes(), "application/json; charset=utf-8", cache="private, max-age=3600")
                 return
             if route == "/favicon.ico":
                 self.send_response(204)

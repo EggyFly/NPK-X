@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NPK-X</title>
-<link rel="stylesheet" href="/static/style.css?v=36">
+<link rel="stylesheet" href="/static/style.css?v=37">
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -90,36 +90,37 @@
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-title">NPK-X</div>
-      <div class="brand-sub">浏览、搜索与预览</div>
+      <div class="brand-sub" data-i18n="app.subtitle">浏览、搜索与预览</div>
     </div>
     <div class="stats" id="stats">
-      <div class="stat"><span id="stat-files">—</span><small>文件</small></div>
-      <div class="stat"><span id="stat-size">—</span><small>总大小</small></div>
+      <div class="stat"><span id="stat-files">—</span><small data-i18n="stats.files">文件</small></div>
+      <div class="stat"><span id="stat-size">—</span><small data-i18n="stats.totalSize">总大小</small></div>
     </div>
-    <div class="side-heading">目录结构</div>
+    <div class="side-heading" data-i18n="nav.title">目录结构</div>
     <nav class="roots" id="roots"></nav>
-    <div class="side-foot"><span class="status-dot"></span>资源库已就绪</div>
+    <div class="side-foot"><span class="status-dot"></span><span data-i18n="status.ready">资源库已就绪</span></div>
   </aside>
 
   <main class="main">
     <div class="content-topbar" id="content-topbar">
       <header class="topbar">
         <div class="searchbox">
-          <input id="search" type="search" placeholder="搜索资源名称或路径，例如 login、pet、effect" autocomplete="off" spellcheck="false">
+          <input id="search" type="search" placeholder="搜索资源名称或路径，例如 login、pet、effect" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
           <kbd>/</kbd>
         </div>
         <div class="view-actions">
-          <select id="sort" class="sort-select" title="排序">
-            <option value="name_asc">名称 A–Z</option>
-            <option value="name_desc">名称 Z–A</option>
-            <option value="size_desc">大小从大到小</option>
-            <option value="size_asc">大小从小到大</option>
-            <option value="type">按类型</option>
-            <option value="package">按来源</option>
+          <select id="sort" class="sort-select" title="排序" data-i18n-title="sort.title">
+            <option value="name_asc" data-i18n="sort.nameAsc">名称 A–Z</option>
+            <option value="name_desc" data-i18n="sort.nameDesc">名称 Z–A</option>
+            <option value="size_desc" data-i18n="sort.sizeDesc">大小从大到小</option>
+            <option value="size_asc" data-i18n="sort.sizeAsc">大小从小到大</option>
+            <option value="type" data-i18n="sort.type">按类型</option>
+            <option value="package" data-i18n="sort.package">按来源</option>
           </select>
-          <button id="refresh" class="icon-btn" title="刷新" aria-label="刷新"><svg class="icon"><use href="#i-refresh"></use></svg></button>
-          <button id="view-grid" class="icon-btn" title="网格" aria-label="网格视图"><svg class="icon"><use href="#i-grid"></use></svg></button>
-          <button id="view-list" class="icon-btn" title="列表" aria-label="列表视图"><svg class="icon"><use href="#i-list"></use></svg></button>
+          <button id="refresh" class="icon-btn" title="刷新" data-i18n-title="view.refresh" aria-label="刷新" data-i18n-aria="view.refresh"><svg class="icon"><use href="#i-refresh"></use></svg></button>
+          <button id="view-grid" class="icon-btn" title="网格" data-i18n-title="view.grid" aria-label="网格视图" data-i18n-aria="view.grid"><svg class="icon"><use href="#i-grid"></use></svg></button>
+          <button id="view-list" class="icon-btn" title="列表" data-i18n-title="view.list" aria-label="列表视图" data-i18n-aria="view.list"><svg class="icon"><use href="#i-list"></use></svg></button>
+          <select id="language" class="sort-select language-select" title="语言" data-i18n-title="language.title" aria-label="Language" data-i18n-aria="language.title"></select>
         </div>
       </header>
       <div class="crumb" id="crumb"></div>
@@ -132,18 +133,18 @@
       <section id="content" class="content"></section>
       <aside class="index-pane" id="index-pane">
         <div class="index-head">
-          <span>当前目录索引</span>
+          <span data-i18n="index.title">当前目录索引</span>
         </div>
         <div class="index-body">
-          <div class="index-path" id="index-path">全部资源</div>
+          <div class="index-path" id="index-path" data-i18n="index.all">全部资源</div>
           <div class="index-summary" id="index-summary"></div>
           <div class="index-actions">
-            <button class="mini-btn" id="index-up">上一级</button>
-            <button class="mini-btn" id="copy-index">复制路径</button>
+            <button class="mini-btn" id="index-up" data-i18n="index.up">上一级</button>
+            <button class="mini-btn" id="copy-index" data-i18n="index.copyPath">复制路径</button>
           </div>
-          <div class="index-section">文件类型</div>
+          <div class="index-section" data-i18n="index.fileTypes">文件类型</div>
           <div class="kind-chips" id="index-kinds"></div>
-          <div class="index-section">子目录</div>
+          <div class="index-section" data-i18n="index.dirs">子目录</div>
           <div class="index-dirs" id="index-dirs"></div>
         </div>
       </aside>
@@ -155,27 +156,27 @@
   <div class="drawer-head">
     <div class="drawer-title">
       <div id="preview-badge" class="badge">FILE</div>
-      <div class="drawer-name" id="preview-name">预览</div>
+      <div class="drawer-name" id="preview-name" data-i18n="drawer.preview">预览</div>
     </div>
-    <button id="close-drawer" class="icon-btn" title="关闭" aria-label="关闭"><svg class="icon"><use href="#i-close"></use></svg></button>
+    <button id="close-drawer" class="icon-btn" title="关闭" data-i18n-title="drawer.close" aria-label="关闭" data-i18n-aria="drawer.close"><svg class="icon"><use href="#i-close"></use></svg></button>
   </div>
   <div class="drawer-nav">
-    <button id="prev-file" class="mini-btn" title="上一个条目"><svg class="icon"><use href="#i-chevron-left"></use></svg>上一个</button>
+    <button id="prev-file" class="mini-btn" title="上一个条目" data-i18n-title="drawer.prev"><svg class="icon"><use href="#i-chevron-left"></use></svg><span data-i18n="drawer.prev">上一个</span></button>
     <span id="file-position" class="drawer-pos"></span>
-    <button id="next-file" class="mini-btn" title="下一个条目">下一个<svg class="icon"><use href="#i-chevron-right"></use></svg></button>
+    <button id="next-file" class="mini-btn" title="下一个条目" data-i18n-title="drawer.next"><span data-i18n="drawer.next">下一个</span><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
   </div>
   <div class="drawer-body">
     <div id="preview-media" class="preview-media"></div>
-    <div class="section-title">文件信息</div>
+    <div class="section-title" data-i18n="drawer.fileInfo">文件信息</div>
     <div id="preview-meta" class="meta-grid"></div>
     <div class="open-row">
-      <span class="open-label">通过…打开</span>
+      <span class="open-label" data-i18n="drawer.openWith">通过…打开</span>
       <div id="open-actions" class="open-actions"></div>
     </div>
     <div class="drawer-actions">
-      <a id="download-link" class="btn primary" href="#" download>下载文件</a>
-      <button id="copy-path" class="btn">复制路径</button>
-      <a id="open-image" class="btn hidden" href="#" target="_blank" rel="noopener">新窗口查看</a>
+      <a id="download-link" class="btn primary" href="#" download data-i18n="drawer.download">下载文件</a>
+      <button id="copy-path" class="btn" data-i18n="drawer.copyPath">复制路径</button>
+      <a id="open-image" class="btn hidden" href="#" target="_blank" rel="noopener" data-i18n="drawer.newWindow">新窗口查看</a>
     </div>
     <div id="preview-note" class="note"></div>
   </div>
@@ -186,13 +187,13 @@
   <div class="viewer-panel">
     <div class="viewer-head">
       <div class="viewer-name" id="viewer-name"></div>
-      <button id="viewer-close" class="icon-btn" title="关闭" aria-label="关闭"><svg class="icon"><use href="#i-close"></use></svg></button>
+      <button id="viewer-close" class="icon-btn" title="关闭" data-i18n-title="viewer.close" aria-label="关闭" data-i18n-aria="viewer.close"><svg class="icon"><use href="#i-close"></use></svg></button>
     </div>
     <div class="viewer-stage" id="viewer-stage"></div>
     <div class="viewer-foot" id="viewer-foot"></div>
   </div>
 </div>
 
-<script src="/static/app.js?v=36"></script>
+<script src="/static/app.js?v=37"></script>
 </body>
 </html>

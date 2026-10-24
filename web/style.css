@@ -118,6 +118,7 @@ a:hover { text-decoration: underline; }
   color: #cdd9e8; padding: 0 9px; outline: none; font-size: 12px; cursor: pointer;
 }
 .sort-select:hover, .sort-select:focus { border-color: #3a4e66; }
+.language-select { max-width: 150px; }
 .icon-btn {
   width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--line);
   background: var(--panel); cursor: pointer; color: #c7d4e4; font-size: 16px;
@@ -712,5 +713,5 @@ a:hover { text-decoration: underline; }
 @media (max-width: 640px) {
   .content-topbar .topbar { flex-wrap: wrap; }
   .searchbox { flex: 1 1 100%; max-width: none; }
-  .view-actions { width: 100%; justify-content: flex-end; }
+  .view-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
 }
