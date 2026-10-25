@@ -435,6 +435,18 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 .inspect-size { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .inspect-summary { color: #b9c8d9; font-size: 11px; line-height: 1.6; }
 .inspect-refs { display: flex; flex-wrap: wrap; gap: 5px; max-height: 126px; overflow: auto; }
+.neox-tex-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.neox-tex {
+  width: 96px; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+  background: #0a1119; cursor: pointer; overflow: hidden; text-align: left;
+  transition: border-color .18s ease, transform .18s ease;
+}
+.neox-tex:hover { border-color: #3a4e66; transform: translateY(-1px); }
+.neox-tex img { width: 100%; height: 72px; object-fit: contain; display: block; background: #05090e; }
+.neox-tex-name {
+  display: block; padding: 4px 6px; color: var(--muted); font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .inspect-ref {
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border: 1px solid var(--line); border-radius: 5px; background: #0d141d;
@@ -752,7 +764,7 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 .file-row.picked .file-row-name { color: #ecfffc; }
 
 .batch-bar {
-  position: sticky; top: calc(var(--content-topbar-height, 120px) + 10px); z-index: 14;
+  position: sticky; top: calc(var(--content-topbar-height, 120px) + 10px); z-index: 16;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin: 0 0 14px; padding: 9px 10px 9px 8px;
   border: 1px solid rgba(110,231,216,.32); border-radius: 12px;
@@ -764,6 +776,7 @@ html.viewer-open, body.viewer-open { overflow: hidden; }
 .batch-count b { color: var(--accent-2); font-size: 15px; font-variant-numeric: tabular-nums; }
 .batch-download-wrap { position: relative; margin-left: auto; }
 .batch-download-wrap .btn { display: inline-flex; align-items: center; gap: 6px; }
+.batch-download-wrap .btn:disabled { opacity: .45; cursor: default; }
 
 .batch-menu {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 30;

@@ -300,6 +300,7 @@ function itemAction(file) {
   const ext = (file.ext || "").toLowerCase();
   if (ext === ".gmp") return { name: "view", label: tr("action.map"), icon: "map" };
   if (ext === ".gim") return { name: "gim", label: tr("action.view"), icon: "map" };
+  if (ext === ".mesh") return { name: "gim", label: tr("action.view"), icon: "map" };
   if (ext === ".xn") return { name: "script", label: tr("action.script"), icon: "code" };
   if (kind === "audio") return { name: "play", label: tr("action.play"), icon: "play" };
   if (kind === "image" || isTextView(file)) return { name: "view", label: tr("action.view"), icon: "zoom" };
@@ -2492,6 +2493,7 @@ function renderNeoXPreview(data, container, file) {
     }
   }
   const meshData = data.mesh_data || null;
+  const textures = data.textures || [];
   const chips = [
     `<span class="bank-chip">${tr("gmp.units")} <b>${Number(objects.length).toLocaleString()}</b></span>`,
     `<span class="bank-chip">${tr("gmp.refs")} <b>${refs.length}</b></span>`,
@@ -2499,7 +2501,17 @@ function renderNeoXPreview(data, container, file) {
   if (meshData) {
     chips.push(`<span class="bank-chip">${tr("gmp.verts")} <b>${Number(meshData.vertex_count).toLocaleString()}</b></span>`);
   }
+  if (textures.length) {
+    chips.push(`<span class="bank-chip">${tr("mtg.textures")} <b>${textures.length}</b></span>`);
+  }
   chips.join("");
+  const textureCards = textures.map((tex) => {
+    const url = tex.resolved ? apiUrl("/api/image", { path: tex.resolved }) : "";
+    return `<button class="neox-tex" data-mesh-path="${esc(tex.resolved || "")}" ${url ? "" : "disabled"}>
+      ${url ? `<img src="${esc(url)}" alt="${esc(tex.path)}" loading="lazy">` : `<span class="thumb-fallback">${esc(tex.path.split("/").pop())}</span>`}
+      <span class="neox-tex-name">${esc(tex.path.split("/").pop())}</span>
+    </button>`;
+  }).join("");
   const objRows = objects.slice(0, 60).map((obj, index) => {
     const entries = Object.entries(obj).slice(0, 6);
     const detail = entries.map(([key, value]) => `${esc(key)}=${esc(String(value))}`).join(" · ") || "—";
@@ -2520,6 +2532,7 @@ function renderNeoXPreview(data, container, file) {
         : ""}
     </div>
     <div class="bank-chips">${chips.join("")}</div>
+    ${textures.length ? `<div class="section-title">${tr("mtg.textures")}</div><div class="neox-tex-grid">${textureCards}</div>` : ""}
     ${objects.length
       ? `<div class="section-title">${tr("gmp.unitList", { count: Math.min(objects.length, 60) })}</div><div class="gmp-units">${objRows}</div>`
       : `<div class="note">${tr("gmp.noUnits")}</div>`}
@@ -2529,9 +2542,18 @@ function renderNeoXPreview(data, container, file) {
   if (open) {
     open.addEventListener("click", () => openGimViewer(file, data));
   }
+  container.querySelectorAll(".neox-tex[data-mesh-path]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const path = card.dataset.meshPath;
+      const texFile = state.files.find((item) => item.path === path);
+      if (texFile) showPreview(texFile);
+    });
+  });
   $("preview-note").textContent = meshData
     ? tr("gmp.note", { count: Number(meshData.vertex_count).toLocaleString() })
-    : tr("gmp.noteNoUnits");
+    : textures.length
+      ? tr("mtg.note", { count: textures.length })
+      : tr("gmp.noteNoUnits");
 }
 
 async function openGimDirect(file) {
@@ -2557,16 +2579,50 @@ async function openGimDirect(file) {
   try {
     const data = await getJson(apiUrl("/api/neox", { path: file.path }));
     if (token !== viewer.token) return;
-    if (!data.mesh_data) throw new Error(tr("gmp.noUnits"));
-    $("viewer-foot").innerHTML = `<div class="viewer-zoom">
-      <button class="icon-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
-    </div>`;
-    const reset = $("gim-reset");
-    if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
-    renderGim3D($("viewer-stage"), data.mesh_data, token);
+    const meshData = data.mesh_data || ((file.ext || "").toLowerCase() === ".mesh" ? data : null);
+    if (!meshData || !(meshData.vertices || []).length) throw new Error(tr("gmp.noUnits"));
+    const textureList = data.texture_images || [];
+    $("viewer-foot").innerHTML = gimFoot();
+    bindGimFoot();
+    renderGim3D($("viewer-stage"), meshData, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "");
   } catch (error) {
     if (token !== viewer.token) return;
     $("viewer-stage").innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+function gimFoot() {
+  return `<div class="viewer-zoom">
+    <button class="icon-btn" id="gim-zoom-out" title="${tr("map.zoomOut")}" aria-label="${tr("map.zoomOut")}">${icon("minus")}</button>
+    <label class="viewer-zoom-value"><input id="gim-zoom-input" type="number" min="5" max="2000" step="1" value="100"><span>%</span></label>
+    <button class="icon-btn" id="gim-zoom-in" title="${tr("map.zoomIn")}" aria-label="${tr("map.zoomIn")}">${icon("plus")}</button>
+    <button class="mini-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
+    <label class="map-dot-control"><input id="gim-points" type="checkbox" checked>${tr("gmp.pointsToggle")}</label>
+  </div>
+  <div class="viewer-map" id="gim-map">
+    <canvas id="gim-map-canvas" class="viewer-map-canvas" width="178" height="118"></canvas>
+    <div class="viewer-map-view" id="gim-map-view"></div>
+  </div>`;
+}
+
+function bindGimFoot() {
+  const zoomIn = $("gim-zoom-in");
+  const zoomOut = $("gim-zoom-out");
+  const zoomInput = $("gim-zoom-input");
+  const reset = $("gim-reset");
+  const pointsToggle = $("gim-points");
+  if (zoomIn) zoomIn.addEventListener("click", () => { gim3d.scale *= 1.2; });
+  if (zoomOut) zoomOut.addEventListener("click", () => { gim3d.scale /= 1.2; });
+  if (zoomInput) {
+    zoomInput.addEventListener("change", () => {
+      gim3d.scale = Math.max(0.05, Math.min(20, Number(zoomInput.value) / 100 || 1));
+    });
+    gim3d.zoomInput = zoomInput;
+  }
+  if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
+  if (pointsToggle) {
+    gim3d.points = pointsToggle.checked;
+    pointsToggle.addEventListener("change", () => { gim3d.points = pointsToggle.checked; });
   }
 }
 
@@ -2585,24 +2641,24 @@ function openGimViewer(file, data) {
   viewer.path = file.path;
   viewer.mode = "image";
   $("viewer-name").textContent = file.name;
-  $("viewer-foot").innerHTML = `<div class="viewer-zoom">
-    <button class="icon-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
-  </div>`;
+  $("viewer-foot").innerHTML = gimFoot();
+  bindGimFoot();
   const stage = $("viewer-stage");
   stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
   void node.offsetWidth;
   node.classList.add("open");
   lockViewerScroll();
   try {
-    renderGim3D(stage, data.mesh_data, token);
+    const textureList = data.texture_images || [];
+    renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "");
   } catch (error) {
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
   }
 }
 
-const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null, indices: null };
+const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null, indices: null, uvs: null, texture: null };
 
-function renderGim3D(stage, meshData, token) {
+function renderGim3D(stage, meshData, token, textureUrl) {
   const verts = meshData.vertices || [];
   if (!verts.length) throw new Error("no vertices");
   let cx = 0, cy = 0, cz = 0;
@@ -2614,6 +2670,7 @@ function renderGim3D(stage, meshData, token) {
     if (d > radius) radius = d;
   }
   const indices = (meshData.indices || []).filter((v) => v < verts.length);
+  const uvs = meshData.uvs || [];
   stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
     <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${indices.length ? `${Math.floor(indices.length / 3)} tris` : "wire"}</div>`;
   const canvas = $("gim-canvas");
@@ -2621,9 +2678,21 @@ function renderGim3D(stage, meshData, token) {
   gim3d.canvas = canvas;
   gim3d.verts = { verts, cx, cy, cz, radius };
   gim3d.indices = indices;
+  gim3d.uvs = uvs;
+  gim3d.texture = null;
   gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1;
-  const reset = $("gim-reset");
-  if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
+  if (textureUrl) {
+    const img = new Image();
+    img.onload = () => { gim3d.texture = img; };
+    img.src = textureUrl;
+  }
+  const pointsToggle = $("gim-points");
+  if (pointsToggle) {
+    gim3d.points = pointsToggle.checked;
+    pointsToggle.addEventListener("change", () => { gim3d.points = pointsToggle.checked; });
+  }
+  gim3d.minimap = $("gim-map-canvas");
+  gim3d.mapView = $("gim-map-view");
   canvas.addEventListener("pointerdown", (e) => {
     gim3d.drag = true; gim3d.px = e.clientX; gim3d.py = e.clientY;
     canvas.setPointerCapture(e.pointerId);
@@ -2662,32 +2731,64 @@ function renderGim3D(stage, meshData, token) {
     };
     const projected = vs.map(project);
     const indices = gim3d.indices || [];
-    if (indices.length >= 3) {
-      // 深度排序后画三角形 (背面前置)
+    const uvs = gim3d.uvs || [];
+    const texture = gim3d.texture;
+    const pointsMode = gim3d.points || !indices.length || !texture;
+    if (indices.length >= 3 && !pointsMode) {
+      // 深度排序后画贴图三角形 (背面前置)
       const tris = [];
       for (let i = 0; i + 2 < indices.length; i += 3) {
-        const a = projected[indices[i]], b = projected[indices[i + 1]], c = projected[indices[i + 2]];
+        const ai = indices[i], bi = indices[i + 1], ci = indices[i + 2];
+        const a = projected[ai], b = projected[bi], c = projected[ci];
         if (!a || !b || !c) continue;
         const depth = (a[2] + b[2] + c[2]) / 3;
         const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-        tris.push({ a, b, c, depth, cross });
+        tris.push({ ai, bi, ci, a, b, c, depth, cross });
       }
       tris.sort((p, q) => p.depth - q.depth);
       for (const tri of tris) {
         if (tri.cross >= 0) continue;
-        ctx.fillStyle = `rgba(110,231,216,${0.25 + 0.45 * Math.max(0, 1 - Math.abs(tri.depth) / (rad * 2))})`;
-        ctx.beginPath();
-        ctx.moveTo(tri.a[0], tri.a[1]);
-        ctx.lineTo(tri.b[0], tri.b[1]);
-        ctx.lineTo(tri.c[0], tri.c[1]);
-        ctx.closePath();
-        ctx.fill();
+        if (texture && uvs.length) {
+          const ua = uvs[tri.ai] || [0, 0], ub = uvs[tri.bi] || [0, 0], uc = uvs[tri.ci] || [0, 0];
+          // 近似仿射贴图: 用 2D 三角形到纹理三角形的仿射变换
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(tri.a[0], tri.a[1]);
+          ctx.lineTo(tri.b[0], tri.b[1]);
+          ctx.lineTo(tri.c[0], tri.c[1]);
+          ctx.closePath();
+          ctx.clip();
+          const tw = texture.width, th = texture.height;
+          const denom = (ub[0] - ua[0]) * (uc[1] - ua[1]) - (uc[0] - ua[0]) * (ub[1] - ua[1]);
+          if (Math.abs(denom) > 1e-9) {
+            const sx = ((tri.b[0] - tri.a[0]) * (uc[1] - ua[1]) - (tri.c[0] - tri.a[0]) * (ub[1] - ua[1])) / denom;
+            const sy = ((tri.b[1] - tri.a[1]) * (uc[1] - ua[1]) - (tri.c[1] - tri.a[1]) * (ub[1] - ua[1])) / denom;
+            const scx = tri.a[0] - sx * ua[0] * tw - ((tri.c[0] - tri.a[0]) * (ub[0] - ua[0]) - (tri.b[0] - tri.a[0]) * (uc[0] - ua[0])) / denom * ua[0] * tw;
+            const tx = ((tri.c[0] - tri.a[0]) * (ub[0] - ua[0]) - (tri.b[0] - tri.a[0]) * (uc[0] - ua[0])) / denom;
+            const ty = ((tri.c[1] - tri.a[1]) * (ub[0] - ua[0]) - (tri.b[1] - tri.a[1]) * (uc[0] - ua[0])) / denom;
+            const scy = tri.a[1] - sx * ua[1] * th - ty * ua[1] * th;
+            ctx.transform(sx, sy, tx, ty, scx + 0, scy + 0);
+            ctx.drawImage(texture, 0, 0, tw, th, 0, 0, tw, th);
+          } else {
+            ctx.fillStyle = "rgba(110,231,216,.4)";
+            ctx.fill();
+          }
+          ctx.restore();
+        } else {
+          ctx.fillStyle = `rgba(110,231,216,${0.25 + 0.45 * Math.max(0, 1 - Math.abs(tri.depth) / (rad * 2))})`;
+          ctx.beginPath();
+          ctx.moveTo(tri.a[0], tri.a[1]);
+          ctx.lineTo(tri.b[0], tri.b[1]);
+          ctx.lineTo(tri.c[0], tri.c[1]);
+          ctx.closePath();
+          ctx.fill();
+        }
       }
     }
     ctx.strokeStyle = "rgba(110,231,216,.45)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    if (indices.length >= 3) {
+    if (indices.length >= 3 && pointsMode) {
       for (let i = 0; i + 2 < indices.length; i += 3) {
         const a = projected[indices[i]], b = projected[indices[i + 1]], c = projected[indices[i + 2]];
         if (!a || !b || !c) continue;
@@ -2696,7 +2797,7 @@ function renderGim3D(stage, meshData, token) {
         ctx.lineTo(c[0], c[1]);
         ctx.closePath();
       }
-    } else {
+    } else if (!indices.length || pointsMode) {
       for (let i = 0; i + 1 < vs.length; i += 1) {
         ctx.moveTo(projected[i][0], projected[i][1]);
         ctx.lineTo(projected[i + 1][0], projected[i + 1][1]);
@@ -2704,10 +2805,34 @@ function renderGim3D(stage, meshData, token) {
     }
     ctx.stroke();
     ctx.fillStyle = "rgba(255,209,102,.75)";
-    for (const p of projected) ctx.fillRect(p[0] - 1, p[1] - 1, 2, 2);
+    if (pointsMode) {
+      for (const p of projected) ctx.fillRect(p[0] - 1, p[1] - 1, 2, 2);
+    }
+    if (gim3d.zoomInput && Number(gim3d.zoomInput.value) !== Math.round(gim3d.scale * 100)) {
+      gim3d.zoomInput.value = Math.round(gim3d.scale * 100);
+    }
+    drawGimMinimap(projected, w, h);
     gim3d.raf = requestAnimationFrame(draw);
   };
   draw();
+}
+
+function drawGimMinimap(projected, w, h) {
+  const mini = gim3d.minimap;
+  const view = gim3d.mapView;
+  if (!mini || !view) return;
+  const mctx = mini.getContext("2d");
+  const mw = mini.width, mh = mini.height;
+  mctx.fillStyle = "#080e15";
+  mctx.fillRect(0, 0, mw, mh);
+  mctx.fillStyle = "rgba(110,231,216,.55)";
+  for (const p of projected) {
+    mctx.fillRect((p[0] / w) * mw - 1, (p[1] / h) * mh - 1, 2, 2);
+  }
+  view.style.left = `${Math.max(0, (w / 2 - w / (2 * gim3d.scale)) / w * mw)}px`;
+  view.style.top = `${Math.max(0, (h / 2 - h / (2 * gim3d.scale)) / h * mh)}px`;
+  view.style.width = `${Math.min(mw, mw / gim3d.scale)}px`;
+  view.style.height = `${Math.min(mh, mh / gim3d.scale)}px`;
 }
 
 async function showPreview(file) {
@@ -3204,6 +3329,7 @@ function bind() {
     else openBatchMenu();
   });
   $("batch-menu").addEventListener("click", (event) => {
+    event.stopPropagation();
     const page = event.target.closest("[data-batch-page]");
     if (page) {
       batchMenuPage = page.dataset.batchPage;
@@ -3229,7 +3355,11 @@ function bind() {
     }
   });
   document.addEventListener("click", (event) => {
-    if (batchMenuOpen && !event.target.closest(".batch-download-wrap")) closeBatchMenu();
+    if (!batchMenuOpen) return;
+    const path = event.composedPath ? event.composedPath() : [];
+    const inside = path.some((node) => node instanceof Element && node.matches(".batch-download-wrap, #batch-menu"))
+      || !!(event.target.closest && event.target.closest(".batch-download-wrap, #batch-menu"));
+    if (!inside) closeBatchMenu();
   });
   $("batch-toast-close").addEventListener("click", hideBatchToast);
   $("close-drawer").addEventListener("click", closeDrawer);
