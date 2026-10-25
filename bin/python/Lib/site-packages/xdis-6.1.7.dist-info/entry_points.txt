@@ -1,0 +1,2 @@
+[console_scripts]
+pydisasm = xdis.bin.pydisasm:main

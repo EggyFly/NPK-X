@@ -186,6 +186,46 @@ def material_flags(objects) -> dict:
     }
 
 
+def submesh_materials(data: dict) -> dict:
+    table = data.get("table") or []
+    meta = data.get("meta") or []
+    objects = data.get("objects") or []
+    result = {}
+    for index, obj in enumerate(objects):
+        if not isinstance(obj, dict) or "MtlIdx" not in obj:
+            continue
+        table_index = None
+        if index < len(meta) and isinstance(meta[index], dict):
+            table_index = meta[index].get("x")
+        if isinstance(table_index, int) and 0 <= table_index < len(table):
+            name = table[table_index]
+            if isinstance(name, str) and name.startswith("Sub") and name[3:].isdigit():
+                try:
+                    result[int(name[3:])] = int(obj["MtlIdx"])
+                except (TypeError, ValueError):
+                    pass
+    return result
+
+
+def material_groups(objects: list, textures: list) -> list:
+    count = 0
+    for obj in objects or []:
+        if not isinstance(obj, dict):
+            continue
+        value = obj.get("MaterialCount")
+        if isinstance(value, int) and value > 0:
+            count = value
+            break
+    resolved = [item.get("resolved") for item in textures if isinstance(item, dict) and item.get("resolved")]
+    if count <= 0 or len(resolved) % count:
+        return []
+    size = len(resolved) // count
+    return [
+        {"index": index, "textures": resolved[index * size:(index + 1) * size]}
+        for index in range(count)
+    ]
+
+
 def default_cache_dir() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
@@ -472,6 +512,7 @@ class BrowserServer(ThreadingHTTPServer):
     _xn_source_lock = threading.Lock()
     _xn_source_cache: dict = {}
     _xn_decompile_sem = threading.Semaphore(1)
+    _uncompyle_cmd_cache = None
     _xn_names_lock = threading.Lock()
     _xn_names = None
     _xn_names_mtime = 0.0
@@ -1342,6 +1383,29 @@ class Handler(BaseHTTPRequestHandler):
             "disassembly": text,
         }
 
+    def _uncompyle_cmd(self) -> list | None:
+        with BrowserServer._xn_source_lock:
+            if BrowserServer._uncompyle_cmd_cache is not None:
+                return BrowserServer._uncompyle_cmd_cache
+        cmd = None
+        bundled = Path(sys.executable).resolve()
+        site_dir = bundled.parent / "Lib" / "site-packages" / "uncompyle6"
+        if bundled.is_file() and site_dir.is_dir():
+            probe = subprocess.run(
+                [str(bundled), "-c", "import uncompyle6"],
+                capture_output=True,
+                timeout=30,
+            )
+            if probe.returncode == 0:
+                cmd = [str(bundled), "-m", "uncompyle6.bin.uncompile"]
+        if not cmd:
+            exe = self._uncompyle_exe()
+            if exe:
+                cmd = [exe]
+        with BrowserServer._xn_source_lock:
+            BrowserServer._uncompyle_cmd_cache = cmd
+        return cmd
+
     def _uncompyle_exe(self) -> str | None:
         candidates = [shutil.which("uncompyle6")]
         for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
@@ -1374,8 +1438,8 @@ class Handler(BaseHTTPRequestHandler):
             pyc = xn_decompile.to_pyc(plain)
         except Exception as exc:
             return {"error": "backend.bytecodeFailed", "detail": str(exc), "signature": f"{signature:08x}"}
-        exe = self._uncompyle_exe()
-        if not exe:
+        cmd = self._uncompyle_cmd()
+        if not cmd:
             return {"error": "backend.noUncompyle", "signature": f"{signature:08x}"}
         tmp = self.server.cache_root / "tmp" / f"{uuid.uuid4().hex}.pyc"
         tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -1383,7 +1447,7 @@ class Handler(BaseHTTPRequestHandler):
             tmp.write_bytes(pyc)
             with BrowserServer._xn_decompile_sem:
                 proc = subprocess.run(
-                    [exe, str(tmp)],
+                    cmd + [str(tmp)],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -1763,6 +1827,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(f"NeoX parse failed: {exc}", 415)
                     return
                 data["material"] = material_flags(data.get("objects", []))
+                material_objects = data.get("objects", [])
                 textures = []
                 for obj in data.get("objects", []):
                     for name, value in obj.items():
@@ -1800,6 +1865,7 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             mtg_data = neox_object.parse(self._entry_payload(mtg_row))
                             data["material"] = material_flags(mtg_data.get("objects", []))
+                            material_objects = mtg_data.get("objects", [])
                             if not textures:
                                 for obj in mtg_data.get("objects", []):
                                     for name, value in obj.items():
@@ -1817,6 +1883,9 @@ class Handler(BaseHTTPRequestHandler):
                     resolved = [item.get("resolved") for item in textures if item.get("resolved")]
                     if resolved:
                         data["material"]["textures"] = resolved
+                        groups = material_groups(material_objects, textures)
+                        if groups:
+                            data["materials"] = groups
                 if mesh_path and not data.get("mesh_data"):
                     try:
                         mesh_row = self._row(mesh_path)
@@ -1828,6 +1897,10 @@ class Handler(BaseHTTPRequestHandler):
                                 if center and half:
                                     parsed = mesh_parse.denormalize(parsed, center, half)
                             data["mesh_data"] = parsed
+                            if data.get("materials"):
+                                mapping = submesh_materials(data)
+                                for index, sub in enumerate(parsed.get("submeshes", [])):
+                                    sub["material_index"] = mapping.get(index, 0)
                             if textures:
                                 data["texture_images"] = [
                                     t["resolved"] for t in textures if t.get("resolved")

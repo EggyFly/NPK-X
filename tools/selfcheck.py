@@ -51,6 +51,13 @@ def main() -> int:
     except Exception:
         print("[INFO] soundfile missing; WEM->FLAC will need ffmpeg")
 
+    try:
+        import uncompyle6  # noqa: F401
+        print("[PASS] import uncompyle6 (XN source decompiler)")
+    except Exception as exc:
+        failures.append(f"import uncompyle6: {exc}")
+        print("[FAIL] import uncompyle6 (XN source view unavailable)")
+
     vgm = None
     for candidate in (
         ROOT / "bin" / "vgmstream" / "vgmstream-cli.exe",

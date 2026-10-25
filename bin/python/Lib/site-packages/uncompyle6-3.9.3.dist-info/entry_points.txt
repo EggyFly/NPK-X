@@ -1,0 +1,3 @@
+[console_scripts]
+uncompyle6 = uncompyle6.bin.uncompile:main_bin
+uncompyle6-tokenize = uncompyle6.bin.pydisassemble:main
