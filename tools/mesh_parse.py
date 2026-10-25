@@ -329,6 +329,26 @@ def parse(data: bytes) -> dict:
             uvs.append([round(u, 5), round(v, 5)])
         mins = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
         maxs = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
+        submeshes = []
+        vertex_offset = 0
+        face_offset = 0
+        for item in info["records"]:
+            chunk = vertices[vertex_offset:vertex_offset + item[0]]
+            if chunk:
+                lo = [min(vertex[axis] for vertex in chunk) for axis in range(3)]
+                hi = [max(vertex[axis] for vertex in chunk) for axis in range(3)]
+            else:
+                lo = [0.0, 0.0, 0.0]
+                hi = [0.0, 0.0, 0.0]
+            submeshes.append({
+                "vertex_count": item[0],
+                "face_count": item[1],
+                "face_offset": face_offset,
+                "vertex_offset": vertex_offset,
+                "bounds": {"min": lo, "max": hi},
+            })
+            vertex_offset += item[0]
+            face_offset += item[1]
         return {
             "size": len(data),
             "version": version,
@@ -345,10 +365,7 @@ def parse(data: bytes) -> dict:
             "uvs": uvs,
             "indices": indices,
             "bounds": {"min": mins, "max": maxs},
-            "submeshes": [
-                {"vertex_count": item[0], "face_count": item[1], "face_offset": sum(record[1] for record in info["records"][:index])}
-                for index, item in enumerate(info["records"])
-            ],
+            "submeshes": submeshes,
         }
     header = 12
     if version < 4 and _u32(data, header + 8) == 0:
@@ -433,12 +450,33 @@ def parse(data: bytes) -> dict:
     maxs = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
     submeshes = []
     if table["kind"] == "single":
-        submeshes.append({"vertex_count": total_vcount, "face_count": total_fcount, "face_offset": 0})
+        submeshes.append({
+            "vertex_count": total_vcount,
+            "face_count": total_fcount,
+            "face_offset": 0,
+            "vertex_offset": 0,
+            "bounds": {"min": mins, "max": maxs},
+        })
     else:
         face_offset = 0
+        vertex_offset = 0
         for item in table["records"]:
-            submeshes.append({"vertex_count": item[0], "face_count": item[1], "face_offset": face_offset})
+            chunk = vertices[vertex_offset:vertex_offset + item[0]]
+            if chunk:
+                lo = [min(vertex[axis] for vertex in chunk) for axis in range(3)]
+                hi = [max(vertex[axis] for vertex in chunk) for axis in range(3)]
+            else:
+                lo = [0.0, 0.0, 0.0]
+                hi = [0.0, 0.0, 0.0]
+            submeshes.append({
+                "vertex_count": item[0],
+                "face_count": item[1],
+                "face_offset": face_offset,
+                "vertex_offset": vertex_offset,
+                "bounds": {"min": lo, "max": hi},
+            })
             face_offset += item[1]
+            vertex_offset += item[0]
     return {
         "size": len(data),
         "version": version,

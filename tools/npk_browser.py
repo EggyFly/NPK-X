@@ -226,6 +226,169 @@ def material_groups(objects: list, textures: list) -> list:
     ]
 
 
+def material_tree(data: dict, resolve=None) -> list:
+    children = neox_object.build_tree(data)
+    table = data.get("table") or []
+    meta = data.get("meta") or []
+    objects = data.get("objects") or []
+
+    def class_name(index):
+        if index < 0 or index >= len(meta) or not isinstance(meta[index], dict):
+            return ""
+        table_index = meta[index].get("x")
+        if isinstance(table_index, int) and 0 <= table_index < len(table):
+            return table[table_index]
+        return ""
+
+    group = None
+    for index in range(len(objects)):
+        if class_name(index) == "MaterialGroup":
+            group = index
+            break
+    if group is None:
+        return []
+    materials = []
+    for node in children[group]:
+        node_name = class_name(node)
+        if not node_name.startswith("Material_"):
+            continue
+        try:
+            material_index = int(node_name.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        material_node = None
+        for child in children[node]:
+            if class_name(child) == "Material":
+                material_node = child
+                break
+        if material_node is None:
+            continue
+        nodes = []
+
+        def walk(current):
+            nodes.append(current)
+            for child in children[current]:
+                walk(child)
+
+        walk(material_node)
+        name = ""
+        surface = ""
+        transparent = False
+        lighting = True
+        cull_back = True
+        textures = []
+        colors = [[1.0, 1.0, 1.0, 1.0] for _ in range(4)]
+        design_color = [1.0, 1.0, 1.0, 1.0]
+        axis = 0.0
+        lerp_center = 0.0
+        lerp_contrast = 0.5
+        pattern_color_key = 0.0
+        pattern_para = [1.0, 1.0, 0.0, 0.0]
+        pattern_intensity = [0.0, 0.0, 0.0, 0.0]
+        pattern_uv_key = 0.0
+        pattern_depth = 0.0
+        pattern_rotation = 0.0
+        repeat_scale = 1.0
+        tiling = False
+        base_normal = ""
+        pattern_tex = ""
+        for item in nodes:
+            obj = objects[item] if item < len(objects) else None
+            if not isinstance(obj, dict):
+                continue
+            node_class = class_name(item)
+            value = obj.get("Value")
+            if not name and isinstance(obj.get("Name"), str):
+                name = obj["Name"]
+            if not surface and isinstance(obj.get("Surface"), str):
+                surface = obj["Surface"]
+            if "TransparentMode" in obj:
+                try:
+                    transparent = int(obj["TransparentMode"]) >= 2
+                except (TypeError, ValueError):
+                    pass
+            if "LightingEnable" in obj:
+                value2 = obj["LightingEnable"]
+                lighting = not (value2 is False or (isinstance(value2, str) and value2.strip().lower() == "false"))
+            if "CullBack" in obj:
+                value2 = obj["CullBack"]
+                cull_back = not (value2 is False or (isinstance(value2, str) and value2.strip().lower() == "false"))
+            elif "CullMode" in obj:
+                try:
+                    cull_back = int(obj["CullMode"]) != 0
+                except (TypeError, ValueError):
+                    pass
+            if node_class.startswith("MaskColor") and isinstance(value, list) and len(value) >= 4:
+                colors[int(node_class[-1])] = [float(x) for x in value[:4]]
+            elif node_class == "DesignColor" and isinstance(value, list) and len(value) >= 4:
+                design_color = [float(x) for x in value[:4]]
+            elif node_class == "Axis" and isinstance(value, (int, float)):
+                axis = float(value)
+            elif node_class == "LerpCenter" and isinstance(value, (int, float)):
+                lerp_center = float(value)
+            elif node_class == "LerpContrast" and isinstance(value, (int, float)):
+                lerp_contrast = float(value)
+            elif node_class == "PatternColorKey" and isinstance(value, (int, float)):
+                pattern_color_key = float(value)
+            elif node_class == "PatternPara" and isinstance(value, list):
+                pattern_para = [float(x) for x in value[:4]]
+            elif node_class == "PatternIntensity" and isinstance(value, list):
+                pattern_intensity = [float(x) for x in value[:4]]
+            elif node_class == "PatternUVKey" and isinstance(value, (int, float)):
+                pattern_uv_key = float(value)
+            elif node_class == "PatternDeapthOffset" and isinstance(value, (int, float)):
+                pattern_depth = float(value)
+            elif node_class == "PatternRotationAngle" and isinstance(value, (int, float)):
+                pattern_rotation = float(value)
+            elif node_class == "RepeatScale" and isinstance(value, (int, float)):
+                repeat_scale = float(value)
+            elif node_class == "BaseNormal" and isinstance(value, str):
+                base_normal = resolve(value) if resolve else value
+            elif node_class == "PatternTex" and isinstance(value, str):
+                pattern_tex = resolve(value) if resolve else value
+            elif node_class == "Macro0" and obj.get("Key") == "ENABLE_TILING":
+                try:
+                    tiling = int(obj.get("Val") or 0) != 0
+                except (TypeError, ValueError):
+                    pass
+            for value2 in obj.values():
+                if isinstance(value2, str) and value2.lower().endswith((".tga", ".dds", ".kta", ".png")):
+                    textures.append(resolve(value2) if resolve else value2)
+        if "standard_change_color_lerp" in surface:
+            color_mode = 2
+        elif "standard_change_color_pattern" in surface:
+            color_mode = 1
+        else:
+            color_mode = 0
+        materials.append({
+            "index": material_index,
+            "name": name,
+            "surface": surface,
+            "transparent": transparent,
+            "lighting": lighting,
+            "cull_back": cull_back,
+            "textures": textures,
+            "colors": colors,
+            "design_color": design_color,
+            "axis": axis,
+            "lerp_center": lerp_center,
+            "lerp_contrast": lerp_contrast,
+            "pattern_color_key": pattern_color_key,
+            "pattern_para": pattern_para,
+            "pattern_intensity": pattern_intensity,
+            "pattern_uv_key": pattern_uv_key,
+            "pattern_depth": pattern_depth,
+            "pattern_rotation": pattern_rotation,
+            "repeat_scale": repeat_scale,
+            "tiling": tiling,
+            "base_normal": base_normal,
+            "pattern_tex": pattern_tex,
+            "color_mode": color_mode,
+        })
+    materials.sort(key=lambda item: item["index"])
+    return materials
+
+
 def default_cache_dir() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
@@ -1858,6 +2021,7 @@ class Handler(BaseHTTPRequestHandler):
                         data["mesh"] = sibling
                     else:
                         mesh_path = None
+                tree_materials = []
                 if (row["ext"] or "").lower() != ".mtg":
                     mtg_sibling = str(Path(row["path"]).with_suffix(".mtg")).replace("\\", "/")
                     mtg_row = self._row(mtg_sibling)
@@ -1866,6 +2030,7 @@ class Handler(BaseHTTPRequestHandler):
                             mtg_data = neox_object.parse(self._entry_payload(mtg_row))
                             data["material"] = material_flags(mtg_data.get("objects", []))
                             material_objects = mtg_data.get("objects", [])
+                            tree_materials = material_tree(mtg_data, lambda value: self._resolve_ref(mtg_sibling, value))
                             if not textures:
                                 for obj in mtg_data.get("objects", []):
                                     for name, value in obj.items():
@@ -1879,12 +2044,18 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     if textures:
                         data["textures"] = textures
+                if tree_materials:
+                    data["materials"] = tree_materials
+                if (row["ext"] or "").lower() == ".mtg":
+                    tree_materials = material_tree(data, lambda value: self._resolve_ref(row["path"], value))
+                    if tree_materials:
+                        data["materials"] = tree_materials
                 if textures:
                     resolved = [item.get("resolved") for item in textures if item.get("resolved")]
                     if resolved:
                         data["material"]["textures"] = resolved
                         groups = material_groups(material_objects, textures)
-                        if groups:
+                        if groups and not data.get("materials"):
                             data["materials"] = groups
                 if mesh_path and not data.get("mesh_data"):
                     try:

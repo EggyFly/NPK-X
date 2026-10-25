@@ -2588,7 +2588,9 @@ async function openGimDirect(file) {
     const textureList = data.texture_images || [];
     $("viewer-foot").innerHTML = gimFoot();
     bindGimFoot();
-    renderGim3D($("viewer-stage"), meshData, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", data.material);
+    const material = data.material || {};
+    if (Array.isArray(data.materials)) material.materials = data.materials;
+    renderGim3D($("viewer-stage"), meshData, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", material);
   } catch (error) {
     if (token !== viewer.token) return;
     $("viewer-stage").innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
@@ -2655,7 +2657,9 @@ function openGimViewer(file, data) {
   lockViewerScroll();
   try {
     const textureList = data.texture_images || [];
-    renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", data.material);
+    const material = data.material || {};
+    if (Array.isArray(data.materials)) material.materials = data.materials;
+    renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", material);
   } catch (error) {
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
   }
@@ -2810,6 +2814,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform mat4 u_mvp;
     uniform mediump float u_flat;
     varying vec2 v_uv;
+    varying vec3 v_local;
     varying float v_light;
     varying vec3 v_normal;
     varying vec3 v_tangent;
@@ -2824,31 +2829,72 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       v_bitangent = cross(normal, tangent) * a_tangent.w;
       v_light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
       v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
+      v_local = a_pos;
       gl_Position = u_mvp * vec4(a_pos, 1.0);
       gl_PointSize = u_flat > 0.5 ? 2.0 : 1.0;
     }`, `
     precision mediump float;
     varying vec2 v_uv;
+    varying vec3 v_local;
     varying float v_light;
     varying vec3 v_normal;
     varying vec3 v_tangent;
     varying vec3 v_bitangent;
     uniform sampler2D u_tex;
     uniform sampler2D u_normal_tex;
+    uniform sampler2D u_base_normal_tex;
     uniform float u_has_tex;
     uniform float u_has_normal;
+    uniform float u_has_base_normal;
+    uniform float u_normal_mode;
     uniform float u_flat;
     uniform float u_unlit;
     uniform float u_sprite;
     uniform vec4 u_tint;
     uniform vec3 u_color;
+    uniform float u_color_mode;
+    uniform vec4 u_mask0;
+    uniform vec4 u_mask1;
+    uniform vec4 u_mask2;
+    uniform vec4 u_mask3;
+    uniform vec4 u_design;
+    uniform float u_axis;
+    uniform float u_lerp_center;
+    uniform float u_lerp_contrast;
+    uniform vec3 u_bound_min;
+    uniform vec3 u_bound_half;
+    uniform float u_tiling;
+    uniform float u_repeat_scale;
     void main() {
       if (u_flat > 0.5) {
         gl_FragColor = vec4(u_color, 1.0);
         return;
       }
-      vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);
+      vec2 sample_uv = v_uv * u_repeat_scale;
+      if (u_tiling > 0.5) {
+        vec3 an = abs(normalize(v_normal));
+        vec3 p = v_local / 2.64 * u_repeat_scale;
+        if (an.x >= an.y && an.x >= an.z) sample_uv = p.yz;
+        else if (an.y >= an.z) sample_uv = p.xz;
+        else sample_uv = p.yx;
+      }
+      vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
       vec3 color = u_has_tex > 0.5 ? texel.rgb : u_color;
+      if (u_color_mode > 1.5) {
+        vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+        float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
+        float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
+        final_axis *= final_axis;
+        float mask1 = final_axis * (texel.r * 0.5 + 0.5);
+        float mask2 = (1.0 - final_axis) * texel.g;
+        color = mix(u_mask0.rgb, u_mask1.rgb, mask1);
+        color = mix(color, u_mask2.rgb, mask2);
+        color = mix(color, u_mask3.rgb, texel.b);
+      } else if (u_color_mode > 0.5) {
+        color = mix(u_mask0.rgb, u_mask1.rgb, texel.r);
+        color = mix(color, u_mask2.rgb, texel.g);
+        color = mix(color, u_mask3.rgb, texel.b);
+      }
       float alpha = u_has_tex > 0.5 ? texel.a : 1.0;
       if (u_sprite > 0.5) {
         color *= u_tint.rgb * 2.0;
@@ -2860,8 +2906,20 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       vec3 normal = normalize(v_normal);
       float light = u_unlit > 0.5 ? 1.0 : v_light;
       if (u_has_normal > 0.5 && u_unlit < 0.5) {
-        vec3 tangent_normal = texture2D(u_normal_tex, v_uv).xyz * 2.0 - 1.0;
-        normal = normalize(v_tangent * tangent_normal.x + v_bitangent * tangent_normal.y + v_normal * tangent_normal.z);
+        vec3 tex_normal = texture2D(u_normal_tex, sample_uv).xyz;
+        vec3 n;
+        if (u_normal_mode > 0.5) {
+          vec3 t = tex_normal * 2.0 - vec3(1.0, 1.0, 0.0);
+          n = t;
+          if (u_has_base_normal > 0.5) {
+            vec3 base = texture2D(u_base_normal_tex, v_uv).xyz;
+            vec3 u = base * vec3(-2.0, -2.0, 2.0) + vec3(1.0, 1.0, -1.0);
+            n = t * dot(t, u) - u * t.z;
+          }
+        } else {
+          n = tex_normal * 2.0 - 1.0;
+        }
+        normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
         light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
       }
       gl_FragColor = vec4(color * light, clamp(alpha, 0.0, 1.0));
@@ -2952,6 +3010,22 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uColor = gl.getUniformLocation(program, "u_color");
   const uNormalTex = gl.getUniformLocation(program, "u_normal_tex");
   const uHasNormal = gl.getUniformLocation(program, "u_has_normal");
+  const uBaseNormalTex = gl.getUniformLocation(program, "u_base_normal_tex");
+  const uHasBaseNormal = gl.getUniformLocation(program, "u_has_base_normal");
+  const uNormalMode = gl.getUniformLocation(program, "u_normal_mode");
+  const uColorMode = gl.getUniformLocation(program, "u_color_mode");
+  const uMask0 = gl.getUniformLocation(program, "u_mask0");
+  const uMask1 = gl.getUniformLocation(program, "u_mask1");
+  const uMask2 = gl.getUniformLocation(program, "u_mask2");
+  const uMask3 = gl.getUniformLocation(program, "u_mask3");
+  const uDesign = gl.getUniformLocation(program, "u_design");
+  const uAxis = gl.getUniformLocation(program, "u_axis");
+  const uLerpCenter = gl.getUniformLocation(program, "u_lerp_center");
+  const uLerpContrast = gl.getUniformLocation(program, "u_lerp_contrast");
+  const uBoundMin = gl.getUniformLocation(program, "u_bound_min");
+  const uBoundHalf = gl.getUniformLocation(program, "u_bound_half");
+  const uTiling = gl.getUniformLocation(program, "u_tiling");
+  const uRepeatScale = gl.getUniformLocation(program, "u_repeat_scale");
   const potImage = (image) => {
     const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
     const width = next(image.width), height = next(image.height);
@@ -2977,6 +3051,22 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.uniform1i(uNormalTex, 1);
+  gl.uniform1i(uBaseNormalTex, 2);
+  gl.uniform1f(uHasBaseNormal, 0);
+  gl.uniform1f(uNormalMode, 0);
+  gl.uniform1f(uColorMode, 0);
+  gl.uniform4f(uMask0, 1, 1, 1, 1);
+  gl.uniform4f(uMask1, 1, 1, 1, 1);
+  gl.uniform4f(uMask2, 1, 1, 1, 1);
+  gl.uniform4f(uMask3, 1, 1, 1, 1);
+  gl.uniform4f(uDesign, 1, 1, 1, 1);
+  gl.uniform1f(uAxis, 0);
+  gl.uniform1f(uLerpCenter, 0);
+  gl.uniform1f(uLerpContrast, 0.5);
+  gl.uniform3f(uBoundMin, 0, 0, 0);
+  gl.uniform3f(uBoundHalf, 1, 1, 1);
+  gl.uniform1f(uTiling, 0);
+  gl.uniform1f(uRepeatScale, 1);
   let hasTexture = false;
   if (diffuseUrl) {
     const image = new Image();
@@ -3017,6 +3107,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const materialList = material && Array.isArray(material.materials) ? material.materials : [];
   const useSubmeshMaterials = submeshList.length > 1 && materialList.length > 0 && submeshList.every((sub) => Number.isInteger(sub.material_index));
   const materialTextures = [];
+  const textureCache = new Map();
   const initGimTexture = (tex, pixel) => {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixel));
@@ -3025,33 +3116,40 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   };
-  const loadGimTexture = (url, entry, normal) => {
+  const loadGimTexture = (url, target, onReady) => {
     const image = new Image();
     image.onload = () => {
       if (token !== viewer.token) return;
       const source = potImage(image);
-      gl.bindTexture(gl.TEXTURE_2D, normal ? entry.normalTexture : entry.texture);
+      gl.bindTexture(gl.TEXTURE_2D, target);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      if (normal) entry.hasNormal = true; else entry.hasTexture = true;
+      onReady();
     };
-    image.onerror = () => { if (normal) entry.hasNormal = false; else entry.hasTexture = false; };
     image.src = url;
+  };
+  const cachedGimTexture = (url, normal) => {
+    const key = (normal ? "n:" : "d:") + url;
+    if (textureCache.has(key)) return textureCache.get(key);
+    const entry = { texture: gl.createTexture(), ready: false };
+    initGimTexture(entry.texture, normal ? [128, 128, 255, 255] : [255, 255, 255, 255]);
+    loadGimTexture(url, entry.texture, () => { entry.ready = true; });
+    textureCache.set(key, entry);
+    return entry;
   };
   if (useSubmeshMaterials) {
     materialList.forEach((group) => {
       const files = Array.isArray(group.textures) ? group.textures : [];
       const normalFile = files.find((path) => /(^|[_.])(n|normal)([_.]|$)/i.test((path.split("/").pop() || ""))) || "";
-      const entry = { texture: gl.createTexture(), normalTexture: gl.createTexture(), hasTexture: false, hasNormal: false };
-      initGimTexture(entry.texture, [255, 255, 255, 255]);
-      initGimTexture(entry.normalTexture, [128, 128, 255, 255]);
-      if (files[0]) loadGimTexture(apiUrl("/api/image", { path: files[0] }), entry, false);
-      if (normalFile) loadGimTexture(apiUrl("/api/image", { path: normalFile }), entry, true);
-      materialTextures.push(entry);
+      materialTextures.push({
+        diffuse: files[0] ? cachedGimTexture(apiUrl("/api/image", { path: files[0] }), false) : null,
+        normal: normalFile ? cachedGimTexture(apiUrl("/api/image", { path: normalFile }), true) : null,
+        baseNormal: group.base_normal ? cachedGimTexture(apiUrl("/api/image", { path: group.base_normal }), true) : null,
+      });
     });
   }
   canvas.addEventListener("pointerdown", (event) => {
@@ -3130,12 +3228,22 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         const materialIndex = Number.isInteger(sub.material_index) ? sub.material_index : 0;
         const entry = materialTextures[materialIndex] || materialTextures[0];
         if (entry) {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, entry.texture);
-          gl.uniform1f(uHasTex, entry.hasTexture ? 1 : 0);
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, entry.normalTexture);
-          gl.uniform1f(uHasNormal, entry.hasNormal ? 1 : 0);
+          const diffuse = entry.diffuse;
+          const normal = entry.normal;
+          if (diffuse) {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, diffuse.texture);
+            gl.uniform1f(uHasTex, diffuse.ready ? 1 : 0);
+          } else {
+            gl.uniform1f(uHasTex, 0);
+          }
+          if (normal) {
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, normal.texture);
+            gl.uniform1f(uHasNormal, normal.ready ? 1 : 0);
+          } else {
+            gl.uniform1f(uHasNormal, 0);
+          }
         } else {
           gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
           gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
@@ -3144,6 +3252,43 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
             gl.bindTexture(gl.TEXTURE_2D, texture);
           }
         }
+        const mat = materialList[materialIndex] || materialList[0] || {};
+        const colors = Array.isArray(mat.colors) ? mat.colors : [];
+        const setColor = (location, colorIndex) => {
+          const value = Array.isArray(colors[colorIndex]) ? colors[colorIndex] : [1, 1, 1, 1];
+          const r = Number(value[0]), g = Number(value[1]), b = Number(value[2]), a = Number(value[3]);
+          gl.uniform4f(location, Number.isFinite(r) ? r : 1, Number.isFinite(g) ? g : 1, Number.isFinite(b) ? b : 1, Number.isFinite(a) ? a : 1);
+        };
+        setColor(uMask0, 0);
+        setColor(uMask1, 1);
+        setColor(uMask2, 2);
+        setColor(uMask3, 3);
+        const design = Array.isArray(mat.design_color) ? mat.design_color : [1, 1, 1, 1];
+        gl.uniform4f(uDesign, Number(design[0]) || 0, Number(design[1]) || 0, Number(design[2]) || 0, Number(design[3]) || 0);
+        gl.uniform1f(uColorMode, Number(mat.color_mode) || 0);
+        gl.uniform1f(uAxis, Number(mat.axis) || 0);
+        gl.uniform1f(uLerpCenter, Number(mat.lerp_center) || 0);
+        const contrast = Number(mat.lerp_contrast);
+        gl.uniform1f(uLerpContrast, Number.isFinite(contrast) ? contrast : 0.5);
+        gl.uniform1f(uTiling, mat.tiling ? 1 : 0);
+        const repeatScale = Number(mat.repeat_scale);
+        gl.uniform1f(uRepeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
+        gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
+        const bmin = sub.bounds && Array.isArray(sub.bounds.min) ? sub.bounds.min : [0, 0, 0];
+        const bmax = sub.bounds && Array.isArray(sub.bounds.max) ? sub.bounds.max : [0, 0, 0];
+        const bhx = Math.max((Number(bmax[0]) - Number(bmin[0])) / 2, 0.0001);
+        const bhy = Math.max((Number(bmax[1]) - Number(bmin[1])) / 2, 0.0001);
+        const bhz = Math.max((Number(bmax[2]) - Number(bmin[2])) / 2, 0.0001);
+        gl.uniform3f(uBoundMin, Number(bmin[0]) || 0, Number(bmin[1]) || 0, Number(bmin[2]) || 0);
+        gl.uniform3f(uBoundHalf, bhx, bhy, bhz);
+        if (entry && entry.baseNormal) {
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, entry.baseNormal.texture);
+          gl.uniform1f(uHasBaseNormal, entry.baseNormal.ready ? 1 : 0);
+        } else {
+          gl.uniform1f(uHasBaseNormal, 0);
+        }
+        gl.uniform1f(uNormalMode, Number(mat.color_mode) === 2 && entry && entry.baseNormal ? 1 : 0);
         const offset = Math.max(0, Number(sub.face_offset) || 0) * 3 * indexSize;
         const count = Math.max(0, Number(sub.face_count) || 0) * 3;
         if (count) gl.drawElements(gl.TRIANGLES, count, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, offset);

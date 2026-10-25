@@ -88,6 +88,30 @@ def parse(data: bytes) -> dict:
     }
 
 
+def build_tree(parsed: dict) -> list:
+    objects = parsed.get("objects") or []
+    meta = parsed.get("meta") or []
+    children = [[] for _ in objects]
+    level = [0] if objects else []
+    pointer = 1
+    while level and pointer < len(objects):
+        next_level = []
+        for parent in level:
+            count = 0
+            if parent < len(meta) and isinstance(meta[parent], dict):
+                try:
+                    count = int(meta[parent].get("y") or 0)
+                except (TypeError, ValueError):
+                    count = 0
+            for _ in range(max(0, min(count, len(objects) - pointer))):
+                child = pointer
+                pointer += 1
+                children[parent].append(child)
+                next_level.append(child)
+        level = next_level
+    return children
+
+
 def _read_value(data: bytes, pos: int, typ: int):
     if typ == 0:
         return None, pos
