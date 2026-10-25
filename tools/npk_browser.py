@@ -277,8 +277,14 @@ def material_tree(data: dict, resolve=None) -> list:
         lighting = True
         cull_back = True
         textures = []
-        colors = [[1.0, 1.0, 1.0, 1.0] for _ in range(4)]
+        tex0 = tex1 = tex2 = tex3 = tex4 = ""
+        colors = [[1.0, 1.0, 1.0, 1.0] for _ in range(5)]
         design_color = [1.0, 1.0, 1.0, 1.0]
+        emissive_color = [1.0, 1.0, 1.0, 1.0]
+        emissive_intensity = [1.0, 1.0, 1.0, 1.0]
+        intensity = [1.0, 1.0, 1.0, 1.0]
+        base_color = [1.0, 1.0, 1.0, 1.0]
+        tint_value = 1.0
         axis = 0.0
         lerp_center = 0.0
         lerp_contrast = 0.5
@@ -319,9 +325,21 @@ def material_tree(data: dict, resolve=None) -> list:
                 except (TypeError, ValueError):
                     pass
             if node_class.startswith("MaskColor") and isinstance(value, list) and len(value) >= 4:
-                colors[int(node_class[-1])] = [float(x) for x in value[:4]]
+                suffix = node_class[len("MaskColor"):]
+                if suffix.isdigit() and int(suffix) < len(colors):
+                    colors[int(suffix)] = [float(x) for x in value[:4]]
             elif node_class == "DesignColor" and isinstance(value, list) and len(value) >= 4:
                 design_color = [float(x) for x in value[:4]]
+            elif node_class == "EmissiveColor" and isinstance(value, list) and len(value) >= 4:
+                emissive_color = [float(x) for x in value[:4]]
+            elif node_class == "EmissiveIntensity" and isinstance(value, list) and len(value) >= 4:
+                emissive_intensity = [float(x) for x in value[:4]]
+            elif node_class == "Intensity" and isinstance(value, list) and len(value) >= 4:
+                intensity = [float(x) for x in value[:4]]
+            elif node_class == "BaseColor" and isinstance(value, list) and len(value) >= 4:
+                base_color = [float(x) for x in value[:4]]
+            elif node_class == "TintValue" and isinstance(value, (int, float)):
+                tint_value = float(value)
             elif node_class == "Axis" and isinstance(value, (int, float)):
                 axis = float(value)
             elif node_class == "LerpCenter" and isinstance(value, (int, float)):
@@ -342,6 +360,18 @@ def material_tree(data: dict, resolve=None) -> list:
                 pattern_rotation = float(value)
             elif node_class == "RepeatScale" and isinstance(value, (int, float)):
                 repeat_scale = float(value)
+            elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
+                slot = resolve(value) if resolve else value
+                if node_class == "Tex0":
+                    tex0 = slot
+                elif node_class == "Tex1":
+                    tex1 = slot
+                elif node_class == "Tex2":
+                    tex2 = slot
+                elif node_class == "Tex3":
+                    tex3 = slot
+                else:
+                    tex4 = slot
             elif node_class == "BaseNormal" and isinstance(value, str):
                 base_normal = resolve(value) if resolve else value
             elif node_class == "PatternTex" and isinstance(value, str):
@@ -354,12 +384,29 @@ def material_tree(data: dict, resolve=None) -> list:
             for value2 in obj.values():
                 if isinstance(value2, str) and value2.lower().endswith((".tga", ".dds", ".kta", ".png")):
                     textures.append(resolve(value2) if resolve else value2)
-        if "standard_change_color_lerp" in surface:
+        surface_lower = surface.lower()
+        if "standard_change_color_lerp" in surface_lower:
             color_mode = 2
-        elif "standard_change_color_pattern" in surface:
+        elif any(token in surface_lower for token in (
+            "standard_change_color_object", "standard_change_color_emissive",
+            "standard_change_color_tiling_all", "standard_change_color_mix",
+        )):
+            color_mode = 3
+        elif "change_color" in surface_lower:
             color_mode = 1
         else:
             color_mode = 0
+        if color_mode == 2:
+            opacity_tex = "tex0"
+        elif color_mode == 3:
+            opacity_tex = "tex1"
+        elif color_mode == 1 and "change_color_pattern" not in surface_lower:
+            opacity_tex = "tex1"
+        else:
+            opacity_tex = "tex0"
+        if "standard_change_color_tiling_all" in surface_lower:
+            opacity_tex = "none"
+        normal_mode = 1 if color_mode == 2 else 0
         materials.append({
             "index": material_index,
             "name": name,
@@ -368,8 +415,20 @@ def material_tree(data: dict, resolve=None) -> list:
             "lighting": lighting,
             "cull_back": cull_back,
             "textures": textures,
+            "tex0": tex0,
+            "tex1": tex1,
+            "tex2": tex2,
+            "tex3": tex3,
+            "tex4": tex4,
+            "opacity_tex": opacity_tex,
+            "normal_mode": normal_mode,
             "colors": colors,
             "design_color": design_color,
+            "emissive_color": emissive_color,
+            "emissive_intensity": emissive_intensity,
+            "intensity": intensity,
+            "base_color": base_color,
+            "tint_value": tint_value,
             "axis": axis,
             "lerp_center": lerp_center,
             "lerp_contrast": lerp_contrast,

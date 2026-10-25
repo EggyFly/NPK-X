@@ -2767,15 +2767,24 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   if (!verts.length || !indices.length) throw new Error("no vertices");
   const uvs = meshData.uvs || [];
   const normals = meshData.normals || [];
-  const unlit = !!material && material.lighting === false;
-  const transparent = !!material && material.transparent === true;
-  const cullBack = !!(material && material.cull_back === true);
+  const treeMaterials = material && Array.isArray(material.materials) ? material.materials : [];
+  const firstTreeMaterial = treeMaterials[0] || null;
+  const submeshList = Array.isArray(meshData.submeshes) ? meshData.submeshes : [];
+  const materialList = treeMaterials;
+  const useSubmeshMaterials = submeshList.length > 1 && materialList.length > 0 && submeshList.every((sub) => Number.isInteger(sub.material_index));
+  const unlit = firstTreeMaterial ? firstTreeMaterial.lighting === false : (!!material && material.lighting === false);
+  const transparent = firstTreeMaterial ? firstTreeMaterial.transparent === true : (!!material && material.transparent === true);
+  const cullBack = firstTreeMaterial ? firstTreeMaterial.cull_back !== false : !!(material && material.cull_back === true);
   const tint = material && Array.isArray(material.tint) && material.tint.length === 4 ? material.tint : [1, 1, 1, 1];
   const sprite = !!(material && typeof material.tech === "string" && material.tech.includes("sfx_spr"));
   const textureFiles = material && Array.isArray(material.textures) ? material.textures : [];
   const normalFile = textureFiles.find((path) => /(^|[_.])(n|normal)([_.]|$)/i.test((path.split("/").pop() || ""))) || "";
-  const normalUrl = normalFile ? apiUrl("/api/image", { path: normalFile }) : "";
-  const diffuseUrl = textureUrl || (textureFiles[0] ? apiUrl("/api/image", { path: textureFiles[0] }) : "");
+  const normalUrl = firstTreeMaterial && firstTreeMaterial.tex1
+    ? apiUrl("/api/image", { path: firstTreeMaterial.tex1 })
+    : (normalFile ? apiUrl("/api/image", { path: normalFile }) : "");
+  const diffuseUrl = firstTreeMaterial && firstTreeMaterial.tex0
+    ? apiUrl("/api/image", { path: firstTreeMaterial.tex0 })
+    : (textureUrl || (textureFiles[0] ? apiUrl("/api/image", { path: textureFiles[0] }) : ""));
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const vertex of verts) {
@@ -2865,6 +2874,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform vec3 u_bound_half;
     uniform float u_tiling;
     uniform float u_repeat_scale;
+    uniform sampler2D u_pattern_tex;
+    uniform float u_has_pattern;
+    uniform vec2 u_pattern_scale;
+    uniform vec2 u_pattern_offset;
+    uniform float u_pattern_rotation;
+    uniform float u_pattern_color_key;
+    uniform float u_opacity_tex;
     void main() {
       if (u_flat > 0.5) {
         gl_FragColor = vec4(u_color, 1.0);
@@ -2879,8 +2895,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         else sample_uv = p.yx;
       }
       vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
+      vec4 normal_texel = u_has_normal > 0.5 ? texture2D(u_normal_tex, sample_uv) : vec4(0.5, 0.5, 1.0, 1.0);
       vec3 color = u_has_tex > 0.5 ? texel.rgb : u_color;
-      if (u_color_mode > 1.5) {
+      if (u_color_mode > 2.5) {
+        color = texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb;
+      } else if (u_color_mode > 1.5) {
         vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
         float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
         float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
@@ -2894,8 +2913,22 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         color = mix(u_mask0.rgb, u_mask1.rgb, texel.r);
         color = mix(color, u_mask2.rgb, texel.g);
         color = mix(color, u_mask3.rgb, texel.b);
+        if (u_has_pattern > 0.5) {
+          vec2 pattern_uv = sample_uv * u_pattern_scale;
+          if (abs(u_pattern_rotation) > 0.001) {
+            float angle = radians(u_pattern_rotation);
+            float s = sin(angle), c = cos(angle);
+            pattern_uv = vec2(pattern_uv.x * c - pattern_uv.y * s, pattern_uv.x * s + pattern_uv.y * c);
+          }
+          pattern_uv -= u_pattern_offset;
+          vec4 pattern = texture2D(u_pattern_tex, pattern_uv);
+          float pattern_mask = pattern.a * normal_texel.a * u_pattern_color_key;
+          color = mix(color, u_design.rgb, clamp(pattern_mask, 0.0, 1.0));
+        }
       }
       float alpha = u_has_tex > 0.5 ? texel.a : 1.0;
+      if (u_opacity_tex > 1.5) alpha = 1.0;
+      else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
       if (u_sprite > 0.5) {
         color *= u_tint.rgb * 2.0;
         alpha *= u_tint.a * 2.0;
@@ -2906,7 +2939,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       vec3 normal = normalize(v_normal);
       float light = u_unlit > 0.5 ? 1.0 : v_light;
       if (u_has_normal > 0.5 && u_unlit < 0.5) {
-        vec3 tex_normal = texture2D(u_normal_tex, sample_uv).xyz;
+        vec3 tex_normal = normal_texel.xyz;
         vec3 n;
         if (u_normal_mode > 0.5) {
           vec3 t = tex_normal * 2.0 - vec3(1.0, 1.0, 0.0);
@@ -3026,6 +3059,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uBoundHalf = gl.getUniformLocation(program, "u_bound_half");
   const uTiling = gl.getUniformLocation(program, "u_tiling");
   const uRepeatScale = gl.getUniformLocation(program, "u_repeat_scale");
+  const uPatternTex = gl.getUniformLocation(program, "u_pattern_tex");
+  const uHasPattern = gl.getUniformLocation(program, "u_has_pattern");
+  const uPatternScale = gl.getUniformLocation(program, "u_pattern_scale");
+  const uPatternOffset = gl.getUniformLocation(program, "u_pattern_offset");
+  const uPatternRotation = gl.getUniformLocation(program, "u_pattern_rotation");
+  const uPatternColorKey = gl.getUniformLocation(program, "u_pattern_color_key");
+  const uOpacityTex = gl.getUniformLocation(program, "u_opacity_tex");
   const potImage = (image) => {
     const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
     const width = next(image.width), height = next(image.height);
@@ -3065,8 +3105,49 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1f(uLerpContrast, 0.5);
   gl.uniform3f(uBoundMin, 0, 0, 0);
   gl.uniform3f(uBoundHalf, 1, 1, 1);
+  if (!useSubmeshMaterials) {
+    gl.uniform3f(uBoundMin, min[0], min[1], min[2]);
+    gl.uniform3f(
+      uBoundHalf,
+      Math.max((max[0] - min[0]) / 2, 0.0001),
+      Math.max((max[1] - min[1]) / 2, 0.0001),
+      Math.max((max[2] - min[2]) / 2, 0.0001),
+    );
+  }
   gl.uniform1f(uTiling, 0);
   gl.uniform1f(uRepeatScale, 1);
+  gl.uniform1i(uPatternTex, 3);
+  gl.uniform1f(uHasPattern, 0);
+  gl.uniform2f(uPatternScale, 1, 1);
+  gl.uniform2f(uPatternOffset, 0, 0);
+  gl.uniform1f(uPatternRotation, 0);
+  gl.uniform1f(uPatternColorKey, 0);
+  gl.uniform1f(uOpacityTex, 0);
+  if (firstTreeMaterial) {
+    const colors = Array.isArray(firstTreeMaterial.colors) ? firstTreeMaterial.colors : [];
+    [uMask0, uMask1, uMask2, uMask3].forEach((location, index) => {
+      const value = Array.isArray(colors[index]) ? colors[index] : [1, 1, 1, 1];
+      gl.uniform4f(location, Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0, Number(value[3]) || 0);
+    });
+    const design = Array.isArray(firstTreeMaterial.design_color) ? firstTreeMaterial.design_color : [1, 1, 1, 1];
+    gl.uniform4f(uDesign, Number(design[0]) || 0, Number(design[1]) || 0, Number(design[2]) || 0, Number(design[3]) || 0);
+    gl.uniform1f(uColorMode, Number(firstTreeMaterial.color_mode) || 0);
+    gl.uniform1f(uAxis, Number(firstTreeMaterial.axis) || 0);
+    gl.uniform1f(uLerpCenter, Number(firstTreeMaterial.lerp_center) || 0);
+    const contrast = Number(firstTreeMaterial.lerp_contrast);
+    gl.uniform1f(uLerpContrast, Number.isFinite(contrast) ? contrast : 0.5);
+    gl.uniform1f(uTiling, firstTreeMaterial.tiling ? 1 : 0);
+    const repeatScale = Number(firstTreeMaterial.repeat_scale);
+    gl.uniform1f(uRepeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
+    gl.uniform1f(uOpacityTex, firstTreeMaterial.opacity_tex === "tex1" ? 1 : (firstTreeMaterial.opacity_tex === "none" ? 2 : 0));
+    const patternPara = Array.isArray(firstTreeMaterial.pattern_para) ? firstTreeMaterial.pattern_para : [1, 1, 0, 0];
+    gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
+    gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);
+    gl.uniform1f(uPatternRotation, Number(firstTreeMaterial.pattern_rotation) || 0);
+    gl.uniform1f(uPatternColorKey, Number(firstTreeMaterial.pattern_color_key) || 0);
+    gl.uniform1f(uNormalMode, Number.isInteger(firstTreeMaterial.normal_mode) ? firstTreeMaterial.normal_mode : 0);
+    gl.uniform1f(uUnlit, firstTreeMaterial.lighting === false ? 1 : 0);
+  }
   let hasTexture = false;
   if (diffuseUrl) {
     const image = new Image();
@@ -3103,9 +3184,6 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     normalImage.onerror = () => { hasNormal = false; };
     normalImage.src = normalUrl;
   }
-  const submeshList = Array.isArray(meshData.submeshes) ? meshData.submeshes : [];
-  const materialList = material && Array.isArray(material.materials) ? material.materials : [];
-  const useSubmeshMaterials = submeshList.length > 1 && materialList.length > 0 && submeshList.every((sub) => Number.isInteger(sub.material_index));
   const materialTextures = [];
   const textureCache = new Map();
   const initGimTexture = (tex, pixel) => {
@@ -3141,14 +3219,22 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     textureCache.set(key, entry);
     return entry;
   };
+  const globalBaseNormal = firstTreeMaterial && firstTreeMaterial.base_normal
+    ? cachedGimTexture(apiUrl("/api/image", { path: firstTreeMaterial.base_normal }), true) : null;
+  const globalPattern = firstTreeMaterial && firstTreeMaterial.pattern_tex
+    ? cachedGimTexture(apiUrl("/api/image", { path: firstTreeMaterial.pattern_tex }), false) : null;
   if (useSubmeshMaterials) {
     materialList.forEach((group) => {
       const files = Array.isArray(group.textures) ? group.textures : [];
       const normalFile = files.find((path) => /(^|[_.])(n|normal)([_.]|$)/i.test((path.split("/").pop() || ""))) || "";
+      const diffusePath = group.tex0 || files[0] || "";
+      const normalPath = group.tex1 || normalFile;
       materialTextures.push({
-        diffuse: files[0] ? cachedGimTexture(apiUrl("/api/image", { path: files[0] }), false) : null,
-        normal: normalFile ? cachedGimTexture(apiUrl("/api/image", { path: normalFile }), true) : null,
+        data: group,
+        diffuse: diffusePath ? cachedGimTexture(apiUrl("/api/image", { path: diffusePath }), false) : null,
+        normal: normalPath ? cachedGimTexture(apiUrl("/api/image", { path: normalPath }), true) : null,
         baseNormal: group.base_normal ? cachedGimTexture(apiUrl("/api/image", { path: group.base_normal }), true) : null,
+        pattern: group.pattern_tex ? cachedGimTexture(apiUrl("/api/image", { path: group.pattern_tex }), false) : null,
       });
     });
   }
@@ -3224,7 +3310,12 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     }
     if (useSubmeshMaterials) {
       const indexSize = useUint32 ? 4 : 2;
-      submeshList.forEach((sub) => {
+      const submeshOrder = submeshList.map((sub, order) => ({ sub, order })).sort((left, right) => {
+        const leftMat = materialList[Number.isInteger(left.sub.material_index) ? left.sub.material_index : 0] || {};
+        const rightMat = materialList[Number.isInteger(right.sub.material_index) ? right.sub.material_index : 0] || {};
+        return (leftMat.transparent === true ? 1 : 0) - (rightMat.transparent === true ? 1 : 0) || left.order - right.order;
+      });
+      submeshOrder.forEach(({ sub }) => {
         const materialIndex = Number.isInteger(sub.material_index) ? sub.material_index : 0;
         const entry = materialTextures[materialIndex] || materialTextures[0];
         if (entry) {
@@ -3274,6 +3365,19 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         const repeatScale = Number(mat.repeat_scale);
         gl.uniform1f(uRepeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
         gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
+        gl.uniform1f(uOpacityTex, mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0));
+        const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
+        gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
+        gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);
+        gl.uniform1f(uPatternRotation, Number(mat.pattern_rotation) || 0);
+        gl.uniform1f(uPatternColorKey, Number(mat.pattern_color_key) || 0);
+        if (entry && entry.pattern) {
+          gl.activeTexture(gl.TEXTURE3);
+          gl.bindTexture(gl.TEXTURE_2D, entry.pattern.texture);
+          gl.uniform1f(uHasPattern, entry.pattern.ready ? 1 : 0);
+        } else {
+          gl.uniform1f(uHasPattern, 0);
+        }
         const bmin = sub.bounds && Array.isArray(sub.bounds.min) ? sub.bounds.min : [0, 0, 0];
         const bmax = sub.bounds && Array.isArray(sub.bounds.max) ? sub.bounds.max : [0, 0, 0];
         const bhx = Math.max((Number(bmax[0]) - Number(bmin[0])) / 2, 0.0001);
@@ -3288,7 +3392,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         } else {
           gl.uniform1f(uHasBaseNormal, 0);
         }
-        gl.uniform1f(uNormalMode, Number(mat.color_mode) === 2 && entry && entry.baseNormal ? 1 : 0);
+        gl.uniform1f(uNormalMode, Number.isInteger(mat.normal_mode) ? mat.normal_mode : (Number(mat.color_mode) === 2 && entry && entry.baseNormal ? 1 : 0));
+        if (mat.transparent === true) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthMask(false);
+        } else {
+          gl.disable(gl.BLEND);
+          gl.depthMask(true);
+        }
+        if (mat.cull_back === false) gl.disable(gl.CULL_FACE);
+        else gl.enable(gl.CULL_FACE);
         const offset = Math.max(0, Number(sub.face_offset) || 0) * 3 * indexSize;
         const count = Math.max(0, Number(sub.face_count) || 0) * 3;
         if (count) gl.drawElements(gl.TRIANGLES, count, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, offset);
@@ -3297,6 +3411,20 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       if (hasTexture) {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
+      }
+      if (globalBaseNormal) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, globalBaseNormal.texture);
+        gl.uniform1f(uHasBaseNormal, globalBaseNormal.ready ? 1 : 0);
+      } else {
+        gl.uniform1f(uHasBaseNormal, 0);
+      }
+      if (globalPattern) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, globalPattern.texture);
+        gl.uniform1f(uHasPattern, globalPattern.ready ? 1 : 0);
+      } else {
+        gl.uniform1f(uHasPattern, 0);
       }
       gl.drawElements(gl.TRIANGLES, indexData.length, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
     }
