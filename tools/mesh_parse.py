@@ -22,59 +22,40 @@ def _u32(data: bytes, offset: int) -> int:
 
 
 def _read_table(data: bytes, offset: int) -> dict | None:
-    if offset + 12 > len(data):
+    if offset + 10 > len(data):
         return None
-    uv_layers = data[offset]
-    color_len = data[offset + 1]
-    if not 1 <= uv_layers <= 8 or color_len > 8:
-        return None
-    vcount = _u32(data, offset + 4)
-    fcount = _u32(data, offset + 8)
-    if 0 < vcount <= 2_000_000 and 0 < fcount <= 2_000_000:
-        return {
-            "kind": "single",
-            "vcount": vcount,
-            "fcount": fcount,
-            "uv_layers": uv_layers,
-            "color_len": color_len,
-            "end": offset + 12,
-            "records": [],
-        }
     records = []
     pos = offset
     while pos + 10 <= len(data):
-        uv = data[pos]
-        color = data[pos + 1]
-        if not 1 <= uv <= 8 or color > 8:
+        if _u16(data, pos) == 1:
+            pos += 2
             break
-        vcount = _u32(data, pos + 2)
-        fcount = _u32(data, pos + 6)
+        vcount = _u32(data, pos)
+        fcount = _u32(data, pos + 4)
+        uv_layers = data[pos + 8]
+        color_len = data[pos + 9]
         if not (0 < vcount <= 2_000_000 and 0 < fcount <= 2_000_000):
-            break
-        records.append((vcount, fcount))
+            return None
+        if not 1 <= uv_layers <= 8 or color_len > 8:
+            return None
+        records.append((vcount, fcount, uv_layers, color_len))
         pos += 10
-    if not records:
+    if not records or pos + 8 > len(data):
         return None
-    total_vcount = None
-    if (
-        pos + 10 <= len(data)
-        and 1 <= data[pos] <= 8
-        and data[pos + 1] <= 8
-        and _u16(data, pos + 2) == 1
-    ):
-        candidate = _u32(data, pos + 4)
-        if 0 < candidate <= 2_000_000:
-            total_vcount = candidate
-            pos += 10
+    total_vcount = _u32(data, pos)
+    total_fcount = _u32(data, pos + 4)
+    if not (0 < total_vcount <= 2_000_000 and 0 <= total_fcount <= 2_000_000):
+        return None
     return {
-        "kind": "multi",
-        "vcount": None,
-        "fcount": None,
-        "uv_layers": data[offset],
-        "color_len": data[offset + 1],
-        "end": pos,
+        "kind": "single" if len(records) == 1 else "multi",
+        "vcount": records[0][0],
+        "fcount": records[0][1],
+        "uv_layers": records[0][2],
+        "color_len": records[0][3],
+        "end": pos + 8,
         "records": records,
         "total_vcount": total_vcount,
+        "total_fcount": total_fcount,
     }
 
 
@@ -149,6 +130,18 @@ def _choose_115_positions(data: bytes, start: int, vcount: int, indices: list) -
             vertices.append([x, y, z])
         return vertices
     return best[1]
+
+
+def _read_normals(data: bytes, start: int, count: int) -> list | None:
+    normals = []
+    total = 0.0
+    for index in range(count):
+        x, y, z = struct.unpack_from("<3b", data, start + index * 3)
+        normals.append([round(x / 127.0, 3), round(y / 127.0, 3), round(z / 127.0, 3)])
+        total += math.sqrt(x * x + y * y + z * z) / 127.0
+    if count <= 0 or total / count < 0.5:
+        return None
+    return normals
 
 
 def _compute_normals(vertices: list, indices: list) -> list:
@@ -327,12 +320,8 @@ def parse(data: bytes) -> dict:
                     x, y, z = _decode_position(packed)
                     vertices.append([round(x, 4), round(y, 4), round(z, 4)])
                 norm_start = pos_start + total_vcount * 8
-            if norm_start + total_vcount * 3 <= face_start:
-                normals = []
-                for index in range(total_vcount):
-                    x, y, z = struct.unpack_from("<3b", data, norm_start + index * 3)
-                    normals.append([round(x / 127.0, 3), round(y / 127.0, 3), round(z / 127.0, 3)])
-            else:
+            normals = _read_normals(data, norm_start, total_vcount) if norm_start + total_vcount * 3 <= face_start else None
+            if normals is None:
                 normals = _compute_normals(vertices, indices)
         uvs = []
         for index in range(total_vcount):
@@ -357,29 +346,34 @@ def parse(data: bytes) -> dict:
             "indices": indices,
             "bounds": {"min": mins, "max": maxs},
             "submeshes": [
-                {"vertex_count": item[0], "face_count": item[1]} for item in info["records"]
+                {"vertex_count": item[0], "face_count": item[1], "face_offset": sum(record[1] for record in info["records"][:index])}
+                for index, item in enumerate(info["records"])
             ],
         }
     header = 12
-    table_off = 24
-    data_end = _u32(data, header)
-    vcount = _u32(data, header + 4)
-    fcount = _u32(data, header + 8)
-    if fcount == 0:
+    if version < 4 and _u32(data, header + 8) == 0:
         raise ValueError("mesh has no faces")
-    if data_end > len(data) or data_end <= table_off + 12:
+    data_end = _u32(data, header)
+    if data_end > len(data) or data_end <= 16:
         raise ValueError("mesh data range out of bounds")
+    table_off = 16
+    if data_end + 6 <= len(data):
+        multiple = _u16(data, data_end)
+        if multiple >= 1:
+            table_off = _u32(data, data_end + 2)
+    if table_off >= data_end:
+        raise ValueError("mesh submesh table out of range")
     table = _read_table(data, table_off)
     if not table:
         raise ValueError("mesh submesh table not found")
     uv_layers = table["uv_layers"]
     color_len = table["color_len"]
-    if table["kind"] == "single":
-        total_vcount = table["vcount"]
-        total_fcount = table["fcount"]
-    else:
-        total_vcount = table.get("total_vcount") or (vcount + sum(item[0] for item in table["records"]))
-        total_fcount = 0
+    if len({(item[2], item[3]) for item in table["records"]}) > 1:
+        raise ValueError("mesh submesh uv layouts differ")
+    total_vcount = table["total_vcount"]
+    total_fcount = table["total_fcount"]
+    if total_fcount == 0:
+        raise ValueError("mesh has no faces")
     vertex_start = table["end"]
     if vertex_start >= data_end:
         raise ValueError("mesh vertex data out of range")
@@ -401,18 +395,12 @@ def parse(data: bytes) -> dict:
     uv_start = data_end - post_size
     if uv_start <= norm_end:
         raise ValueError("mesh uv range out of bounds")
-    if table["kind"] == "single":
-        face_start = uv_start - 6 * total_fcount
-        if face_start < norm_end:
-            raise ValueError("mesh face range out of bounds")
+    face_start = uv_start - 6 * total_fcount
+    if face_start >= norm_end:
         _, valid = _decode_faces(data[face_start:face_start + 6 * total_fcount], total_vcount)
-        if valid < total_fcount * 3 * 0.999:
-            found = _scan_face_start(data, norm_end, data_end, total_vcount, total_fcount)
-            if found is None:
-                raise ValueError("mesh face stream not found")
-            face_start = found
-            uv_start = face_start + 6 * total_fcount
     else:
+        valid = 0
+    if valid < total_fcount * 3 * 0.999:
         found = _find_face_start(data, norm_end, uv_start, total_vcount)
         if not found:
             raise ValueError("mesh face stream not found")
@@ -434,12 +422,8 @@ def parse(data: bytes) -> dict:
             packed = struct.unpack_from("<Q", data, pos_start + index * 8)[0]
             x, y, z = _decode_position(packed)
             vertices.append([round(x, 4), round(y, 4), round(z, 4)])
-    if norm_end <= face_start:
-        normals = []
-        for index in range(total_vcount):
-            x, y, z = struct.unpack_from("<3b", data, norm_start + index * 3)
-            normals.append([round(x / 127.0, 3), round(y / 127.0, 3), round(z / 127.0, 3)])
-    else:
+    normals = _read_normals(data, norm_start, total_vcount) if norm_end <= face_start else None
+    if normals is None:
         normals = _compute_normals(vertices, indices)
     uvs = []
     for index in range(total_vcount):
@@ -449,11 +433,12 @@ def parse(data: bytes) -> dict:
     maxs = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
     submeshes = []
     if table["kind"] == "single":
-        submeshes.append({"vertex_count": total_vcount, "face_count": total_fcount})
+        submeshes.append({"vertex_count": total_vcount, "face_count": total_fcount, "face_offset": 0})
     else:
-        submeshes.append({"vertex_count": vcount, "face_count": fcount})
+        face_offset = 0
         for item in table["records"]:
-            submeshes.append({"vertex_count": item[0], "face_count": item[1]})
+            submeshes.append({"vertex_count": item[0], "face_count": item[1], "face_offset": face_offset})
+            face_offset += item[1]
     return {
         "size": len(data),
         "version": version,

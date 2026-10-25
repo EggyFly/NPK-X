@@ -1899,8 +1899,10 @@ class Handler(BaseHTTPRequestHandler):
                             data["mesh_data"] = parsed
                             if data.get("materials"):
                                 mapping = submesh_materials(data)
-                                for index, sub in enumerate(parsed.get("submeshes", [])):
-                                    sub["material_index"] = mapping.get(index, 0)
+                                if mapping:
+                                    for index, sub in enumerate(parsed.get("submeshes", [])):
+                                        if index in mapping:
+                                            sub["material_index"] = mapping[index]
                             if textures:
                                 data["texture_images"] = [
                                     t["resolved"] for t in textures if t.get("resolved")

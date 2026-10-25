@@ -3013,6 +3013,47 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     normalImage.onerror = () => { hasNormal = false; };
     normalImage.src = normalUrl;
   }
+  const submeshList = Array.isArray(meshData.submeshes) ? meshData.submeshes : [];
+  const materialList = material && Array.isArray(material.materials) ? material.materials : [];
+  const useSubmeshMaterials = submeshList.length > 1 && materialList.length > 0 && submeshList.every((sub) => Number.isInteger(sub.material_index));
+  const materialTextures = [];
+  const initGimTexture = (tex, pixel) => {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixel));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  };
+  const loadGimTexture = (url, entry, normal) => {
+    const image = new Image();
+    image.onload = () => {
+      if (token !== viewer.token) return;
+      const source = potImage(image);
+      gl.bindTexture(gl.TEXTURE_2D, normal ? entry.normalTexture : entry.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      if (normal) entry.hasNormal = true; else entry.hasTexture = true;
+    };
+    image.onerror = () => { if (normal) entry.hasNormal = false; else entry.hasTexture = false; };
+    image.src = url;
+  };
+  if (useSubmeshMaterials) {
+    materialList.forEach((group) => {
+      const files = Array.isArray(group.textures) ? group.textures : [];
+      const normalFile = files.find((path) => /(^|[_.])(n|normal)([_.]|$)/i.test((path.split("/").pop() || ""))) || "";
+      const entry = { texture: gl.createTexture(), normalTexture: gl.createTexture(), hasTexture: false, hasNormal: false };
+      initGimTexture(entry.texture, [255, 255, 255, 255]);
+      initGimTexture(entry.normalTexture, [128, 128, 255, 255]);
+      if (files[0]) loadGimTexture(apiUrl("/api/image", { path: files[0] }), entry, false);
+      if (normalFile) loadGimTexture(apiUrl("/api/image", { path: normalFile }), entry, true);
+      materialTextures.push(entry);
+    });
+  }
   canvas.addEventListener("pointerdown", (event) => {
     gim3d.drag = true; gim3d.px = event.clientX; gim3d.py = event.clientY;
     canvas.setPointerCapture(event.pointerId);
@@ -3083,13 +3124,41 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       gl.disable(gl.BLEND);
       gl.depthMask(true);
     }
-    if (hasTexture) {
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (useSubmeshMaterials) {
+      const indexSize = useUint32 ? 4 : 2;
+      submeshList.forEach((sub) => {
+        const materialIndex = Number.isInteger(sub.material_index) ? sub.material_index : 0;
+        const entry = materialTextures[materialIndex] || materialTextures[0];
+        if (entry) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+          gl.uniform1f(uHasTex, entry.hasTexture ? 1 : 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, entry.normalTexture);
+          gl.uniform1f(uHasNormal, entry.hasNormal ? 1 : 0);
+        } else {
+          gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
+          gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
+          if (hasTexture) {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+          }
+        }
+        const offset = Math.max(0, Number(sub.face_offset) || 0) * 3 * indexSize;
+        const count = Math.max(0, Number(sub.face_count) || 0) * 3;
+        if (count) gl.drawElements(gl.TRIANGLES, count, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, offset);
+      });
+    } else {
+      if (hasTexture) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+      }
+      gl.drawElements(gl.TRIANGLES, indexData.length, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
     }
-    gl.drawElements(gl.TRIANGLES, indexData.length, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
     if (gim3d.points) {
       gl.uniform1f(uFlat, 1);
+      gl.uniform1f(uHasTex, 0);
+      gl.uniform1f(uHasNormal, 0);
       gl.uniform3f(uColor, 1.0, 0.82, 0.4);
       gl.drawArrays(gl.POINTS, 0, verts.length);
     }
