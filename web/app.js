@@ -1467,6 +1467,7 @@ function closeViewer() {
   if (node.classList.contains("hidden")) {
     clearViewerContent();
     unlockViewerScroll();
+    disposeGim3D();
     return;
   }
   node.classList.remove("open");
@@ -1479,6 +1480,7 @@ function closeViewer() {
     node.classList.remove("closing");
     clearViewerContent();
     unlockViewerScroll();
+    disposeGim3D();
   }, 340);
 }
 
@@ -2528,7 +2530,7 @@ function renderNeoXPreview(data, container, file) {
         <span>${tr("gmp.unitSummary", { units: Number(objects.length).toLocaleString(), chunks: refs.length })}</span>
       </div>
       ${meshData
-        ? `<button class="btn primary" id="neox-open-3d" type="button">${icon("map")}${tr("gmp.openCanvas")}</button>`
+        ? `<button class="btn primary" id="neox-open-3d" type="button">${icon("map")}${tr("gmp.open3d")}</button>`
         : ""}
     </div>
     <div class="bank-chips">${chips.join("")}</div>
@@ -2549,11 +2551,13 @@ function renderNeoXPreview(data, container, file) {
       if (texFile) showPreview(texFile);
     });
   });
-  $("preview-note").textContent = meshData
-    ? tr("gmp.note", { count: Number(meshData.vertex_count).toLocaleString() })
-    : textures.length
-      ? tr("mtg.note", { count: textures.length })
-      : tr("gmp.noteNoUnits");
+  $("preview-note").textContent = data.mesh_error
+    ? data.mesh_error
+    : meshData
+      ? tr("gmp.note3d", { count: Number(meshData.vertex_count).toLocaleString() })
+      : textures.length
+        ? tr("mtg.note", { count: textures.length })
+        : tr("gmp.noteNoUnits");
 }
 
 async function openGimDirect(file) {
@@ -2580,11 +2584,11 @@ async function openGimDirect(file) {
     const data = await getJson(apiUrl("/api/neox", { path: file.path }));
     if (token !== viewer.token) return;
     const meshData = data.mesh_data || ((file.ext || "").toLowerCase() === ".mesh" ? data : null);
-    if (!meshData || !(meshData.vertices || []).length) throw new Error(tr("gmp.noUnits"));
+    if (!meshData || !(meshData.vertices || []).length) throw new Error(data.mesh_error || tr("gmp.noUnits"));
     const textureList = data.texture_images || [];
     $("viewer-foot").innerHTML = gimFoot();
     bindGimFoot();
-    renderGim3D($("viewer-stage"), meshData, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "");
+    renderGim3D($("viewer-stage"), meshData, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", data.material);
   } catch (error) {
     if (token !== viewer.token) return;
     $("viewer-stage").innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
@@ -2597,7 +2601,7 @@ function gimFoot() {
     <label class="viewer-zoom-value"><input id="gim-zoom-input" type="number" min="5" max="2000" step="1" value="100"><span>%</span></label>
     <button class="icon-btn" id="gim-zoom-in" title="${tr("map.zoomIn")}" aria-label="${tr("map.zoomIn")}">${icon("plus")}</button>
     <button class="mini-btn" id="gim-reset" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
-    <label class="map-dot-control"><input id="gim-points" type="checkbox" checked>${tr("gmp.pointsToggle")}</label>
+    <label class="map-dot-control"><input id="gim-points" type="checkbox" autocomplete="off">${tr("gmp.pointsToggle")}</label>
   </div>
   <div class="viewer-map" id="gim-map">
     <canvas id="gim-map-canvas" class="viewer-map-canvas" width="178" height="118"></canvas>
@@ -2611,17 +2615,18 @@ function bindGimFoot() {
   const zoomInput = $("gim-zoom-input");
   const reset = $("gim-reset");
   const pointsToggle = $("gim-points");
-  if (zoomIn) zoomIn.addEventListener("click", () => { gim3d.scale *= 1.2; });
-  if (zoomOut) zoomOut.addEventListener("click", () => { gim3d.scale /= 1.2; });
+  if (zoomIn) zoomIn.addEventListener("click", () => { gim3d.scale = Math.min(20, gim3d.scale * 1.2); });
+  if (zoomOut) zoomOut.addEventListener("click", () => { gim3d.scale = Math.max(0.05, gim3d.scale / 1.2); });
   if (zoomInput) {
     zoomInput.addEventListener("change", () => {
       gim3d.scale = Math.max(0.05, Math.min(20, Number(zoomInput.value) / 100 || 1));
     });
     gim3d.zoomInput = zoomInput;
   }
-  if (reset) reset.addEventListener("click", () => { gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1; });
+  if (reset) reset.addEventListener("click", () => { gim3d.yaw = 0.6; gim3d.pitch = 0.35; gim3d.scale = 1; });
   if (pointsToggle) {
-    gim3d.points = pointsToggle.checked;
+    pointsToggle.checked = false;
+    gim3d.points = false;
     pointsToggle.addEventListener("change", () => { gim3d.points = pointsToggle.checked; });
   }
 }
@@ -2650,187 +2655,468 @@ function openGimViewer(file, data) {
   lockViewerScroll();
   try {
     const textureList = data.texture_images || [];
-    renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "");
+    renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", data.material);
   } catch (error) {
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
   }
 }
 
-const gim3d = { canvas: null, raf: 0, drag: false, x: 0, y: 0, scale: 1, verts: null, indices: null, uvs: null, texture: null };
+const gim3d = { canvas: null, gl: null, raf: 0, drag: false, px: 0, py: 0, yaw: 0.6, pitch: 0.35, scale: 1, points: false, zoomInput: null, minimap: null, mapView: null, minimapPoints: null };
 
-function renderGim3D(stage, meshData, token, textureUrl) {
+function gimCompile(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) || "shader compile failed";
+    gl.deleteShader(shader);
+    throw new Error(log);
+  }
+  return shader;
+}
+
+function gimProgram(gl, vsSource, fsSource) {
+  const vs = gimCompile(gl, gl.VERTEX_SHADER, vsSource);
+  const fs = gimCompile(gl, gl.FRAGMENT_SHADER, fsSource);
+  if (!vs || !fs) return null;
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program) || "shader link failed";
+    gl.deleteProgram(program);
+    throw new Error(log);
+  }
+  return program;
+}
+
+function gimMultiply(a, b) {
+  const out = new Float32Array(16);
+  for (let col = 0; col < 4; col += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      out[col * 4 + row] = a[row] * b[col * 4] + a[4 + row] * b[col * 4 + 1] + a[8 + row] * b[col * 4 + 2] + a[12 + row] * b[col * 4 + 3];
+    }
+  }
+  return out;
+}
+
+function gimPerspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2);
+  const nf = 1 / (near - far);
+  return new Float32Array([
+    f / aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, (far + near) * nf, -1,
+    0, 0, 2 * far * near * nf, 0,
+  ]);
+}
+
+function gimNormalize(v) {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function gimCross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function gimLookAt(eye, center, up) {
+  const z = gimNormalize([eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]]);
+  const x = gimNormalize(gimCross(up, z));
+  const y = gimCross(z, x);
+  return new Float32Array([
+    x[0], y[0], z[0], 0,
+    x[1], y[1], z[1], 0,
+    x[2], y[2], z[2], 0,
+    -(x[0] * eye[0] + x[1] * eye[1] + x[2] * eye[2]),
+    -(y[0] * eye[0] + y[1] * eye[1] + y[2] * eye[2]),
+    -(z[0] * eye[0] + z[1] * eye[1] + z[2] * eye[2]),
+    1,
+  ]);
+}
+
+function gimProject(mvp, vertex, w, h) {
+  const x = mvp[0] * vertex[0] + mvp[4] * vertex[1] + mvp[8] * vertex[2] + mvp[12];
+  const y = mvp[1] * vertex[0] + mvp[5] * vertex[1] + mvp[9] * vertex[2] + mvp[13];
+  const wc = mvp[3] * vertex[0] + mvp[7] * vertex[1] + mvp[11] * vertex[2] + mvp[15];
+  if (wc <= 0) return null;
+  return [(x / wc * 0.5 + 0.5) * w, (1 - (y / wc * 0.5 + 0.5)) * h];
+}
+
+function disposeGim3D() {
+  if (gim3d.raf) { cancelAnimationFrame(gim3d.raf); gim3d.raf = 0; }
+  const gl = gim3d.gl;
+  if (gl) {
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    gim3d.gl = null;
+  }
+}
+
+function renderGim3D(stage, meshData, token, textureUrl, material) {
+  disposeGim3D();
   const verts = meshData.vertices || [];
-  if (!verts.length) throw new Error("no vertices");
-  let cx = 0, cy = 0, cz = 0;
-  for (const v of verts) { cx += v[0]; cy += v[1]; cz += v[2]; }
-  cx /= verts.length; cy /= verts.length; cz /= verts.length;
-  let radius = 0.001;
-  for (const v of verts) {
-    const d = Math.hypot(v[0] - cx, v[1] - cy, v[2] - cz);
-    if (d > radius) radius = d;
-  }
-  const indices = (meshData.indices || []).filter((v) => v < verts.length);
+  const indices = meshData.indices || [];
+  if (!verts.length || !indices.length) throw new Error("no vertices");
   const uvs = meshData.uvs || [];
+  const normals = meshData.normals || [];
+  const unlit = !!material && material.lighting === false;
+  const transparent = !!material && material.transparent === true;
+  const cullBack = !!(material && material.cull_back === true);
+  const tint = material && Array.isArray(material.tint) && material.tint.length === 4 ? material.tint : [1, 1, 1, 1];
+  const sprite = !!(material && typeof material.tech === "string" && material.tech.includes("sfx_spr"));
+  const textureFiles = material && Array.isArray(material.textures) ? material.textures : [];
+  const normalFile = textureFiles.find((path) => /(^|[_.])(n|normal)([_.]|$)/i.test((path.split("/").pop() || ""))) || "";
+  const normalUrl = normalFile ? apiUrl("/api/image", { path: normalFile }) : "";
+  const diffuseUrl = textureUrl || (textureFiles[0] ? apiUrl("/api/image", { path: textureFiles[0] }) : "");
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const vertex of verts) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      if (vertex[axis] < min[axis]) min[axis] = vertex[axis];
+      if (vertex[axis] > max[axis]) max[axis] = vertex[axis];
+    }
+  }
+  const center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  let radius = 0;
+  for (const vertex of verts) {
+    const distance = Math.hypot(vertex[0] - center[0], vertex[1] - center[1], vertex[2] - center[2]);
+    if (distance > radius) radius = distance;
+  }
+  radius = radius || 1;
   stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
-    <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${indices.length ? `${Math.floor(indices.length / 3)} tris` : "wire"}</div>`;
+    <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${Number(indices.length / 3).toLocaleString()} tris</div>`;
   const canvas = $("gim-canvas");
-  const ctx = canvas.getContext("2d");
+  const gl = canvas.getContext("webgl", { antialias: true, alpha: false }) || canvas.getContext("experimental-webgl");
+  if (!gl) throw new Error("WebGL unavailable");
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gim3d.canvas = canvas;
-  gim3d.verts = { verts, cx, cy, cz, radius };
-  gim3d.indices = indices;
-  gim3d.uvs = uvs;
-  gim3d.texture = null;
-  gim3d.x = 0.6; gim3d.y = 0.4; gim3d.scale = 1;
-  if (textureUrl) {
-    const img = new Image();
-    img.onload = () => { gim3d.texture = img; };
-    img.src = textureUrl;
-  }
-  const pointsToggle = $("gim-points");
-  if (pointsToggle) {
-    gim3d.points = pointsToggle.checked;
-    pointsToggle.addEventListener("change", () => { gim3d.points = pointsToggle.checked; });
-  }
+  gim3d.gl = gl;
+  gim3d.zoomInput = $("gim-zoom-input");
   gim3d.minimap = $("gim-map-canvas");
   gim3d.mapView = $("gim-map-view");
-  canvas.addEventListener("pointerdown", (e) => {
-    gim3d.drag = true; gim3d.px = e.clientX; gim3d.py = e.clientY;
-    canvas.setPointerCapture(e.pointerId);
+  gim3d.yaw = 0.6; gim3d.pitch = 0.35; gim3d.scale = 1;
+  gim3d.minimapPoints = [];
+  const sample = Math.max(1, Math.floor(verts.length / 400));
+  for (let index = 0; index < verts.length; index += sample) gim3d.minimapPoints.push(verts[index]);
+  const program = gimProgram(gl, `
+    attribute vec3 a_pos;
+    attribute vec3 a_norm;
+    attribute vec2 a_uv;
+    attribute vec4 a_tangent;
+    uniform mat4 u_mvp;
+    uniform mediump float u_flat;
+    varying vec2 v_uv;
+    varying float v_light;
+    varying vec3 v_normal;
+    varying vec3 v_tangent;
+    varying vec3 v_bitangent;
+    void main() {
+      vec3 normal = normalize(a_norm);
+      vec3 tangent = a_tangent.xyz;
+      float tangent_length = length(tangent);
+      tangent = tangent_length > 0.0 ? tangent / tangent_length : vec3(1.0, 0.0, 0.0);
+      v_normal = normal;
+      v_tangent = tangent;
+      v_bitangent = cross(normal, tangent) * a_tangent.w;
+      v_light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
+      v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
+      gl_Position = u_mvp * vec4(a_pos, 1.0);
+      gl_PointSize = u_flat > 0.5 ? 2.0 : 1.0;
+    }`, `
+    precision mediump float;
+    varying vec2 v_uv;
+    varying float v_light;
+    varying vec3 v_normal;
+    varying vec3 v_tangent;
+    varying vec3 v_bitangent;
+    uniform sampler2D u_tex;
+    uniform sampler2D u_normal_tex;
+    uniform float u_has_tex;
+    uniform float u_has_normal;
+    uniform float u_flat;
+    uniform float u_unlit;
+    uniform float u_sprite;
+    uniform vec4 u_tint;
+    uniform vec3 u_color;
+    void main() {
+      if (u_flat > 0.5) {
+        gl_FragColor = vec4(u_color, 1.0);
+        return;
+      }
+      vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);
+      vec3 color = u_has_tex > 0.5 ? texel.rgb : u_color;
+      float alpha = u_has_tex > 0.5 ? texel.a : 1.0;
+      if (u_sprite > 0.5) {
+        color *= u_tint.rgb * 2.0;
+        alpha *= u_tint.a * 2.0;
+      } else if (u_unlit > 0.5) {
+        color *= u_tint.rgb;
+        alpha *= u_tint.a;
+      }
+      vec3 normal = normalize(v_normal);
+      float light = u_unlit > 0.5 ? 1.0 : v_light;
+      if (u_has_normal > 0.5 && u_unlit < 0.5) {
+        vec3 tangent_normal = texture2D(u_normal_tex, v_uv).xyz * 2.0 - 1.0;
+        normal = normalize(v_tangent * tangent_normal.x + v_bitangent * tangent_normal.y + v_normal * tangent_normal.z);
+        light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
+      }
+      gl_FragColor = vec4(color * light, clamp(alpha, 0.0, 1.0));
+    }`);
+  if (!program) throw new Error("shader failed");
+  gl.useProgram(program);
+  const positionData = new Float32Array(verts.length * 3);
+  const normalData = new Float32Array(verts.length * 3);
+  const uvData = new Float32Array(verts.length * 2);
+  for (let index = 0; index < verts.length; index += 1) {
+    const vertex = verts[index];
+    positionData[index * 3] = vertex[0];
+    positionData[index * 3 + 1] = vertex[1];
+    positionData[index * 3 + 2] = vertex[2];
+    const normal = normals[index] || [0, 1, 0];
+    normalData[index * 3] = normal[0];
+    normalData[index * 3 + 1] = normal[1];
+    normalData[index * 3 + 2] = normal[2];
+    const uv = uvs[index] || [0, 0];
+    uvData[index * 2] = uv[0];
+    uvData[index * 2 + 1] = uv[1];
+  }
+  const tangentData = new Float32Array(verts.length * 4);
+  for (let index = 0; index < verts.length; index += 1) {
+    tangentData[index * 4] = 1;
+    tangentData[index * 4 + 3] = 1;
+  }
+  if (normalUrl) {
+    const tangentSum = new Float32Array(verts.length * 3);
+    const bitangentSum = new Float32Array(verts.length * 3);
+    for (let index = 0; index + 2 < indices.length; index += 3) {
+      const ia = indices[index], ib = indices[index + 1], ic = indices[index + 2];
+      const pa = verts[ia], pb = verts[ib], pc = verts[ic];
+      const ua = uvs[ia] || [0, 0], ub = uvs[ib] || [0, 0], uc = uvs[ic] || [0, 0];
+      const e1x = pb[0] - pa[0], e1y = pb[1] - pa[1], e1z = pb[2] - pa[2];
+      const e2x = pc[0] - pa[0], e2y = pc[1] - pa[1], e2z = pc[2] - pa[2];
+      const du1 = ub[0] - ua[0], dv1 = ub[1] - ua[1];
+      const du2 = uc[0] - ua[0], dv2 = uc[1] - ua[1];
+      const det = du1 * dv2 - du2 * dv1;
+      if (Math.abs(det) < 1e-9) continue;
+      const r = 1 / det;
+      const tx = (e1x * dv2 - e2x * dv1) * r, ty = (e1y * dv2 - e2y * dv1) * r, tz = (e1z * dv2 - e2z * dv1) * r;
+      const bx = (e2x * du1 - e1x * du2) * r, by = (e2y * du1 - e1y * du2) * r, bz = (e2z * du1 - e1z * du2) * r;
+      for (const target of [ia, ib, ic]) {
+        tangentSum[target * 3] += tx; tangentSum[target * 3 + 1] += ty; tangentSum[target * 3 + 2] += tz;
+        bitangentSum[target * 3] += bx; bitangentSum[target * 3 + 1] += by; bitangentSum[target * 3 + 2] += bz;
+      }
+    }
+    for (let index = 0; index < verts.length; index += 1) {
+      const nx = normalData[index * 3], ny = normalData[index * 3 + 1], nz = normalData[index * 3 + 2];
+      let tx = tangentSum[index * 3], ty = tangentSum[index * 3 + 1], tz = tangentSum[index * 3 + 2];
+      const dot = nx * tx + ny * ty + nz * tz;
+      tx -= nx * dot; ty -= ny * dot; tz -= nz * dot;
+      const length = Math.hypot(tx, ty, tz);
+      if (length > 1e-6) { tx /= length; ty /= length; tz /= length; } else { tx = 1; ty = 0; tz = 0; }
+      const bx = bitangentSum[index * 3], by = bitangentSum[index * 3 + 1], bz = bitangentSum[index * 3 + 2];
+      const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
+      tangentData[index * 4] = tx; tangentData[index * 4 + 1] = ty; tangentData[index * 4 + 2] = tz;
+      tangentData[index * 4 + 3] = cx * bx + cy * by + cz * bz < 0 ? -1 : 1;
+    }
+  }
+  let maxIndex = 0;
+  for (const value of indices) if (value > maxIndex) maxIndex = value;
+  const useUint32 = maxIndex > 65535;
+  if (useUint32 && !gl.getExtension("OES_element_index_uint")) throw new Error("index buffer too large");
+  const indexData = useUint32 ? new Uint32Array(indices) : new Uint16Array(indices);
+  const bindAttribute = (name, size, data) => {
+    const location = gl.getAttribLocation(program, name);
+    if (location < 0) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+  };
+  bindAttribute("a_pos", 3, positionData);
+  bindAttribute("a_norm", 3, normalData);
+  bindAttribute("a_uv", 2, uvData);
+  bindAttribute("a_tangent", 4, tangentData);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
+  const uMvp = gl.getUniformLocation(program, "u_mvp");
+  const uTex = gl.getUniformLocation(program, "u_tex");
+  const uHasTex = gl.getUniformLocation(program, "u_has_tex");
+  const uFlat = gl.getUniformLocation(program, "u_flat");
+  const uUnlit = gl.getUniformLocation(program, "u_unlit");
+  const uSprite = gl.getUniformLocation(program, "u_sprite");
+  const uTint = gl.getUniformLocation(program, "u_tint");
+  const uColor = gl.getUniformLocation(program, "u_color");
+  const uNormalTex = gl.getUniformLocation(program, "u_normal_tex");
+  const uHasNormal = gl.getUniformLocation(program, "u_has_normal");
+  const potImage = (image) => {
+    const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
+    const width = next(image.width), height = next(image.height);
+    if (width === image.width && height === image.height) return image;
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+    return canvas;
+  };
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(uTex, 0);
+  const normalTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 255, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(uNormalTex, 1);
+  let hasTexture = false;
+  if (diffuseUrl) {
+    const image = new Image();
+    image.onload = () => {
+      if (token !== viewer.token) return;
+      const source = potImage(image);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      hasTexture = true;
+    };
+    image.onerror = () => { hasTexture = false; };
+    image.src = diffuseUrl;
+  }
+  let hasNormal = false;
+  if (normalUrl) {
+    const normalImage = new Image();
+    normalImage.onload = () => {
+      if (token !== viewer.token) return;
+      const source = potImage(normalImage);
+      gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      hasNormal = true;
+    };
+    normalImage.onerror = () => { hasNormal = false; };
+    normalImage.src = normalUrl;
+  }
+  canvas.addEventListener("pointerdown", (event) => {
+    gim3d.drag = true; gim3d.px = event.clientX; gim3d.py = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
   });
-  canvas.addEventListener("pointermove", (e) => {
+  canvas.addEventListener("pointermove", (event) => {
     if (!gim3d.drag) return;
-    gim3d.x += (e.clientX - gim3d.px) * 0.01;
-    gim3d.y -= (e.clientY - gim3d.py) * 0.01;
-    gim3d.px = e.clientX; gim3d.py = e.clientY;
+    gim3d.yaw -= (event.clientX - gim3d.px) * 0.008;
+    gim3d.pitch += (event.clientY - gim3d.py) * 0.008;
+    gim3d.pitch = Math.max(-1.55, Math.min(1.55, gim3d.pitch));
+    gim3d.px = event.clientX; gim3d.py = event.clientY;
   });
-  const up = () => { gim3d.drag = false; };
-  canvas.addEventListener("pointerup", up);
-  canvas.addEventListener("pointercancel", up);
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    gim3d.scale *= e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  const stopDrag = () => { gim3d.drag = false; };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    gim3d.scale = Math.max(0.05, Math.min(20, gim3d.scale * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
   }, { passive: false });
   const draw = () => {
     if (token !== viewer.token) return;
-    const w = canvas.clientWidth || 800;
-    const h = canvas.clientHeight || 500;
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    ctx.fillStyle = "#080e15";
-    ctx.fillRect(0, 0, w, h);
-    const { verts: vs, cx: acx, cy: acy, cz: acz, radius: rad } = gim3d.verts;
-    const cosX = Math.cos(gim3d.x), sinX = Math.sin(gim3d.x);
-    const cosY = Math.cos(gim3d.y), sinY = Math.sin(gim3d.y);
-    const zoom = (Math.min(w, h) * 0.38 * gim3d.scale) / rad;
-    const project = (v) => {
-      let x = v[0] - acx, y = v[1] - acy, z = v[2] - acz;
-      let y2 = y * cosX - z * sinX;
-      let z2 = y * sinX + z * cosX;
-      let x2 = x * cosY - z2 * sinY;
-      let z3 = x * sinY + z2 * cosY;
-      return [w / 2 + x2 * zoom, h / 2 - y2 * zoom, z3];
-    };
-    const projected = vs.map(project);
-    const indices = gim3d.indices || [];
-    const uvs = gim3d.uvs || [];
-    const texture = gim3d.texture;
-    const pointsMode = gim3d.points || !indices.length || !texture;
-    if (indices.length >= 3 && !pointsMode) {
-      // 深度排序后画贴图三角形 (背面前置)
-      const tris = [];
-      for (let i = 0; i + 2 < indices.length; i += 3) {
-        const ai = indices[i], bi = indices[i + 1], ci = indices[i + 2];
-        const a = projected[ai], b = projected[bi], c = projected[ci];
-        if (!a || !b || !c) continue;
-        const depth = (a[2] + b[2] + c[2]) / 3;
-        const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-        tris.push({ ai, bi, ci, a, b, c, depth, cross });
-      }
-      tris.sort((p, q) => p.depth - q.depth);
-      for (const tri of tris) {
-        if (tri.cross >= 0) continue;
-        if (texture && uvs.length) {
-          const ua = uvs[tri.ai] || [0, 0], ub = uvs[tri.bi] || [0, 0], uc = uvs[tri.ci] || [0, 0];
-          // 近似仿射贴图: 用 2D 三角形到纹理三角形的仿射变换
-          ctx.save();
-          ctx.beginPath();
-          ctx.moveTo(tri.a[0], tri.a[1]);
-          ctx.lineTo(tri.b[0], tri.b[1]);
-          ctx.lineTo(tri.c[0], tri.c[1]);
-          ctx.closePath();
-          ctx.clip();
-          const tw = texture.width, th = texture.height;
-          const denom = (ub[0] - ua[0]) * (uc[1] - ua[1]) - (uc[0] - ua[0]) * (ub[1] - ua[1]);
-          if (Math.abs(denom) > 1e-9) {
-            const sx = ((tri.b[0] - tri.a[0]) * (uc[1] - ua[1]) - (tri.c[0] - tri.a[0]) * (ub[1] - ua[1])) / denom;
-            const sy = ((tri.b[1] - tri.a[1]) * (uc[1] - ua[1]) - (tri.c[1] - tri.a[1]) * (ub[1] - ua[1])) / denom;
-            const scx = tri.a[0] - sx * ua[0] * tw - ((tri.c[0] - tri.a[0]) * (ub[0] - ua[0]) - (tri.b[0] - tri.a[0]) * (uc[0] - ua[0])) / denom * ua[0] * tw;
-            const tx = ((tri.c[0] - tri.a[0]) * (ub[0] - ua[0]) - (tri.b[0] - tri.a[0]) * (uc[0] - ua[0])) / denom;
-            const ty = ((tri.c[1] - tri.a[1]) * (ub[0] - ua[0]) - (tri.b[1] - tri.a[1]) * (uc[0] - ua[0])) / denom;
-            const scy = tri.a[1] - sx * ua[1] * th - ty * ua[1] * th;
-            ctx.transform(sx, sy, tx, ty, scx + 0, scy + 0);
-            ctx.drawImage(texture, 0, 0, tw, th, 0, 0, tw, th);
-          } else {
-            ctx.fillStyle = "rgba(110,231,216,.4)";
-            ctx.fill();
-          }
-          ctx.restore();
-        } else {
-          ctx.fillStyle = `rgba(110,231,216,${0.25 + 0.45 * Math.max(0, 1 - Math.abs(tri.depth) / (rad * 2))})`;
-          ctx.beginPath();
-          ctx.moveTo(tri.a[0], tri.a[1]);
-          ctx.lineTo(tri.b[0], tri.b[1]);
-          ctx.lineTo(tri.c[0], tri.c[1]);
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = canvas.clientWidth || 800;
+    const height = canvas.clientHeight || 500;
+    const pixelWidth = Math.max(1, Math.floor(width * dpr));
+    const pixelHeight = Math.max(1, Math.floor(height * dpr));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
     }
-    ctx.strokeStyle = "rgba(110,231,216,.45)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    if (indices.length >= 3 && pointsMode) {
-      for (let i = 0; i + 2 < indices.length; i += 3) {
-        const a = projected[indices[i]], b = projected[indices[i + 1]], c = projected[indices[i + 2]];
-        if (!a || !b || !c) continue;
-        ctx.moveTo(a[0], a[1]);
-        ctx.lineTo(b[0], b[1]);
-        ctx.lineTo(c[0], c[1]);
-        ctx.closePath();
-      }
-    } else if (!indices.length || pointsMode) {
-      for (let i = 0; i + 1 < vs.length; i += 1) {
-        ctx.moveTo(projected[i][0], projected[i][1]);
-        ctx.lineTo(projected[i + 1][0], projected[i + 1][1]);
-      }
+    gl.viewport(0, 0, pixelWidth, pixelHeight);
+    gl.enable(gl.DEPTH_TEST);
+    if (cullBack) {
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+    } else {
+      gl.disable(gl.CULL_FACE);
     }
-    ctx.stroke();
-    ctx.fillStyle = "rgba(255,209,102,.75)";
-    if (pointsMode) {
-      for (const p of projected) ctx.fillRect(p[0] - 1, p[1] - 1, 2, 2);
+    gl.clearColor(0.03, 0.055, 0.082, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const pitch = Math.max(-1.55, Math.min(1.55, gim3d.pitch));
+    const distance = radius * 2.8 / Math.max(0.05, Math.min(20, gim3d.scale));
+    const eye = [
+      center[0] + Math.sin(gim3d.yaw) * Math.cos(pitch) * distance,
+      center[1] + Math.sin(pitch) * distance,
+      center[2] + Math.cos(gim3d.yaw) * Math.cos(pitch) * distance,
+    ];
+    const projection = gimPerspective(Math.PI / 4, width / height, Math.max(0.01, radius * 0.01), radius * 20 + 1);
+    const viewMatrix = gimLookAt(eye, center, [0, 1, 0]);
+    const mvp = gimMultiply(projection, viewMatrix);
+    gl.useProgram(program);
+    gl.uniformMatrix4fv(uMvp, false, mvp);
+    gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
+    gl.uniform1f(uFlat, 0);
+    gl.uniform3f(uColor, 0.35, 0.78, 0.72);
+    gl.uniform1f(uUnlit, unlit ? 1 : 0);
+    gl.uniform1f(uSprite, sprite ? 1 : 0);
+    gl.uniform4f(uTint, tint[0], tint[1], tint[2], tint[3]);
+    gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
+    if (hasNormal) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+    }
+    if (transparent) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+    } else {
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+    }
+    if (hasTexture) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+    }
+    gl.drawElements(gl.TRIANGLES, indexData.length, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
+    if (gim3d.points) {
+      gl.uniform1f(uFlat, 1);
+      gl.uniform3f(uColor, 1.0, 0.82, 0.4);
+      gl.drawArrays(gl.POINTS, 0, verts.length);
     }
     if (gim3d.zoomInput && Number(gim3d.zoomInput.value) !== Math.round(gim3d.scale * 100)) {
       gim3d.zoomInput.value = Math.round(gim3d.scale * 100);
     }
-    drawGimMinimap(projected, w, h);
+    drawGimMinimap(mvp, width, height);
     gim3d.raf = requestAnimationFrame(draw);
   };
   draw();
 }
 
-function drawGimMinimap(projected, w, h) {
+function drawGimMinimap(mvp, width, height) {
   const mini = gim3d.minimap;
   const view = gim3d.mapView;
   if (!mini || !view) return;
-  const mctx = mini.getContext("2d");
+  const ctx = mini.getContext("2d");
   const mw = mini.width, mh = mini.height;
-  mctx.fillStyle = "#080e15";
-  mctx.fillRect(0, 0, mw, mh);
-  mctx.fillStyle = "rgba(110,231,216,.55)";
-  for (const p of projected) {
-    mctx.fillRect((p[0] / w) * mw - 1, (p[1] / h) * mh - 1, 2, 2);
+  ctx.fillStyle = "#080e15";
+  ctx.fillRect(0, 0, mw, mh);
+  ctx.fillStyle = "rgba(110,231,216,.55)";
+  for (const vertex of gim3d.minimapPoints || []) {
+    const point = gimProject(mvp, vertex, width, height);
+    if (point) ctx.fillRect((point[0] / width) * mw - 1, (point[1] / height) * mh - 1, 2, 2);
   }
-  view.style.left = `${Math.max(0, (w / 2 - w / (2 * gim3d.scale)) / w * mw)}px`;
-  view.style.top = `${Math.max(0, (h / 2 - h / (2 * gim3d.scale)) / h * mh)}px`;
+  view.style.left = `${Math.max(0, (width / 2 - width / (2 * gim3d.scale)) / width * mw)}px`;
+  view.style.top = `${Math.max(0, (height / 2 - height / (2 * gim3d.scale)) / height * mh)}px`;
   view.style.width = `${Math.min(mw, mw / gim3d.scale)}px`;
   view.style.height = `${Math.min(mh, mh / gim3d.scale)}px`;
 }

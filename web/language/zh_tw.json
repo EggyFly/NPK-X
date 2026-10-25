@@ -103,6 +103,7 @@
     "drawer.open.idea": "IDEA",
     "drawer.open.finder": "Finder",
     "gmp.openCanvas": "地圖畫布",
+    "gmp.open3d": "3D 預覽",
     "gmp.units": "單位",
     "gmp.chunks": "區塊",
     "gmp.msgpack": "MessagePack",
@@ -111,6 +112,7 @@
     "gmp.noUnits": "沒有解析到可顯示的單位座標。",
     "gmp.refs": "引用資源",
     "gmp.note": "地圖佈局：{count} 個單位；點擊「地圖畫布」可拖動、縮放檢視。",
+    "gmp.note3d": "模型：{count} 個頂點；點擊「3D 預覽」可拖動、縮放檢視。",
     "gmp.noteNoUnits": "已讀取地圖區塊，但沒有可繪製的單位座標；可下載原始檔案進一步分析。",
     "gmp.empty": "沒有可繪製的單位座標；詳細面板中有區塊統計",
     "map.canvas": "地圖畫布",
@@ -317,6 +319,9 @@
     "batch.done": "下載完成",
     "batch.eachDoneHint": "已觸發 {count} 個檔案的下載",
     "batch.failed": "下載失敗",
-    "gmp.verts": "頂點"
+    "gmp.verts": "頂點",
+    "mtg.textures": "貼圖",
+    "mtg.note": "材質包含 {count} 張貼圖, 點擊可預覽。",
+    "gmp.pointsToggle": "點陣圖"
   }
 }

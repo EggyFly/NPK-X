@@ -128,6 +128,64 @@ def unique_arc_name(name: str, used: set) -> str:
     return final
 
 
+def material_flags(objects) -> dict:
+    lighting = True
+    transparent = False
+    light_found = False
+    trans_found = False
+    tint = [1.0, 1.0, 1.0, 1.0]
+    tech = ""
+    tint_found = False
+    cull_back = False
+    cull_found = False
+    for obj in objects or []:
+        if not tech:
+            value = obj.get("TechName")
+            if isinstance(value, str):
+                tech = value
+        if not tint_found:
+            value = obj.get("Value")
+            if (
+                isinstance(value, list)
+                and len(value) == 4
+                and all(isinstance(item, (int, float)) for item in value)
+            ):
+                tint = [float(item) for item in value]
+                tint_found = True
+        if not light_found and "LightingEnable" in obj:
+            value = obj.get("LightingEnable")
+            if value is False or (isinstance(value, str) and value.strip().lower() == "false"):
+                lighting = False
+            light_found = True
+        if not trans_found and "TransparentMode" in obj:
+            value = obj.get("TransparentMode")
+            try:
+                if int(value) >= 2:
+                    transparent = True
+            except (TypeError, ValueError):
+                pass
+            trans_found = True
+        if not cull_found:
+            if "CullBack" in obj:
+                value = obj.get("CullBack")
+                cull_back = not (value is False or (isinstance(value, str) and value.strip().lower() == "false"))
+                cull_found = True
+            elif "CullMode" in obj:
+                try:
+                    cull_back = int(obj.get("CullMode")) != 0
+                except (TypeError, ValueError):
+                    pass
+                cull_found = True
+    return {
+        "lighting": lighting,
+        "transparent": transparent,
+        "tint": tint,
+        "tech": tech,
+        "cull_back": cull_back,
+        "textures": [],
+    }
+
+
 def default_cache_dir() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
@@ -1118,6 +1176,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._waveform_thumb(row, width)
         raise ValueError("thumbnail not available for this type")
 
+    def _sibling_bounds(self, mesh_path: str) -> tuple[list | None, list | None]:
+        stem = str(Path(mesh_path).with_suffix(""))
+        candidates = (
+            stem + "_lod1.gim", stem + "_lod2.gim", stem + ".gim",
+            stem[:-1] + ".gim" if stem and stem[-1].isdigit() else None,
+        )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            row = self._row(candidate)
+            if not row or (row["ext"] or "").lower() != ".gim":
+                continue
+            try:
+                payload = self._entry_payload(row)
+                data = neox_object.parse(payload)
+                center, half = self._gim_bounds(data)
+                if center and half:
+                    return center, half
+            except Exception:
+                continue
+        return None, None
+
     def _resolve_ref(self, base_path: str, ref: str) -> str | None:
         target = [p for p in ref.replace("\\", "/").split("/") if p not in ("", ".")]
         candidate = "/".join(target)
@@ -1140,6 +1220,13 @@ class Handler(BaseHTTPRequestHandler):
             candidate = candidate[overlap:]
             if self._row(candidate):
                 return candidate
+        # 贴图引用常写 .tga/.dds, 实际文件是同名 .kta
+        stem = target[-1].rsplit(".", 1)[0] if target else ""
+        if stem:
+            for suffix in (".kta", ".dds", ".png"):
+                candidate = "/".join(stack[:-1] if False else target[:-1] + [stem + suffix])
+                if self._row(candidate):
+                    return candidate
         return None
 
     def _gim_bounds(self, data: dict) -> tuple[list | None, list | None]:
@@ -1645,8 +1732,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not row:
                     self._error("not found", 404)
                     return
-                if (row["ext"] or "").lower() not in (".gim", ".mtg"):
+                if (row["ext"] or "").lower() not in (".gim", ".mtg", ".mesh"):
                     self._error("not a NeoX object file", 415)
+                    return
+                if (row["ext"] or "").lower() == ".mesh":
+                    try:
+                        payload = self._entry_payload(row)
+                        parsed = mesh_parse.parse(payload)
+                        if not parsed.get("packed"):
+                            center, half = self._sibling_bounds(row["path"])
+                            if center and half:
+                                parsed = mesh_parse.denormalize(parsed, center, half)
+                        data = parsed
+                    except Exception as exc:
+                        self._error(f"NeoX parse failed: {exc}", 415)
+                        return
+                    data.update(
+                        {
+                            "path": row["path"], "package": row["package"],
+                            "kind": row["kind"], "ext": row["ext"], "size": row["unpacked"],
+                            "material": material_flags([]),
+                        }
+                    )
+                    self._json(data)
                     return
                 try:
                     payload = self._entry_payload(row)
@@ -1654,12 +1762,27 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._error(f"NeoX parse failed: {exc}", 415)
                     return
+                data["material"] = material_flags(data.get("objects", []))
+                textures = []
+                for obj in data.get("objects", []):
+                    for name, value in obj.items():
+                        if (
+                            isinstance(value, str)
+                            and value
+                            and value.lower().endswith((".tga", ".dds", ".kta", ".png"))
+                        ):
+                            textures.append({"slot": name, "path": value})
+                if textures:
+                    data["textures"] = textures
                 mesh_ref = None
                 for obj in data.get("objects", []):
                     value = obj.get("Mesh")
                     if isinstance(value, str) and value:
                         mesh_ref = value
                         break
+                if textures:
+                    for texture in textures:
+                        texture["resolved"] = self._resolve_ref(row["path"], texture["path"])
                 if mesh_ref:
                     mesh_path = self._resolve_ref(row["path"], mesh_ref)
                     data["mesh"] = mesh_path or mesh_ref.replace("\\", "/")
@@ -1670,16 +1793,45 @@ class Handler(BaseHTTPRequestHandler):
                         data["mesh"] = sibling
                     else:
                         mesh_path = None
+                if (row["ext"] or "").lower() != ".mtg":
+                    mtg_sibling = str(Path(row["path"]).with_suffix(".mtg")).replace("\\", "/")
+                    mtg_row = self._row(mtg_sibling)
+                    if mtg_row and (mtg_row["ext"] or "").lower() == ".mtg":
+                        try:
+                            mtg_data = neox_object.parse(self._entry_payload(mtg_row))
+                            data["material"] = material_flags(mtg_data.get("objects", []))
+                            if not textures:
+                                for obj in mtg_data.get("objects", []):
+                                    for name, value in obj.items():
+                                        if (
+                                            isinstance(value, str)
+                                            and value
+                                            and value.lower().endswith((".tga", ".dds", ".kta", ".png"))
+                                        ):
+                                            textures.append({"slot": name, "path": value, "resolved": self._resolve_ref(mtg_sibling, value)})
+                        except Exception:
+                            pass
+                    if textures:
+                        data["textures"] = textures
+                if textures:
+                    resolved = [item.get("resolved") for item in textures if item.get("resolved")]
+                    if resolved:
+                        data["material"]["textures"] = resolved
                 if mesh_path and not data.get("mesh_data"):
                     try:
                         mesh_row = self._row(mesh_path)
                         if mesh_row:
                             mesh_payload = self._entry_payload(mesh_row)
-                            center, half = self._gim_bounds(data)
                             parsed = mesh_parse.parse(mesh_payload)
-                            if center and half:
-                                parsed = mesh_parse.denormalize(parsed, center, half)
+                            if not parsed.get("packed"):
+                                center, half = self._gim_bounds(data)
+                                if center and half:
+                                    parsed = mesh_parse.denormalize(parsed, center, half)
                             data["mesh_data"] = parsed
+                            if textures:
+                                data["texture_images"] = [
+                                    t["resolved"] for t in textures if t.get("resolved")
+                                ]
                     except Exception as exc:
                         data["mesh_error"] = str(exc)
                         data["mesh_data"] = None

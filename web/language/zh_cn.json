@@ -103,6 +103,7 @@
     "drawer.open.idea": "IDEA",
     "drawer.open.finder": "访达",
     "gmp.openCanvas": "地图画布",
+    "gmp.open3d": "3D 预览",
     "gmp.units": "单位",
     "gmp.chunks": "块",
     "gmp.msgpack": "MessagePack",
@@ -111,6 +112,7 @@
     "gmp.noUnits": "没有解析到可显示的单位坐标。",
     "gmp.refs": "引用资源",
     "gmp.note": "地图布局：{count} 个单位；点击“地图画布”可拖动、缩放查看。",
+    "gmp.note3d": "模型：{count} 个顶点；点击“3D 预览”可拖动、缩放查看。",
     "gmp.noteNoUnits": "已读取地图块，但没有可绘制的单位坐标；可下载原文件进一步分析。",
     "gmp.empty": "没有可绘制的单位坐标；详情面板中有数据块统计",
     "map.canvas": "地图画布",
@@ -317,6 +319,9 @@
     "batch.done": "下载完成",
     "batch.eachDoneHint": "已触发 {count} 个文件的下载",
     "batch.failed": "下载失败",
-    "gmp.verts": "顶点"
+    "gmp.verts": "顶点",
+    "mtg.textures": "贴图",
+    "mtg.note": "材质包含 {count} 张贴图, 点击可预览。",
+    "gmp.pointsToggle": "点阵图"
   }
 }

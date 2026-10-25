@@ -103,6 +103,7 @@
     "drawer.open.idea": "IDEA",
     "drawer.open.finder": "Finder",
     "gmp.openCanvas": "Map canvas",
+    "gmp.open3d": "3D preview",
     "gmp.units": "Units",
     "gmp.chunks": "Chunks",
     "gmp.msgpack": "MessagePack",
@@ -111,6 +112,7 @@
     "gmp.noUnits": "No displayable unit positions were parsed.",
     "gmp.refs": "Referenced resources",
     "gmp.note": "Map layout: {count} units. Click \"Map canvas\" to pan and zoom.",
+    "gmp.note3d": "Model: {count} vertices. Click \"3D preview\" to drag and zoom.",
     "gmp.noteNoUnits": "Map chunks were read, but no drawable unit positions were found. Download the file for further analysis.",
     "gmp.empty": "No drawable unit positions; chunk statistics are in the detail panel",
     "map.canvas": "Map canvas",
@@ -317,6 +319,9 @@
     "batch.done": "Downloads done",
     "batch.eachDoneHint": "Triggered {count} downloads",
     "batch.failed": "Download failed",
-    "gmp.verts": "Vertices"
+    "gmp.verts": "Vertices",
+    "mtg.textures": "Textures",
+    "mtg.note": "The material contains {count} textures, click to preview.",
+    "gmp.pointsToggle": "Point cloud"
   }
 }
