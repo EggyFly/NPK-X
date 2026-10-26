@@ -1403,11 +1403,3 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
   mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
 }
-.marquee.marquee-moving {
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--marquee-fade), #000 calc(100% - var(--marquee-fade)), transparent 100%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 var(--marquee-fade), #000 calc(100% - var(--marquee-fade)), transparent 100%);
-}
-.marquee.marquee-pause {
-  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
-}

@@ -1096,7 +1096,6 @@ async function loadMore() {
     appendFiles(more);
     hydrateThumbs($("content"));
     setupMarquee($("content"));
-    setupMarquee($("content-topbar"));
     updateCounts();
     updatePreviewNav();
     ensureSentinel();
@@ -1571,7 +1570,7 @@ function renderXnPreview(data, container, file) {
   const open = container.querySelector("#xn-open-viewer");
   if (open) open.addEventListener("click", () => openScriptViewer(file));
   setupMarquee(container);
-  requestAnimationFrame(startXnMarquee);
+  startXnMarquee();
   $("preview-note").textContent = tr("xn.structure");
 }
 
@@ -4516,56 +4515,136 @@ function initIndexPane() {
 
 const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-meta, .file-row-name, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .viewer-name, .where, .xn-head b, .xn-head > div > span";
 const MARQUEE_HOSTS = ".folder, .folder-row, .file, .file-row, .root, .index-dir, .drawer-head, .viewer-head, .toolbar";
+const MARQUEE_HOVER_HOSTS = MARQUEE_HOSTS.split(",").map((item) => item.trim() + ":hover").join(", ");
+
+let marqueeTicker = null;
+const marqueeActive = new Set();
+
+function stopMarqueeTicker() {
+  if (!marqueeTicker) return;
+  if (marqueeTicker.worker) marqueeTicker.worker.terminate();
+  if (marqueeTicker.timer) clearTimeout(marqueeTicker.timer);
+  marqueeTicker = null;
+}
+
+function startFallbackMarqueeTicker() {
+  marqueeTicker = { worker: null, timer: 0 };
+  const tick = () => {
+    if (!marqueeTicker) return;
+    if (!marqueeActive.size) {
+      marqueeTicker = null;
+      return;
+    }
+    marqueeActive.forEach((el) => updateMarquee(el, performance.now()));
+    marqueeTicker.timer = setTimeout(tick, 32);
+  };
+  tick();
+}
+
+function ensureMarqueeTicker() {
+  if (marqueeTicker) return;
+  try {
+    const source = "const id=setInterval(()=>postMessage(0),32);self.onmessage=()=>{clearInterval(id);self.close();};";
+    const url = URL.createObjectURL(new Blob([source], { type: "application/javascript" }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    marqueeTicker = { worker, timer: 0 };
+    worker.onmessage = () => {
+      if (!marqueeTicker || marqueeTicker.worker !== worker) return;
+      marqueeActive.forEach((el) => updateMarquee(el, performance.now()));
+    };
+    worker.onerror = () => {
+      if (!marqueeTicker || marqueeTicker.worker !== worker) return;
+      worker.terminate();
+      marqueeTicker = null;
+      if (marqueeActive.size) startFallbackMarqueeTicker();
+    };
+  } catch (_) {
+    startFallbackMarqueeTicker();
+  }
+}
+
+function updateMarquee(el, now) {
+  if (!el.__marqueeRun || !el.isConnected) {
+    marqueeActive.delete(el);
+    if (!marqueeActive.size) stopMarqueeTicker();
+    return;
+  }
+  if (el.__marqueePausedUntil) {
+    if (now < el.__marqueePausedUntil) return;
+    el.__marqueePausedUntil = 0;
+    el.__marqueeStart = now;
+    el.__marqueePos = 0;
+    el.classList.remove("marquee-pause");
+    el.classList.add("marquee-moving");
+    el.style.textIndent = "0px";
+    return;
+  }
+  const raw = Math.max(0, now - el.__marqueeStart);
+  el.__marqueeStart = now;
+  el.__marqueePos = Math.min(el.__marqueePos + Math.min(raw, 64), el.__marqueeTravel);
+  const progress = el.__marqueePos / el.__marqueeTravel;
+  el.style.textIndent = `-${el.__marqueeOverflow * progress}px`;
+  if (el.__marqueePos >= el.__marqueeTravel) {
+    el.classList.remove("marquee-moving");
+    el.classList.add("marquee-pause");
+    el.__marqueePausedUntil = now + 2000;
+  }
+}
 
 function stopMarquee(el) {
-  if (el.__marqueeAnim) {
-    el.__marqueeAnim.cancel();
-    el.__marqueeAnim = null;
-  }
-  if (el.__marqueeTimer) {
-    clearTimeout(el.__marqueeTimer);
-    el.__marqueeTimer = 0;
-  }
+  marqueeActive.delete(el);
   el.__marqueeRun = false;
+  el.__marqueeStart = 0;
+  el.__marqueeTravel = 0;
+  el.__marqueeOverflow = 0;
+  el.__marqueePos = 0;
+  el.__marqueePausedUntil = 0;
   el.classList.remove("marquee-moving", "marquee-pause");
   el.style.textIndent = "";
+  if (!marqueeActive.size) stopMarqueeTicker();
 }
 
 function startMarquee(el) {
   if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   if (!el.classList.contains("marquee") || el.__marqueeRun) return;
   const overflow = el.scrollWidth - el.clientWidth;
-  if (overflow < 2 || typeof el.animate !== "function") return;
+  if (overflow < 2) {
+    el.classList.remove("marquee");
+    return;
+  }
   el.__marqueeRun = true;
-  const travel = Math.max(1400, Math.min(6000, overflow * 22));
-  const run = () => {
-    if (!el.__marqueeRun || !el.isConnected) return;
-    if (el.__marqueeAnim) { el.__marqueeAnim.cancel(); el.__marqueeAnim = null; }
-    el.classList.add("marquee-moving");
-    el.classList.remove("marquee-pause");
-    el.style.textIndent = "0px";
-    const anim = el.animate([{ textIndent: "0px" }, { textIndent: `-${overflow}px` }], { duration: travel, easing: "linear", fill: "forwards" });
-    el.__marqueeAnim = anim;
-    anim.onfinish = () => {
-      if (!el.__marqueeRun || !el.isConnected) return;
-      el.classList.remove("marquee-moving");
-      el.classList.add("marquee-pause");
-      el.__marqueeTimer = setTimeout(() => {
-        el.__marqueeTimer = 0;
-        if (el.__marqueeRun) run();
-      }, 2000);
-    };
-  };
-  run();
+  el.__marqueeStart = performance.now();
+  el.__marqueeTravel = Math.max(1400, Math.min(6000, overflow * 22));
+  el.__marqueeOverflow = overflow;
+  el.__marqueePos = 0;
+  el.__marqueePausedUntil = 0;
+  el.classList.add("marquee-moving");
+  el.classList.remove("marquee-pause");
+  el.style.textIndent = "0px";
+  marqueeActive.add(el);
+  ensureMarqueeTicker();
+}
+
+function startHoveredMarquees() {
+  document.querySelectorAll(MARQUEE_HOVER_HOSTS).forEach((host) => {
+    host.querySelectorAll(".marquee").forEach(startMarquee);
+  });
 }
 
 function setupMarquee(root) {
   if (!root) return;
-  root.querySelectorAll(MARQUEE_TARGETS).forEach((el) => {
+  const targets = root.querySelectorAll(MARQUEE_TARGETS);
+  targets.forEach((el) => {
+    if (el.__marqueeRun) return;
     stopMarquee(el);
     el.classList.remove("marquee");
-    if (el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1) el.classList.add("marquee");
   });
+  targets.forEach((el) => {
+    if (el.__marqueeRun) return;
+    if (el.clientWidth > 0 && el.scrollWidth - el.clientWidth > 1) el.classList.add("marquee");
+  });
+  startHoveredMarquees();
 }
 
 function startXnMarquee() {
@@ -4578,8 +4657,9 @@ function stopXnMarquee() {
 
 function initMarquee() {
   document.addEventListener("mouseover", (event) => {
+    if (event.relatedTarget && event.target.contains && event.target.contains(event.relatedTarget)) return;
     const host = event.target && event.target.closest ? event.target.closest(MARQUEE_HOSTS) : null;
-    if (!host || (event.relatedTarget && host.contains(event.relatedTarget))) return;
+    if (!host) return;
     host.querySelectorAll(".marquee").forEach(startMarquee);
   });
   document.addEventListener("mouseout", (event) => {
@@ -4587,6 +4667,13 @@ function initMarquee() {
     if (!host || (event.relatedTarget && host.contains(event.relatedTarget))) return;
     host.querySelectorAll(".marquee").forEach(stopMarquee);
   });
+  let lastHoverScroll = 0;
+  window.addEventListener("scroll", () => {
+    const now = Date.now();
+    if (now - lastHoverScroll < 120) return;
+    lastHoverScroll = now;
+    startHoveredMarquees();
+  }, { passive: true });
 }
 
 function syncTopbarHeight() {
