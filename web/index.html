@@ -3,114 +3,68 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0F1316">
 <title>NPK-X</title>
-  <link rel="stylesheet" href="/static/style.css?v=43">
+  <link rel="stylesheet" href="/static/style.css?v=48">
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="exp-back" x1="16" y1="4.75" x2="16" y2="11.75" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFD152"/>
-      <stop offset="1" stop-color="#FFB83D"/>
-    </linearGradient>
-    <linearGradient id="exp-front" x1="16" y1="11.06" x2="16" y2="29.97" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7FE0FF"/>
-      <stop offset="1" stop-color="#2E9BE6"/>
-    </linearGradient>
-  </defs>
-  <symbol id="i-refresh" viewBox="0 0 24 24">
-    <polyline points="23 4 23 10 17 10"/>
-    <polyline points="1 20 1 14 7 14"/>
-    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-  </symbol>
-  <symbol id="i-grid" viewBox="0 0 24 24">
-    <rect x="3" y="3" width="7" height="7" rx="1"/>
-    <rect x="14" y="3" width="7" height="7" rx="1"/>
-    <rect x="3" y="14" width="7" height="7" rx="1"/>
-    <rect x="14" y="14" width="7" height="7" rx="1"/>
-  </symbol>
-  <symbol id="i-list" viewBox="0 0 24 24">
-    <line x1="8" y1="6" x2="21" y2="6"/>
-    <line x1="8" y1="12" x2="21" y2="12"/>
-    <line x1="8" y1="18" x2="21" y2="18"/>
-    <line x1="3" y1="6" x2="3.01" y2="6"/>
-    <line x1="3" y1="12" x2="3.01" y2="12"/>
-    <line x1="3" y1="18" x2="3.01" y2="18"/>
-  </symbol>
-  <symbol id="i-close" viewBox="0 0 24 24">
-    <line x1="18" y1="6" x2="6" y2="18"/>
-    <line x1="6" y1="6" x2="18" y2="18"/>
-  </symbol>
-  <symbol id="i-zoom" viewBox="0 0 24 24">
-    <circle cx="11" cy="11" r="7"/>
-    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-    <line x1="8" y1="11" x2="14" y2="11"/>
-    <line x1="11" y1="8" x2="11" y2="14"/>
-  </symbol>
-  <symbol id="i-play" viewBox="0 0 24 24">
-    <polygon points="7 4 20 12 7 20 7 4" fill="currentColor" stroke="none"/>
-  </symbol>
-  <symbol id="i-chevron-left" viewBox="0 0 24 24">
-    <polyline points="15 18 9 12 15 6"/>
-  </symbol>
-  <symbol id="i-chevron-right" viewBox="0 0 24 24">
-    <polyline points="9 18 15 12 9 6"/>
-  </symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24">
-    <line x1="12" y1="5" x2="12" y2="19"/>
-    <line x1="5" y1="12" x2="19" y2="12"/>
-  </symbol>
-  <symbol id="i-minus" viewBox="0 0 24 24">
-    <line x1="5" y1="12" x2="19" y2="12"/>
-  </symbol>
-  <symbol id="i-fit" viewBox="0 0 24 24">
-    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-  </symbol>
-  <symbol id="i-map" viewBox="0 0 24 24">
-    <path d="M9 18l-6 3V6l6-3 6 3 6-3v15l-6 3-6-3z"/>
-    <line x1="9" y1="3" x2="9" y2="18"/>
-    <line x1="15" y1="6" x2="15" y2="21"/>
-  </symbol>
-  <symbol id="i-code" viewBox="0 0 24 24">
-    <path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/>
-  </symbol>
+      <linearGradient id="exp-back" x1="16" y1="4.75" x2="16" y2="11.75" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFD152"/>
+        <stop offset="1" stop-color="#FFB83D"/>
+      </linearGradient>
+      <linearGradient id="exp-front" x1="16" y1="11.06" x2="16" y2="29.97" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#7FE0FF"/>
+        <stop offset="1" stop-color="#2E9BE6"/>
+      </linearGradient>
+    </defs>
+  <symbol id="i-refresh" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-70q0-17 11.5-28.5T760-800q17 0 28.5 11.5T800-760v200q0 17-11.5 28.5T760-520H560q-17 0-28.5-11.5T520-560q0-17 11.5-28.5T560-600h128q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q68 0 124.5-34.5T692-367q8-14 22.5-19.5t29.5-.5q16 5 23 21t-1 30q-41 80-117 128t-169 48Z"/></symbol>
+  <symbol id="i-grid" viewBox="0 -960 960 960"><path fill="currentColor" d="M200-520q-33 0-56.5-23.5T120-600v-160q0-33 23.5-56.5T200-840h160q33 0 56.5 23.5T440-760v160q0 33-23.5 56.5T360-520H200Zm0 400q-33 0-56.5-23.5T120-200v-160q0-33 23.5-56.5T200-440h160q33 0 56.5 23.5T440-360v160q0 33-23.5 56.5T360-120H200Zm400-400q-33 0-56.5-23.5T520-600v-160q0-33 23.5-56.5T600-840h160q33 0 56.5 23.5T840-760v160q0 33-23.5 56.5T760-520H600Zm0 400q-33 0-56.5-23.5T520-200v-160q0-33 23.5-56.5T600-440h160q33 0 56.5 23.5T840-360v160q0 33-23.5 56.5T760-120H600ZM200-600h160v-160H200v160Zm400 0h160v-160H600v160Zm0 400h160v-160H600v160Zm-400 0h160v-160H200v160Zm400-400Zm0 240Zm-240 0Zm0-240Z"/></symbol>
+  <symbol id="i-list" viewBox="0 -960 960 960"><path fill="currentColor" d="M120-280v-400q0-33 23.5-56.5T200-760h560q33 0 56.5 23.5T840-680v400q0 33-23.5 56.5T760-200H200q-33 0-56.5-23.5T120-280Zm80-320h80v-80h-80v80Zm160 0h400v-80H360v80Zm0 160h400v-80H360v80Zm0 160h400v-80H360v80Zm-160 0h80v-80h-80v80Zm0-160h80v-80h-80v80Z"/></symbol>
+  <symbol id="i-close" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-424 284-228q-11 11-28 11t-28-11q-11-11-11-28t11-28l196-196-196-196q-11-11-11-28t11-28q11-11 28-11t28 11l196 196 196-196q11-11 28-11t28 11q11 11 11 28t-11 28L536-480l196 196q11 11 11 28t-11 28q-11 11-28 11t-28-11L480-424Z"/></symbol>
+  <symbol id="i-zoom" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-320q75 0 127.5-52.5T660-500q0-75-52.5-127.5T480-680q-75 0-127.5 52.5T300-500q0 75 52.5 127.5T480-320Zm0-72q-45 0-76.5-31.5T372-500q0-45 31.5-76.5T480-608q45 0 76.5 31.5T588-500q0 45-31.5 76.5T480-392Zm0 192q-134 0-244.5-72T61-462q-5-9-7.5-18.5T51-500q0-10 2.5-19.5T61-538q64-118 174.5-190T480-800q134 0 244.5 72T899-538q5 9 7.5 18.5T909-500q0 10-2.5 19.5T899-462q-64 118-174.5 190T480-200Zm0-300Zm0 220q113 0 207.5-59.5T832-500q-50-101-144.5-160.5T480-720q-113 0-207.5 59.5T128-500q50 101 144.5 160.5T480-280Z"/></symbol>
+  <symbol id="i-play" viewBox="0 -960 960 960"><path fill="currentColor" d="M320-273v-414q0-17 12-28.5t28-11.5q5 0 10.5 1.5T381-721l326 207q9 6 13.5 15t4.5 19q0 10-4.5 19T707-446L381-239q-5 3-10.5 4.5T360-233q-16 0-28-11.5T320-273Zm80-207Zm0 134 210-134-210-134v268Z"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 -960 960 960"><path fill="currentColor" d="m432-480 156 156q11 11 11 28t-11 28q-11 11-28 11t-28-11L348-452q-6-6-8.5-13t-2.5-15q0-8 2.5-15t8.5-13l184-184q11-11 28-11t28 11q11 11 11 28t-11 28L432-480Z"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 -960 960 960"><path fill="currentColor" d="M504-480 348-636q-11-11-11-28t11-28q11-11 28-11t28 11l184 184q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L404-268q-11 11-28 11t-28-11q-11-11-11-28t11-28l156-156Z"/></symbol>
+  <symbol id="i-plus" viewBox="0 -960 960 960"><path fill="currentColor" d="M440-440H240q-17 0-28.5-11.5T200-480q0-17 11.5-28.5T240-520h200v-200q0-17 11.5-28.5T480-760q17 0 28.5 11.5T520-720v200h200q17 0 28.5 11.5T760-480q0 17-11.5 28.5T720-440H520v200q0 17-11.5 28.5T480-200q-17 0-28.5-11.5T440-240v-200Z"/></symbol>
+  <symbol id="i-minus" viewBox="0 -960 960 960"><path fill="currentColor" d="M240-440q-17 0-28.5-11.5T200-480q0-17 11.5-28.5T240-520h480q17 0 28.5 11.5T760-480q0 17-11.5 28.5T720-440H240Z"/></symbol>
+  <symbol id="i-fit" viewBox="0 -960 960 960"><path fill="currentColor" d="M800-640v-80h-80q-17 0-28.5-11.5T680-760q0-17 11.5-28.5T720-800h80q33 0 56.5 23.5T880-720v80q0 17-11.5 28.5T840-600q-17 0-28.5-11.5T800-640Zm-720 0v-80q0-33 23.5-56.5T160-800h80q17 0 28.5 11.5T280-760q0 17-11.5 28.5T240-720h-80v80q0 17-11.5 28.5T120-600q-17 0-28.5-11.5T80-640Zm720 480h-80q-17 0-28.5-11.5T680-200q0-17 11.5-28.5T720-240h80v-80q0-17 11.5-28.5T840-360q17 0 28.5 11.5T880-320v80q0 33-23.5 56.5T800-160Zm-640 0q-33 0-56.5-23.5T80-240v-80q0-17 11.5-28.5T120-360q17 0 28.5 11.5T160-320v80h80q17 0 28.5 11.5T280-200q0 17-11.5 28.5T240-160h-80Zm80-240v-160q0-33 23.5-56.5T320-640h320q33 0 56.5 23.5T720-560v160q0 33-23.5 56.5T640-320H320q-33 0-56.5-23.5T240-400Zm80 0h320v-160H320v160Zm0 0v-160 160Z"/></symbol>
+  <symbol id="i-map" viewBox="0 -960 960 960"><path fill="currentColor" d="m574-129-214-75-186 72q-10 4-19.5 2.5T137-136q-8-5-12.5-13.5T120-169v-561q0-13 7.5-23t20.5-15l186-63q6-2 12.5-3t13.5-1q7 0 13.5 1t12.5 3l214 75 186-72q10-4 19.5-2.5T823-824q8 5 12.5 13.5T840-791v561q0 13-7.5 23T812-192l-186 63q-6 2-12.5 3t-13.5 1q-7 0-13.5-1t-12.5-3Zm-14-89v-468l-160-56v468l160 56Zm80 0 120-40v-474l-120 46v468Zm-440-10 120-46v-468l-120 40v474Zm440-458v468-468Zm-320-56v468-468Z"/></symbol>
+  <symbol id="i-code" viewBox="0 -960 960 960"><path fill="currentColor" d="m193-479 155 155q11 11 11 28t-11 28q-11 11-28 11t-28-11L108-452q-6-6-8.5-13T97-480q0-8 2.5-15t8.5-13l184-184q12-12 28.5-12t28.5 12q12 12 12 28.5T349-635L193-479Zm574-2L612-636q-11-11-11-28t11-28q11-11 28-11t28 11l184 184q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L668-268q-12 12-28 11.5T612-269q-12-12-12-28.5t12-28.5l155-155Z"/></symbol>
+  <symbol id="i-select" viewBox="0 -960 960 960"><path fill="currentColor" d="m221-313 142-142q12-12 28-11.5t28 12.5q11 12 11 28t-11 28L250-228q-12 12-28 12t-28-12l-86-86q-11-11-11-28t11-28q11-11 28-11t28 11l57 57Zm0-320 142-142q12-12 28-11.5t28 12.5q11 12 11 28t-11 28L250-548q-12 12-28 12t-28-12l-86-86q-11-11-11-28t11-28q11-11 28-11t28 11l57 57Zm339 353q-17 0-28.5-11.5T520-320q0-17 11.5-28.5T560-360h280q17 0 28.5 11.5T880-320q0 17-11.5 28.5T840-280H560Zm0-320q-17 0-28.5-11.5T520-640q0-17 11.5-28.5T560-680h280q17 0 28.5 11.5T880-640q0 17-11.5 28.5T840-600H560Z"/></symbol>
+  <symbol id="i-download" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-337q-8 0-15-2.5t-13-8.5L308-492q-12-12-11.5-28t11.5-28q12-12 28.5-12.5T365-549l75 75v-286q0-17 11.5-28.5T480-800q17 0 28.5 11.5T520-760v286l75-75q12-12 28.5-11.5T652-548q11 12 11.5 28T652-492L508-348q-6 6-13 8.5t-15 2.5ZM240-160q-33 0-56.5-23.5T160-240v-80q0-17 11.5-28.5T200-360q17 0 28.5 11.5T240-320v80h480v-80q0-17 11.5-28.5T760-360q17 0 28.5 11.5T800-320v80q0 33-23.5 56.5T720-160H240Z"/></symbol>
+  <symbol id="i-package" viewBox="0 -960 960 960"><path fill="currentColor" d="M200-80q-33 0-56.5-23.5T120-160v-451q-18-11-29-28.5T80-680v-120q0-33 23.5-56.5T160-880h640q33 0 56.5 23.5T880-800v120q0 23-11 40.5T840-611v451q0 33-23.5 56.5T760-80H200Zm0-520v440h560v-440H200Zm-40-80h640v-120H160v120Zm240 280h160q17 0 28.5-11.5T600-440q0-17-11.5-28.5T560-480H400q-17 0-28.5 11.5T360-440q0 17 11.5 28.5T400-400Zm80 20Z"/></symbol>
+  <symbol id="i-check" viewBox="0 -960 960 960"><path fill="currentColor" d="m382-354 339-339q12-12 28-12t28 12q12 12 12 28.5T777-636L410-268q-12 12-28 12t-28-12L182-440q-12-12-11.5-28.5T183-497q12-12 28.5-12t28.5 12l142 143Z"/></symbol>
+  <symbol id="i-search" viewBox="0 -960 960 960"><path fill="currentColor" d="M380-320q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l224 224q11 11 11 28t-11 28q-11 11-28 11t-28-11L532-372q-30 24-69 38t-83 14Zm0-80q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/></symbol>
+  <symbol id="i-sort" viewBox="0 -960 960 960"><path fill="currentColor" d="M160-240q-17 0-28.5-11.5T120-280q0-17 11.5-28.5T160-320h160q17 0 28.5 11.5T360-280q0 17-11.5 28.5T320-240H160Zm0-200q-17 0-28.5-11.5T120-480q0-17 11.5-28.5T160-520h400q17 0 28.5 11.5T600-480q0 17-11.5 28.5T560-440H160Zm0-200q-17 0-28.5-11.5T120-680q0-17 11.5-28.5T160-720h640q17 0 28.5 11.5T840-680q0 17-11.5 28.5T800-640H160Z"/></symbol>
+  <symbol id="i-language" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-155.5t86-127Q252-817 325-848.5T480-880q83 0 155.5 31.5t127 86q54.5 54.5 86 127T880-480q0 82-31.5 155t-86 127.5q-54.5 54.5-127 86T480-80Zm0-82q26-36 45-75t31-83H404q12 44 31 83t45 75Zm-104-16q-18-33-31.5-68.5T322-320H204q29 50 72.5 87t99.5 55Zm208 0q56-18 99.5-55t72.5-87H638q-9 38-22.5 73.5T584-178ZM170-400h136q-3-20-4.5-39.5T300-480q0-21 1.5-40.5T306-560H170q-5 20-7.5 39.5T160-480q0 21 2.5 40.5T170-400Zm216 0h188q3-20 4.5-39.5T580-480q0-21-1.5-40.5T574-560H386q-3 20-4.5 39.5T380-480q0 21 1.5 40.5T386-400Zm268 0h136q5-20 7.5-39.5T800-480q0-21-2.5-40.5T790-560H654q3 20 4.5 39.5T660-480q0 21-1.5 40.5T654-400Zm-16-240h118q-29-50-72.5-87T584-782q18 33 31.5 68.5T638-640Zm-234 0h152q-12-44-31-83t-45-75q-26 36-45 75t-31 83Zm-200 0h118q9-38 22.5-73.5T376-782q-56 18-99.5 55T204-640Z"/></symbol>
+  <symbol id="i-sync" viewBox="0 -960 960 960"><path fill="currentColor" d="m233-280 76 76q12 12 11.5 28T308-148q-12 11-28 11.5T252-148L108-292q-6-6-8.5-13T97-320q0-8 2.5-15t8.5-13l144-144q11-11 27.5-11t28.5 11q12 12 12 28.5T308-435l-75 75h567q17 0 28.5 11.5T840-320q0 17-11.5 28.5T800-280H233Zm494-320H160q-17 0-28.5-11.5T120-640q0-17 11.5-28.5T160-680h567l-76-76q-12-12-11.5-28t12.5-28q12-11 28-11.5t28 11.5l144 144q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L708-468q-11 11-27.5 11T652-468q-12-12-12-28.5t12-28.5l75-75Z"/></symbol>
+  <symbol id="i-folder" viewBox="0 -960 960 960"><path fill="currentColor" d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h207q16 0 30.5 6t25.5 17l57 57h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80h640v-400H447l-80-80H160v480Zm0 0v-480 480Z"/></symbol>
+  <symbol id="i-expand-more" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-362q-8 0-15-2.5t-13-8.5L268-557q-11-11-11-28t11-28q11-11 28-11t28 11l156 156 156-156q11-11 28-11t28 11q11 11 11 28t-11 28L508-373q-6 6-13 8.5t-15 2.5Z"/></symbol>
   <symbol id="i-explorer" viewBox="0 0 32 32">
-    <path d="M3.82 4.13C2.86 4.13 2.07 4.91 2.07 5.88V25.19C2.07 26.15 2.86 26.94 3.83 26.94H28.18C29.14 26.94 29.93 26.15 29.93 25.19V9.78C29.93 8.81 29.14 8.03 28.18 8.03H17.31C16.8 8.03 16.3 7.83 15.93 7.48L13 4.68C12.63 4.32 12.13 4.13 11.62 4.13H3.82Z" fill="url(#exp-back)"/>
-    <rect x="2.07" y="11.06" width="27.84" height="18.91" rx="1.75" fill="url(#exp-front)"/>
-    <path d="M6.2 15.4H25.8" stroke="#E9FBFF" stroke-width="1.4" stroke-linecap="round" opacity=".75"/>
-  </symbol>
+      <path d="M3.82 4.13C2.86 4.13 2.07 4.91 2.07 5.88V25.19C2.07 26.15 2.86 26.94 3.83 26.94H28.18C29.14 26.94 29.93 26.15 29.93 25.19V9.78C29.93 8.81 29.14 8.03 28.18 8.03H17.31C16.8 8.03 16.3 7.83 15.93 7.48L13 4.68C12.63 4.32 12.13 4.13 11.62 4.13H3.82Z" fill="url(#exp-back)"/>
+      <rect x="2.07" y="11.06" width="27.84" height="18.91" rx="1.75" fill="url(#exp-front)"/>
+      <path d="M6.2 15.4H25.8" stroke="#E9FBFF" stroke-width="1.4" stroke-linecap="round" opacity=".75"/>
+    </symbol>
   <symbol id="i-vscode" viewBox="0 0 24 24">
-    <path fill="#007ACC" d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/>
-  </symbol>
+      <path fill="#007ACC" d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/>
+    </symbol>
   <symbol id="i-idea" viewBox="0 0 24 24">
-    <path fill="#FE315D" d="M0 0v24h24V0zm3.723 3.111h5v1.834h-1.39v6.277h1.39v1.834h-5v-1.834h1.444V4.945H3.723zm11.055 0H17v6.5c0 .612-.055 1.111-.222 1.556-.167.444-.39.777-.723 1.11-.277.279-.666.557-1.11.668a3.933 3.933 0 0 1-1.445.278c-.778 0-1.444-.167-1.944-.445a4.81 4.81 0 0 1-1.279-1.056l1.39-1.555c.277.334.555.555.833.722.277.167.611.278.945.278.389 0 .721-.111 1-.389.221-.278.333-.667.333-1.278zM2.222 19.5h9V21h-9z"/>
-  </symbol>
+      <path fill="#FE315D" d="M0 0v24h24V0zm3.723 3.111h5v1.834h-1.39v6.277h1.39v1.834h-5v-1.834h1.444V4.945H3.723zm11.055 0H17v6.5c0 .612-.055 1.111-.222 1.556-.167.444-.39.777-.723 1.11-.277.279-.666.557-1.11.668a3.933 3.933 0 0 1-1.445.278c-.778 0-1.444-.167-1.944-.445a4.81 4.81 0 0 1-1.279-1.056l1.39-1.555c.277.334.555.555.833.722.277.167.611.278.945.278.389 0 .721-.111 1-.389.221-.278.333-.667.333-1.278zM2.222 19.5h9V21h-9z"/>
+    </symbol>
   <symbol id="i-github" viewBox="0 0 24 24">
-    <path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
-  </symbol>
-  <symbol id="i-select" viewBox="0 0 24 24">
-    <polyline points="9 11 12 14 22 4"/>
-    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-  </symbol>
-  <symbol id="i-download" viewBox="0 0 24 24">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-    <polyline points="7 10 12 15 17 10"/>
-    <line x1="12" y1="15" x2="12" y2="3"/>
-  </symbol>
-  <symbol id="i-package" viewBox="0 0 24 24">
-    <path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/>
-    <polyline points="3 8 12 13 21 8"/>
-    <line x1="12" y1="13" x2="12" y2="21"/>
-  </symbol>
-  <symbol id="i-check" viewBox="0 0 24 24">
-    <polyline points="20 6 9 17 4 12"/>
-  </symbol>
+      <path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+    </symbol>
 </svg>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-title">NPK-X</div>
-      <div class="brand-sub" data-i18n="app.subtitle">浏览、搜索与预览</div>
+      <div class="brand-logo" aria-hidden="true"><svg class="icon"><use href="#i-explorer"></use></svg></div>
+      <div class="brand-text">
+        <div class="brand-title">NPK-X</div>
+        <div class="brand-sub" data-i18n="app.subtitle">浏览、搜索与预览</div>
+      </div>
     </div>
     <div class="stats" id="stats">
       <div class="stat"><span id="stat-files">—</span><small data-i18n="stats.files">文件</small></div>
@@ -125,23 +79,34 @@
     <div class="content-topbar" id="content-topbar">
       <header class="topbar">
         <div class="searchbox">
+          <svg class="icon search-icon" aria-hidden="true"><use href="#i-search"></use></svg>
           <input id="search" type="search" placeholder="搜索资源名称或路径，例如 login、pet、effect" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
           <kbd>/</kbd>
         </div>
         <div class="view-actions">
-          <select id="sort" class="sort-select" title="排序" data-i18n-title="sort.title">
-            <option value="name_asc" data-i18n="sort.nameAsc">名称 A–Z</option>
-            <option value="name_desc" data-i18n="sort.nameDesc">名称 Z–A</option>
-            <option value="size_desc" data-i18n="sort.sizeDesc">大小从大到小</option>
-            <option value="size_asc" data-i18n="sort.sizeAsc">大小从小到大</option>
-            <option value="type" data-i18n="sort.type">按类型</option>
-            <option value="package" data-i18n="sort.package">按来源</option>
-          </select>
+          <label class="select-wrap" title="排序" data-i18n-title="sort.title">
+            <svg class="icon" aria-hidden="true"><use href="#i-sort"></use></svg>
+            <select id="sort" class="sort-select" aria-label="排序" data-i18n-aria="sort.title">
+              <option value="name_asc" data-i18n="sort.nameAsc">名称 A–Z</option>
+              <option value="name_desc" data-i18n="sort.nameDesc">名称 Z–A</option>
+              <option value="size_desc" data-i18n="sort.sizeDesc">大小从大到小</option>
+              <option value="size_asc" data-i18n="sort.sizeAsc">大小从小到大</option>
+              <option value="type" data-i18n="sort.type">按类型</option>
+              <option value="package" data-i18n="sort.package">按来源</option>
+            </select>
+            <svg class="icon select-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
+          </label>
           <button id="refresh" class="icon-btn" title="刷新" data-i18n-title="view.refresh" aria-label="刷新" data-i18n-aria="view.refresh"><svg class="icon"><use href="#i-refresh"></use></svg></button>
-          <button id="view-grid" class="icon-btn" title="网格视图" data-i18n-title="view.grid" aria-label="网格视图" data-i18n-aria="view.grid"><svg class="icon"><use href="#i-grid"></use></svg></button>
-          <button id="view-list" class="icon-btn" title="列表视图" data-i18n-title="view.list" aria-label="列表视图" data-i18n-aria="view.list"><svg class="icon"><use href="#i-list"></use></svg></button>
+          <div class="view-switch" role="group">
+            <button id="view-grid" class="icon-btn" aria-pressed="true" title="网格视图" data-i18n-title="view.grid" aria-label="网格视图" data-i18n-aria="view.grid"><svg class="icon"><use href="#i-grid"></use></svg></button>
+            <button id="view-list" class="icon-btn" aria-pressed="false" title="列表视图" data-i18n-title="view.list" aria-label="列表视图" data-i18n-aria="view.list"><svg class="icon"><use href="#i-list"></use></svg></button>
+          </div>
           <button id="select-mode" class="icon-btn" title="多选模式" data-i18n-title="view.select" aria-label="多选模式" data-i18n-aria="view.select"><svg class="icon"><use href="#i-select"></use></svg></button>
-          <select id="language" class="sort-select language-select" title="语言" data-i18n-title="language.title" aria-label="语言" data-i18n-aria="language.title"></select>
+          <label class="select-wrap language-wrap" title="语言" data-i18n-title="language.title">
+            <svg class="icon" aria-hidden="true"><use href="#i-language"></use></svg>
+            <select id="language" class="sort-select language-select" aria-label="语言" data-i18n-aria="language.title"></select>
+            <svg class="icon select-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
+          </label>
         </div>
       </header>
       <div class="crumb" id="crumb"></div>
@@ -156,7 +121,7 @@
       <button class="mini-btn" id="batch-all" data-i18n="batch.selectAll">全选本页</button>
       <button class="mini-btn" id="batch-clear" data-i18n="batch.clear">清空</button>
       <div class="batch-download-wrap">
-        <button id="batch-download" class="btn primary" data-i18n="batch.download"><svg class="icon"><use href="#i-download"></use></svg><span data-i18n="batch.download">一键下载</span></button>
+        <button id="batch-download" class="btn primary"><svg class="icon"><use href="#i-download"></use></svg><span data-i18n="batch.download">一键下载</span></button>
         <div id="batch-menu" class="batch-menu hidden"></div>
       </div>
     </div>
@@ -250,6 +215,6 @@
   <button id="batch-toast-close" class="icon-btn" type="button" title="关闭" data-i18n-title="common.close" aria-label="关闭" data-i18n-aria="common.close"><svg class="icon"><use href="#i-close"></use></svg></button>
 </div>
 
-  <script src="/static/app.js?v=60"></script>
+  <script src="/static/app.js?v=64"></script>
 </body>
 </html>

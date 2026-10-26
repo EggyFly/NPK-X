@@ -26,6 +26,7 @@ const state = {
   loadingMore: false,
   selectMode: false,
   selected: new Set(),
+  roots: [],
 };
 
 const batchPick = { img: "png", aud: "wav" };
@@ -190,6 +191,7 @@ async function setLanguage(choice, rerender = true) {
   localStorage.setItem(I18N_STORAGE, choice);
   document.documentElement.lang = code.replace("_", "-");
   refreshLabelMaps();
+  if (state.roots.length) renderRoots(state.roots);
   applyStaticI18n();
   if (lastUpdateInfo) renderUpdate(lastUpdateInfo, false);
   renderLanguageOptions();
@@ -522,7 +524,7 @@ function renderFolders(dirs) {
   if (!dirs.length) return "";
   return `<div class="folder-grid">${dirs.map((dir) => `
     <button class="folder" data-dir="${esc(dir.path)}">
-      <span class="folder-ico"></span>
+      <span class="folder-ico">${icon("folder")}</span>
       <span class="folder-text">
         <span class="folder-name">${esc(dir.name)}</span>
         <span class="folder-meta">${Number(dir.count).toLocaleString()} ${tr("stats.files")} · ${formatBytes(dir.bytes)}</span>
@@ -782,7 +784,8 @@ async function loadStats() {
     if (stats.version) $("project-version").textContent = `v${stats.version}`;
     $("stat-files").textContent = Number(stats.files).toLocaleString();
     $("stat-size").textContent = formatBytes(stats.bytes);
-    renderRoots(stats.roots);
+    state.roots = stats.roots || [];
+    renderRoots(state.roots);
   } catch (error) {
     console.error(error);
     $("stat-files").textContent = "—";
@@ -806,11 +809,14 @@ async function loadUpdate(retries = 2) {
 function updateViewButtons() {
   $("view-grid").classList.toggle("active", state.view === "grid");
   $("view-list").classList.toggle("active", state.view === "list");
+  $("view-grid").setAttribute("aria-pressed", String(state.view === "grid"));
+  $("view-list").setAttribute("aria-pressed", String(state.view === "list"));
   $("sort").value = state.sort;
 }
 
 async function loadList(path, push = true, keepKind = false) {
   const token = ++listToken;
+  const pathChanged = (path || "") !== state.path;
   stopAudio();
   closeViewer();
   state.loadingMore = false;
@@ -821,6 +827,7 @@ async function loadList(path, push = true, keepKind = false) {
   state.searchMode = false;
   $("search").value = "";
   state.path = path || "";
+  if (pathChanged) window.scrollTo(0, 0);
   if (!keepKind) state.kind = "";
   state.previewPath = null;
   closeDrawer();
@@ -886,6 +893,7 @@ async function search(query) {
   state.searchMode = true;
   state.searchQuery = query;
   state.kind = "";
+  window.scrollTo(0, 0);
   state.previewPath = null;
   document.querySelectorAll(".root").forEach((node) => node.classList.remove("active"));
   closeDrawer();
@@ -1733,7 +1741,7 @@ function drawTextViewerMap(text) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(143, 199, 255, .45)";
+  ctx.fillStyle = "rgba(123, 219, 230, .45)";
   const lines = text.split("\n");
   const step = Math.max(1, Math.floor(lines.length / 1500));
   const rows = Math.ceil(lines.length / step);
@@ -1970,7 +1978,7 @@ function drawMap() {
   const scale = mapView.scale || 1;
   ctx.setTransform(mapView.dpr, 0, 0, mapView.dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#080e15";
+  ctx.fillStyle = "#0a0e10";
   ctx.fillRect(0, 0, w, h);
 
   const step = mapNiceStep(80 / scale);
@@ -1981,7 +1989,7 @@ function drawMap() {
   const minZ = mapView.centerZ - halfH;
   const maxZ = mapView.centerZ + halfH;
 
-  ctx.strokeStyle = "#111c27";
+  ctx.strokeStyle = "rgba(191, 200, 203, .1)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
@@ -1998,7 +2006,7 @@ function drawMap() {
 
   drawMapUnits(ctx, w, h, scale);
 
-  ctx.strokeStyle = "rgba(232, 238, 247, .22)";
+  ctx.strokeStyle = "rgba(223, 227, 230, .24)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(w / 2 - 8, h / 2);
@@ -2053,10 +2061,10 @@ function drawMapUnits(ctx, w, h, scale) {
     if (lx + width > w - 4 || ly < 28 || ly > h - 6) continue;
     const box = [lx, ly - 7, lx + width, ly + 7];
     if (boxes.some((other) => box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])) continue;
-    ctx.strokeStyle = "#0b1219";
+    ctx.strokeStyle = "#0a0e10";
     ctx.lineWidth = 3;
     ctx.strokeText(name, lx, ly);
-    ctx.fillStyle = "#dae5f0";
+    ctx.fillStyle = "#dfe3e6";
     ctx.fillText(name, lx, ly);
     boxes.push(box);
     labels += 1;
@@ -2066,10 +2074,10 @@ function drawMapUnits(ctx, w, h, scale) {
 function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   const top = 24;
   const left = 44;
-  ctx.fillStyle = "rgba(10, 17, 25, .94)";
+  ctx.fillStyle = "rgba(15, 19, 22, .94)";
   ctx.fillRect(0, 0, w, top);
   ctx.fillRect(0, 0, left, h);
-  ctx.strokeStyle = "#223043";
+  ctx.strokeStyle = "#3f484b";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(0, top + 0.5);
@@ -2080,13 +2088,13 @@ function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   ctx.font = '10px "Segoe UI", "Microsoft YaHei", sans-serif';
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
-  ctx.fillStyle = "#c7d4e4";
+  ctx.fillStyle = "#dfe3e6";
   ctx.fillText(`X / ${mapAxis() === "xz" ? "Z" : "Y"}`, 6, top / 2);
-  ctx.fillStyle = "#8495ab";
+  ctx.fillStyle = "#bfc8cb";
   for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
     const sx = w / 2 + (x - mapView.centerX) * scale;
     if (sx < left) continue;
-    ctx.strokeStyle = "#3a4e66";
+    ctx.strokeStyle = "#5c6669";
     ctx.beginPath();
     ctx.moveTo(sx, 0);
     ctx.lineTo(sx, 6);
@@ -2096,7 +2104,7 @@ function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   for (let z = Math.ceil(minZ / step) * step; z <= maxZ; z += step) {
     const sy = h / 2 - (z - mapView.centerZ) * scale;
     if (sy < top) continue;
-    ctx.strokeStyle = "#3a4e66";
+    ctx.strokeStyle = "#5c6669";
     ctx.beginPath();
     ctx.moveTo(0, sy);
     ctx.lineTo(4, sy);
@@ -2124,7 +2132,7 @@ function buildMapMinimapBase() {
   base.height = Math.round(h * dpr);
   const ctx = base.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#0a1119";
+  ctx.fillStyle = "#0a0e10";
   ctx.fillRect(0, 0, w, h);
   const bounds = mapView.data.bounds;
   let minX, maxX, minZ, maxZ;
@@ -2147,7 +2155,7 @@ function buildMapMinimapBase() {
   const left = (w - spanX * ms) / 2;
   const top = (h - spanZ * ms) / 2;
   const box = { left, top, ms, minX, maxZ };
-  ctx.fillStyle = "rgba(143, 199, 255, .55)";
+  ctx.fillStyle = "rgba(123, 219, 230, .55)";
   for (const unit of mapUnits()) {
     const [x, z] = mapPoint(unit);
     const mx = left + (x - minX) * ms;
@@ -2184,8 +2192,8 @@ function drawMapMinimap() {
   const viewH = mapView.height / (mapView.scale || 1);
   const vx = box.left + (mapView.centerX - viewW / 2 - box.minX) * box.ms;
   const vy = box.top + (box.maxZ - (mapView.centerZ + viewH / 2)) * box.ms;
-  ctx.fillStyle = "rgba(110, 231, 216, .1)";
-  ctx.strokeStyle = "#6ee7d8";
+  ctx.fillStyle = "rgba(123, 219, 230, .12)";
+  ctx.strokeStyle = "#7bdbe6";
   ctx.lineWidth = 1;
   ctx.fillRect(vx, vy, viewW * box.ms, viewH * box.ms);
   ctx.strokeRect(vx + 0.5, vy + 0.5, Math.max(1, viewW * box.ms - 1), Math.max(1, viewH * box.ms - 1));
@@ -3608,7 +3616,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     } else {
       gl.disable(gl.CULL_FACE);
     }
-    gl.clearColor(0.03, 0.055, 0.082, 1);
+    gl.clearColor(0.039, 0.055, 0.063, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const pitch = Math.max(-1.55, Math.min(1.55, gim3d.pitch));
     const distance = radius * 2.8 / Math.max(0.05, Math.min(20, gim3d.scale));
@@ -3793,9 +3801,9 @@ function drawGimMinimap(mvp, width, height) {
   if (!mini || !view) return;
   const ctx = mini.getContext("2d");
   const mw = mini.width, mh = mini.height;
-  ctx.fillStyle = "#080e15";
+  ctx.fillStyle = "#0a0e10";
   ctx.fillRect(0, 0, mw, mh);
-  ctx.fillStyle = "rgba(110,231,216,.55)";
+  ctx.fillStyle = "rgba(123,219,230,.55)";
   for (const vertex of gim3d.minimapPoints || []) {
     const point = gimProject(mvp, vertex, width, height);
     if (point) ctx.fillRect((point[0] / width) * mw - 1, (point[1] / height) * mh - 1, 2, 2);
@@ -4075,8 +4083,8 @@ function renderBatchMenu() {
   menu.innerHTML = `
     <button type="button" class="batch-item primary${rawOk ? "" : " disabled"}" data-batch-run="zip-raw">${icon("package")}<span>${tr("batch.zipRaw")}</span>${limitNote(rawOk, BATCH_RAW_MAX)}</button>
     <button type="button" class="batch-item primary${rawOk ? "" : " disabled"}" data-batch-run="each-raw">${icon("download")}<span>${tr("batch.eachRaw")}</span>${limitNote(rawOk, BATCH_RAW_MAX)}</button>
-    <button type="button" class="batch-item" data-batch-page="convert">${icon("zoom")}<span>${tr("batch.convertEach")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>
-    <button type="button" class="batch-item" data-batch-page="convert">${icon("zoom")}<span>${tr("batch.convertZip")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>`;
+    <button type="button" class="batch-item" data-batch-page="convert">${icon("sync")}<span>${tr("batch.convertEach")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>
+    <button type="button" class="batch-item" data-batch-page="convert">${icon("sync")}<span>${tr("batch.convertZip")}</span><svg class="icon chev"><use href="#i-chevron-right"></use></svg></button>`;
 }
 
 function openBatchMenu() {
@@ -4195,6 +4203,7 @@ function onSearchInput() {
     searchTimer = setTimeout(() => search(query), 260);
   } else if (state.searchMode) {
     state.searchMode = false;
+    window.scrollTo(0, 0);
     loadList(state.path, false);
   }
 }
