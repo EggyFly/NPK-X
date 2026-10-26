@@ -328,6 +328,13 @@
     "gim.prevSecond": "前移 1 秒",
     "gim.nextSecond": "后移 1 秒",
     "gim.timeline": "动画时间轴",
-    "gim.reset": "复位"
+    "gim.reset": "复位",
+    "theme.title": "主题",
+    "theme.auto": "自动",
+    "theme.light": "浅色",
+    "theme.dark": "深色",
+    "index.collapse": "收起索引",
+    "index.expand": "展开索引",
+    "layout.resizeSidebar": "调整侧栏宽度"
   }
 }

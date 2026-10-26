@@ -32,7 +32,7 @@
 * vgmstream 二进制来自官方 `vgmstream-win64.zip` r2117，包含其运行 DLL；原 `COPYING`/`README`/`USAGE` 一并保留在 `bin/vgmstream/`。
 * Python 依赖 wheel 的 `.dist-info` 目录保留在 `bin/python/Lib/site-packages/`，其中也包含元数据和许可证。
 * 本项目自己的研究代码不复制任何第三方项目中的密钥材料或保护绕过逻辑；mode 3 结构、密钥与表来自对本机客户端构建的离线验证，详见 `docs/NXPK_MODE3_FORMAT.md`。
-* `web/index.html` 内嵌的 Material Symbols Rounded 图标路径来自 [google/material-design-icons](https://github.com/google/material-design-icons)，按 Apache-2.0 使用；项目内未引入图标字体文件。
+* `web/index.html` 内嵌的 Material Symbols Rounded 图标路径来自 [google/material-design-icons](https://github.com/google/material-design-icons)，按 Apache-2.0 使用（抓取 commit `10ecc14790612ca8fd164e3f4ffe9c16fc50d5b7`，2026-10-23）；项目内未引入图标字体文件。
 
 如需再分发本工具包，请保留 `licenses/`、`THIRD_PARTY_NOTICES.md` 以及各第三方目录中的许可证文件。
 

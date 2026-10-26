@@ -16,6 +16,7 @@ import hashlib
 import io
 import ipaddress
 import json
+import math
 import glob
 import mimetypes
 import os
@@ -86,6 +87,7 @@ PACKAGE_ROOT = E.PACKAGE_ROOT
 WEB_DIR = PACKAGE_ROOT / "web"
 
 IMAGE_EXT = {".kta", ".dds", ".ktx", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".webp", ".gif"}
+MTG_RESOURCE_EXT = IMAGE_EXT | {".mesh", ".gim", ".mtg", ".sfx", ".efx", ".skeleton", ".animation", ".rawanimation", ".animgraph", ".animconfig", ".trackgroup", ".spr", ".csb", ".bin", ".lod"}
 AUDIO_EXT = {".wem", ".bnk", ".wav", ".flac", ".ogg", ".mp3", ".m4a", ".aac", ".opus"}
 VIDEO_EXT = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
 TEXT_EXT = {
@@ -1397,7 +1399,7 @@ class Handler(BaseHTTPRequestHandler):
     def _waveform_thumb(self, row, width: int) -> bytes:
         if _soundfile is None or _np is None:
             raise ValueError("waveform preview unavailable")
-        cache = self.server.artifact(row, f"_wave_w{width}.png", "thumb")
+        cache = self.server.artifact(row, f"_wave3_w{width}.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
@@ -1424,16 +1426,23 @@ class Handler(BaseHTTPRequestHandler):
             if highlight >= 1.0:
                 # Fully saturated tracks would otherwise paint every lane amber.
                 highlight = 1.01
-            image = Image.new("RGB", (width, height), (12, 19, 28))
+            image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
-            for y in (height // 4, (height * 3) // 4):
-                draw.line((0, y, width - 1, y), fill=(17, 26, 37))
             mid = height / 2
+            top = []
+            bottom = []
             for x, value in enumerate(peaks):
-                amplitude = max(1.0, float(value) * height * 0.44)
-                color = (255, 209, 102) if value >= highlight else (110, 231, 216)
-                draw.line((x, mid - amplitude, x, mid + amplitude), fill=color)
-            draw.line((0, int(mid), width - 1, int(mid)), fill=(34, 48, 67))
+                amplitude = max(1.0, float(value) * height * 0.34)
+                top.append((x, mid - amplitude))
+                bottom.append((x, mid + amplitude))
+            draw.polygon(top + list(reversed(bottom)), fill=(0, 140, 150, 42))
+            draw.line((0, int(mid), width - 1, int(mid)), fill=(128, 128, 128, 60))
+            normal = (0, 140, 150, 230)
+            hot = (190, 120, 0, 240)
+            for x in range(max(0, width - 1)):
+                color = hot if max(float(peaks[x]), float(peaks[x + 1])) >= highlight else normal
+                draw.line((top[x][0], top[x][1], top[x + 1][0], top[x + 1][1]), fill=color, width=2)
+                draw.line((bottom[x][0], bottom[x][1], bottom[x + 1][0], bottom[x + 1][1]), fill=color, width=2)
             tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
             try:
                 image.save(tmp, "PNG")
@@ -1450,11 +1459,241 @@ class Handler(BaseHTTPRequestHandler):
     def _thumbnail(self, row, width: int) -> bytes:
         ext = (row["ext"] or "").lower()
         kind = row["kind"] or ""
+        if ext == ".gim":
+            return self._gim_thumb(row, width)
+        if ext == ".gmp":
+            return self._gmp_thumb(row, width)
         if kind == "image" or ext in IMAGE_EXT:
             return self._image_thumb(row, width)
         if kind in ("audio", "bank") or ext in AUDIO_EXT:
             return self._waveform_thumb(row, width)
         raise ValueError("thumbnail not available for this type")
+
+    def _gim_thumb(self, row, width: int) -> bytes:
+        width = min(max(32, width), 512)
+        cache = self.server.artifact(row, f"_gim_w{width}_v1.png", "thumb")
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        with BrowserServer._thumb_sem:
+            thumb = self.server.read_artifact(cache)
+            if thumb is not None:
+                return thumb
+            data = neox_object.parse(self._entry_payload(row))
+            mesh_path = ""
+            for obj in data.get("objects", []):
+                value = obj.get("Mesh")
+                if isinstance(value, str) and value:
+                    mesh_path = self._resolve_ref(row["path"], value) or ""
+                    break
+            if not mesh_path:
+                sibling = str(Path(row["path"]).with_suffix(".mesh")).replace("\\", "/")
+                if self._row(sibling):
+                    mesh_path = sibling
+            mesh_row = self._row(mesh_path) if mesh_path else None
+            if not mesh_row:
+                raise ValueError("GIM mesh not found")
+            mesh = mesh_parse.parse(self._entry_payload(mesh_row))
+            if not mesh.get("packed"):
+                center, half = self._gim_bounds(data)
+                if center and half:
+                    mesh = mesh_parse.denormalize(mesh, center, half)
+            color = self._thumb_texture_color(row, data)
+            image = self._render_model_thumb(mesh, width, color)
+            tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                image.save(tmp, "PNG")
+                thumb = tmp.read_bytes()
+                os.replace(tmp, cache)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+            self.server.prune_cache()
+            return thumb
+
+    def _gmp_thumb(self, row, width: int) -> bytes:
+        width = min(max(32, width), 512)
+        cache = self.server.artifact(row, f"_gmp_w{width}_v1.png", "thumb")
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        with BrowserServer._thumb_sem:
+            thumb = self.server.read_artifact(cache)
+            if thumb is not None:
+                return thumb
+            try:
+                data = self._gmp_data(row)
+                image = self._render_gmp_thumb(data, width)
+            except Exception as exc:
+                raise ValueError(f"GMP thumbnail failed: {exc}") from exc
+            tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                image.save(tmp, "PNG")
+                thumb = tmp.read_bytes()
+                os.replace(tmp, cache)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+            self.server.prune_cache()
+            return thumb
+
+    def _thumb_texture_color(self, row, data: dict):
+        for obj in data.get("objects", []):
+            for value in obj.values():
+                if not isinstance(value, str):
+                    continue
+                if not value.lower().endswith((".tga", ".dds", ".kta", ".png", ".jpg", ".jpeg", ".webp")):
+                    continue
+                resolved = self._resolve_ref(row["path"], value)
+                texture_row = self._row(resolved) if resolved else None
+                if not texture_row:
+                    continue
+                try:
+                    payload, _ = self._ensure_png(texture_row)
+                    image = Image.open(io.BytesIO(payload)).convert("RGBA")
+                    image.thumbnail((24, 24))
+                    pixels = [pixel for pixel in image.getdata() if pixel[3] > 32]
+                    if not pixels:
+                        continue
+                    color = tuple(sum(pixel[channel] for pixel in pixels) // len(pixels) for channel in range(3))
+                    if max(color) - min(color) >= 18 and max(color) >= 45:
+                        return color
+                except Exception:
+                    continue
+        return None
+
+    def _render_model_thumb(self, mesh: dict, width: int, base_color) -> Image.Image:
+        vertices = mesh.get("vertices") or []
+        indices = mesh.get("indices") or []
+        if not vertices:
+            raise ValueError("mesh has no vertices")
+        width = max(32, int(width))
+        height = max(20, round(width * 0.625))
+        factor = 3 if width <= 128 else 2
+        canvas_w = width * factor
+        canvas_h = height * factor
+        margin = max(8, round(min(canvas_w, canvas_h) * 0.06))
+
+        xs = [vertex[0] for vertex in vertices]
+        ys = [vertex[1] for vertex in vertices]
+        zs = [vertex[2] for vertex in vertices]
+        cx = (min(xs) + max(xs)) / 2
+        cy = (min(ys) + max(ys)) / 2
+        cz = (min(zs) + max(zs)) / 2
+        yaw = 0.55
+        pitch = 0.28
+        cyaw, syaw = math.cos(yaw), math.sin(yaw)
+        cpitch, spitch = math.cos(pitch), math.sin(pitch)
+        rotated = []
+        for x, y, z in vertices:
+            x -= cx
+            y -= cy
+            z -= cz
+            x, z = x * cyaw + z * syaw, -x * syaw + z * cyaw
+            y, z = y * cpitch - z * spitch, y * spitch + z * cpitch
+            rotated.append((x, y, z))
+        min_x = min(vertex[0] for vertex in rotated)
+        max_x = max(vertex[0] for vertex in rotated)
+        min_y = min(vertex[1] for vertex in rotated)
+        max_y = max(vertex[1] for vertex in rotated)
+        span_x = max(1e-5, max_x - min_x)
+        span_y = max(1e-5, max_y - min_y)
+        scale = min((canvas_w - margin * 2) / span_x, (canvas_h - margin * 2) / span_y)
+        offset_x = canvas_w / 2 - (min_x + max_x) / 2 * scale
+        offset_y = canvas_h / 2 + (min_y + max_y) / 2 * scale
+        projected = [(x * scale + offset_x, -y * scale + offset_y, z) for x, y, z in rotated]
+
+        color = base_color or (112, 168, 202)
+        image = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image, "RGBA")
+        shadow_w = canvas_w * 0.30
+        shadow_h = canvas_h * 0.055
+        draw.ellipse(
+            [canvas_w / 2 - shadow_w / 2, canvas_h * 0.86, canvas_w / 2 + shadow_w / 2, canvas_h * 0.86 + shadow_h],
+            fill=(0, 0, 0, 30),
+        )
+
+        light = (-0.4, 0.75, 0.52)
+        light_len = math.sqrt(sum(value * value for value in light))
+        light = tuple(value / light_len for value in light)
+        triangles = []
+        triangle_count = len(indices) // 3
+        step = max(1, math.ceil(triangle_count / 120000))
+        for index in range(0, triangle_count, step):
+            base = index * 3
+            try:
+                a, b, c = indices[base], indices[base + 1], indices[base + 2]
+                pa, pb, pc = rotated[a], rotated[b], rotated[c]
+            except (IndexError, TypeError):
+                continue
+            ux, uy, uz = pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]
+            vx, vy, vz = pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]
+            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            normal = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+            lambert = abs(nx / normal * light[0] + ny / normal * light[1] + nz / normal * light[2])
+            shade = 0.38 + 0.72 * lambert
+            fill = tuple(min(255, int(channel * shade)) for channel in color)
+            depth = (rotated[a][2] + rotated[b][2] + rotated[c][2]) / 3
+            triangles.append((depth, (projected[a][0], projected[a][1], projected[b][0], projected[b][1], projected[c][0], projected[c][1]), fill))
+        triangles.sort(key=lambda item: item[0])
+        for _, points, fill in triangles:
+            draw.polygon(
+                [(points[0], points[1]), (points[2], points[3]), (points[4], points[5])],
+                fill=fill + (255,), outline=fill + (255,),
+            )
+        if not triangles:
+            radius = max(1, round(min(canvas_w, canvas_h) / 180))
+            for x, y, _ in projected:
+                draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color + (255,))
+        return image.resize((width, height), Image.LANCZOS)
+
+    def _render_gmp_thumb(self, data: dict, width: int) -> Image.Image:
+        width = max(32, int(width))
+        height = max(20, round(width * 0.625))
+        factor = 2
+        canvas_w = width * factor
+        canvas_h = height * factor
+        image = Image.new("RGBA", (canvas_w, canvas_h), (26, 30, 36, 255))
+        draw = ImageDraw.Draw(image, "RGBA")
+        step = max(12, round(canvas_w / 12))
+        grid = (255, 255, 255, 18)
+        for x in range(0, canvas_w + step, step):
+            draw.line([(x, 0), (x, canvas_h)], fill=grid)
+        for y in range(0, canvas_h + step, step):
+            draw.line([(0, y), (canvas_w, y)], fill=grid)
+
+        bounds = data.get("bounds")
+        units = [unit for unit in (data.get("units") or []) if unit.get("position")]
+        if not units or not bounds:
+            draw.ellipse([canvas_w / 2 - 12, canvas_h / 2 - 12, canvas_w / 2 + 12, canvas_h / 2 + 12], outline=(255, 255, 255, 40), width=2)
+        else:
+            min_x, max_x = bounds["min_x"], bounds["max_x"]
+            min_y, max_y = bounds["min_y"], bounds["max_y"]
+            span_x = max(1e-5, max_x - min_x)
+            span_y = max(1e-5, max_y - min_y)
+            margin = max(6, round(min(canvas_w, canvas_h) * 0.07))
+            scale = min((canvas_w - margin * 2) / span_x, (canvas_h - margin * 2) / span_y)
+            offset_x = (canvas_w - span_x * scale) / 2 - min_x * scale
+            offset_y = (canvas_h - span_y * scale) / 2 + max_y * scale
+            axis = bounds.get("axis") or "xz"
+            palette = [(255, 183, 77), (102, 187, 106), (79, 195, 247), (239, 83, 80), (171, 71, 188), (255, 241, 118)]
+            radius = max(1, round(canvas_w / 180))
+            for unit in units[:12000]:
+                position = unit["position"]
+                x = position[0]
+                y = position[2] if axis == "xz" else position[1]
+                color = unit.get("color")
+                if not (isinstance(color, list) and len(color) >= 3):
+                    key = unit.get("eid") or unit.get("id") or 0
+                    color = palette[int(key) % len(palette)]
+                px = x * scale + offset_x
+                py = offset_y - y * scale
+                draw.ellipse([px - radius, py - radius, px + radius, py + radius], fill=tuple(color[:3]) + (220,))
+        return image.resize((width, height), Image.LANCZOS)
 
     def _sibling_bounds(self, mesh_path: str) -> tuple[list | None, list | None]:
         stem = str(Path(mesh_path).with_suffix(""))
@@ -1862,11 +2101,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route.startswith("/static/"):
                 name = route[len("/static/"):]
-                if name not in {"app.js", "style.css"}:
-                    self._error("not found", 404)
+                if name in {"app.js", "style.css"}:
+                    ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
+                    self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
                     return
-                ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
-                self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
+                if re.fullmatch(r"assets/[A-Za-z0-9._-]+", name):
+                    path = WEB_DIR / name
+                    if not path.is_file():
+                        self._error("not found", 404)
+                        return
+                    ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                    self._send(path.read_bytes(), ctype, cache="no-store")
+                    return
+                self._error("not found", 404)
                 return
             if route.startswith("/language/"):
                 name = route[len("/language/"):]
@@ -2231,6 +2478,46 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
                 self._json(data)
+                return
+            if route == "/api/mtg":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".mtg":
+                    self._error("not an MTG file", 415)
+                    return
+                try:
+                    data = neox_object.parse(self._entry_payload(row))
+                except Exception as exc:
+                    self._error(f"MTG parse failed: {exc}", 415)
+                    return
+                resources = []
+                seen = set()
+                for obj in data.get("objects", []):
+                    for value in obj.values():
+                        if not isinstance(value, str) or not value:
+                            continue
+                        suffix = Path(value.replace("\\", "/")).suffix.lower()
+                        if suffix not in MTG_RESOURCE_EXT:
+                            continue
+                        resolved = self._resolve_ref(row["path"], value)
+                        resource_path = (resolved or value.replace("\\", "/")).strip("/")
+                        key = resource_path.lower()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        ref_row = self._row(resource_path)
+                        ref_ext = (ref_row["ext"] if ref_row else Path(resource_path).suffix).lower()
+                        resources.append({
+                            "path": resource_path,
+                            "ext": ref_ext,
+                            "kind": ref_row["kind"] if ref_row else "",
+                        })
+                total = len(resources)
+                shown = resources[:5] if total > 6 else resources[:6]
+                self._json({"total": total, "resources": shown})
                 return
             if route == "/api/xn":
                 client = (self.client_address[0] or "").lower()

@@ -328,6 +328,13 @@
     "gim.prevSecond": "Back 1 second",
     "gim.nextSecond": "Forward 1 second",
     "gim.timeline": "Animation timeline",
-    "gim.reset": "Reset"
+    "gim.reset": "Reset",
+    "theme.title": "Theme",
+    "theme.auto": "Auto",
+    "theme.light": "Light",
+    "theme.dark": "Dark",
+    "index.collapse": "Collapse index",
+    "index.expand": "Expand index",
+    "layout.resizeSidebar": "Resize sidebar"
   }
 }

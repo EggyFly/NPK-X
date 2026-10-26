@@ -37,10 +37,18 @@ let batchToastTimer = 0;
 let previewToken = 0;
 let drawerCloseTimer = 0;
 let listToken = 0;
+let pendingRestoreScroll = null;
+let dropdownOpen = "";
+let marqueeResizeTimer = 0;
 let moreObserver = null;
 
 const I18N_CODES = ["zh_cn", "zh_tw", "en_us"];
 const I18N_STORAGE = "npk-language";
+const THEME_STORAGE = "npk-theme";
+const SIDEBAR_WIDTH_STORAGE = "npk-sidebar-width";
+const INDEX_COLLAPSE_STORAGE = "npk-index-collapsed";
+const THEME_CHOICES = ["auto", "light", "dark"];
+const themeState = { choice: "auto", resolved: "dark", media: null, menuOpen: false };
 const PROJECT_URL = "https://github.com/EggyFly/NPK-X";
 const RELEASES_URL = `${PROJECT_URL}/releases`;
 const UPDATE_TOAST_STORAGE = "npk-update-toast";
@@ -94,6 +102,270 @@ function applyStaticI18n() {
   document.querySelectorAll("[data-i18n-aria]").forEach((node) => {
     node.setAttribute("aria-label", tr(node.dataset.i18nAria));
   });
+  syncDropdown("sort");
+}
+
+let canvasPaletteCache = null;
+
+function cssVar(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function canvasFont(size) {
+  const family = getComputedStyle(document.body).fontFamily || '"Segoe UI", sans-serif';
+  return `${size}px ${family}`;
+}
+
+function canvasPalette() {
+  if (canvasPaletteCache) return canvasPaletteCache;
+  canvasPaletteCache = {
+    bg: cssVar("--md-canvas-bg", "#0a0e10"),
+    grid: cssVar("--md-canvas-grid", "rgba(191,200,203,.1)"),
+    line: cssVar("--md-canvas-line", "#5c6669"),
+    text: cssVar("--md-canvas-text", "#dfe3e6"),
+    muted: cssVar("--md-canvas-muted", "#bfc8cb"),
+    accent: cssVar("--md-canvas-accent", "#7bdbe6"),
+    accentSoft: cssVar("--md-canvas-accent-soft", "rgba(123,219,230,.55)"),
+    accentFill: cssVar("--md-canvas-accent-fill", "rgba(123,219,230,.12)"),
+    rulerBg: cssVar("--md-canvas-ruler-bg", "rgba(15,19,22,.94)"),
+    rulerLine: cssVar("--md-canvas-ruler-line", "#3f484b"),
+    labelShadow: cssVar("--md-canvas-label-shadow", "#0a0e10"),
+    textMap: cssVar("--md-canvas-textmap", "rgba(123,219,230,.45)"),
+    crosshair: cssVar("--md-canvas-crosshair", "rgba(223,227,230,.24)"),
+    points: cssVar("--md-canvas-points", "rgba(123,219,230,.55)"),
+    chip: cssVar("--md-canvas-chip-bg", "rgba(10,14,16,.9)"),
+  };
+  return canvasPaletteCache;
+}
+
+function colorToRgb(value, fallback) {
+  const hex = /^#([0-9a-f]{6})$/i.exec(value);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+  const rgba = /^rgba?\(([^)]+)\)$/i.exec(value);
+  if (rgba) {
+    const parts = rgba[1].split(",").slice(0, 3).map((part) => Number(part.trim()));
+    if (parts.length === 3 && parts.every(Number.isFinite)) {
+      return parts.map((part) => Math.max(0, Math.min(255, part)) / 255);
+    }
+  }
+  return fallback;
+}
+
+function invalidateCanvasPalette() {
+  canvasPaletteCache = null;
+}
+
+function resolveTheme(choice) {
+  if (choice === "light" || choice === "dark") return choice;
+  return themeState.media && themeState.media.matches ? "light" : "dark";
+}
+
+function renderThemeMenu() {
+  const menu = $("theme-menu");
+  if (!menu) return;
+  menu.innerHTML = THEME_CHOICES.map((choice) => {
+    const active = themeState.choice === choice;
+    const iconName = choice === "auto" ? "theme-auto" : choice === "light" ? "theme-light" : "theme-dark";
+    return `<button type="button" class="theme-item" role="menuitemradio" aria-checked="${active}" data-theme-choice="${choice}">${icon(iconName)}<span>${tr(`theme.${choice}`)}</span>${active ? `<svg class="icon theme-check" aria-hidden="true"><use href="#i-check"></use></svg>` : ""}</button>`;
+  }).join("");
+}
+
+function updateThemeUi() {
+  const toggle = $("theme-toggle");
+  if (toggle) {
+    const iconName = themeState.choice === "auto" ? "theme-auto" : themeState.choice === "light" ? "theme-light" : "theme-dark";
+    toggle.innerHTML = icon(iconName);
+    const label = `${tr("theme.title")}: ${tr(`theme.${themeState.choice}`)}`;
+    toggle.title = label;
+    toggle.setAttribute("aria-label", label);
+  }
+  renderThemeMenu();
+}
+
+function refreshThemeSurfaces() {
+  if (mapView.data) {
+    mapView.minimapBase = null;
+    requestMapDraw();
+  }
+  if (viewerIsOpen() && viewer.mode === "text") {
+    drawTextViewerMap($("viewer-text")?.textContent || "");
+    updateTextViewerMap();
+  }
+  if (gim3d.gl) {
+    const clear = colorToRgb(canvasPalette().bg, [0.039, 0.055, 0.063]);
+    gim3d.gl.clearColor(clear[0], clear[1], clear[2], 1);
+  }
+}
+
+function applyTheme(choice, persist = true) {
+  themeState.choice = THEME_CHOICES.includes(choice) ? choice : "auto";
+  themeState.resolved = resolveTheme(themeState.choice);
+  document.documentElement.dataset.theme = themeState.resolved;
+  document.documentElement.style.colorScheme = themeState.resolved;
+  if (persist) {
+    try { localStorage.setItem(THEME_STORAGE, themeState.choice); } catch (_) {}
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", cssVar("--md-surface", themeState.resolved === "light" ? "#f7fafb" : "#0f1316"));
+  updateThemeUi();
+  invalidateCanvasPalette();
+  refreshThemeSurfaces();
+}
+
+function openThemeMenu() {
+  if (batchMenuOpen) closeBatchMenu();
+  closeDropdown();
+  themeState.menuOpen = true;
+  renderThemeMenu();
+  $("theme-menu").classList.remove("hidden");
+  $("theme-toggle").setAttribute("aria-expanded", "true");
+  const checked = $("theme-menu").querySelector('[aria-checked="true"]');
+  if (checked) checked.focus({ preventScroll: true });
+}
+
+function closeThemeMenu() {
+  themeState.menuOpen = false;
+  const menu = $("theme-menu");
+  const toggle = $("theme-toggle");
+  if (menu && menu.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+  menu.classList.add("hidden");
+  toggle.setAttribute("aria-expanded", "false");
+}
+
+function toggleThemeMenu() {
+  if (themeState.menuOpen) closeThemeMenu();
+  else openThemeMenu();
+}
+
+function initTheme() {
+  themeState.media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  if (themeState.media) {
+    const onChange = () => { if (themeState.choice === "auto") applyTheme("auto", false); };
+    if (themeState.media.addEventListener) themeState.media.addEventListener("change", onChange);
+    else if (themeState.media.addListener) themeState.media.addListener(onChange);
+  }
+  let stored = "auto";
+  try { stored = localStorage.getItem(THEME_STORAGE) || "auto"; } catch (_) {}
+  applyTheme(stored, false);
+  $("theme-toggle").addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleThemeMenu();
+  });
+  $("theme-menu").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const item = event.target.closest("[data-theme-choice]");
+    if (!item) return;
+    closeThemeMenu();
+    applyTheme(item.dataset.themeChoice);
+  });
+  document.addEventListener("click", (event) => {
+    if (!themeState.menuOpen) return;
+    const path = event.composedPath ? event.composedPath() : [];
+    if (!path.some((node) => node instanceof Element && node.matches(".theme-wrap"))) closeThemeMenu();
+  });
+}
+
+
+function syncDropdown(name) {
+  const select = $(name);
+  const menu = $(name + "-menu");
+  const label = $(name + "-label");
+  if (!select || !menu || !label) return;
+  const value = select.value;
+  const selected = select.options[select.selectedIndex];
+  label.textContent = selected ? selected.textContent : "";
+  label.title = label.textContent;
+  menu.innerHTML = Array.from(select.options).map((option) => {
+    const on = option.value === value;
+    return `<button type="button" class="menu-option${on ? " active" : ""}" role="option" aria-selected="${on}" data-value="${esc(option.value)}">${esc(option.textContent)}${on ? `<svg class="icon menu-check" aria-hidden="true"><use href="#i-check"></use></svg>` : ""}</button>`;
+  }).join("");
+}
+
+function dropdownBox(name) {
+  return document.getElementById(name + "-select");
+}
+
+function closeDropdown() {
+  if (!dropdownOpen) return;
+  const name = dropdownOpen;
+  dropdownOpen = "";
+  const box = dropdownBox(name);
+  if (!box) return;
+  const trigger = box.querySelector(".menu-trigger");
+  const menu = box.querySelector(".menu-popup");
+  if (menu && menu.contains(document.activeElement)) trigger.focus({ preventScroll: true });
+  menu.classList.add("hidden");
+  trigger.setAttribute("aria-expanded", "false");
+  box.classList.remove("open");
+}
+
+function openDropdown(name) {
+  if (dropdownOpen === name) return closeDropdown();
+  closeDropdown();
+  if (batchMenuOpen) closeBatchMenu();
+  if (themeState.menuOpen) closeThemeMenu();
+  const box = dropdownBox(name);
+  if (!box) return;
+  const trigger = box.querySelector(".menu-trigger");
+  const menu = box.querySelector(".menu-popup");
+  syncDropdown(name);
+  dropdownOpen = name;
+  menu.classList.remove("hidden");
+  trigger.setAttribute("aria-expanded", "true");
+  box.classList.add("open");
+  const active = menu.querySelector('[aria-selected="true"]');
+  if (active) active.focus({ preventScroll: true });
+}
+
+function initDropdowns() {
+  ["sort", "language"].forEach((name) => {
+    const box = dropdownBox(name);
+    if (!box) return;
+    const trigger = box.querySelector(".menu-trigger");
+    const menu = box.querySelector(".menu-popup");
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (dropdownOpen === name) closeDropdown();
+      else openDropdown(name);
+    });
+    menu.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const option = event.target.closest(".menu-option");
+      if (!option) return;
+      const select = $(name);
+      select.value = option.dataset.value;
+      closeDropdown();
+      syncDropdown(name);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    menu.addEventListener("keydown", (event) => {
+      const options = Array.from(menu.querySelectorAll(".menu-option"));
+      const index = options.indexOf(document.activeElement);
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const next = event.key === "ArrowDown" ? Math.min(options.length - 1, index + 1) : Math.max(0, index - 1);
+        options[next].focus();
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        options[event.key === "Home" ? 0 : options.length - 1].focus();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeDropdown();
+        trigger.focus({ preventScroll: true });
+      }
+    });
+  });
+  document.addEventListener("click", (event) => {
+    if (!dropdownOpen) return;
+    if (!event.target.closest(".menu-select")) closeDropdown();
+  });
+  syncDropdown("sort");
+  syncDropdown("language");
 }
 
 function renderLanguageOptions() {
@@ -114,6 +386,7 @@ function renderLanguageOptions() {
     select.appendChild(option);
   }
   select.value = i18nState.choice;
+  syncDropdown("language");
 }
 
 function refreshLabelMaps() {
@@ -191,16 +464,17 @@ async function setLanguage(choice, rerender = true) {
   localStorage.setItem(I18N_STORAGE, choice);
   document.documentElement.lang = code.replace("_", "-");
   refreshLabelMaps();
-  if (state.roots.length) renderRoots(state.roots);
+  rerenderRoots();
   applyStaticI18n();
+  updateThemeUi();
   if (lastUpdateInfo) renderUpdate(lastUpdateInfo, false);
   renderLanguageOptions();
   if (!rerender) return;
   const preview = state.previewPath;
   const previewFile = preview ? state.files.find((item) => item.path === preview) : null;
   if (viewerIsOpen()) closeViewer();
-  if (state.searchMode) await search(state.searchQuery);
-  else await loadList(state.path, false, true);
+  if (state.searchMode) await search(state.searchQuery, true);
+  else await loadList(state.path, false, true, true);
   if (previewFile) showPreview(previewFile);
 }
 
@@ -284,8 +558,18 @@ function badge(kind, text) {
   return `<span class="badge ${esc(kind)}">${esc(text || KIND_LABEL[kind] || "BIN")}</span>`;
 }
 
+function badgeIcon(kind, name) {
+  return `<span class="badge ${esc(kind)} badge-icon" aria-hidden="true">${icon(name)}</span>`;
+}
+
 function badgeShort(file) {
   const kind = displayKind(file.kind, file.ext);
+  const ext = (file.ext || "").toLowerCase();
+  if (ext === ".mesh") return badgeIcon("model", "mesh");
+  if (kind === "binary") {
+    const label = (file.ext || "BIN").replace(".", "").slice(0, 4).toUpperCase() || "BIN";
+    if (label === "BIN") return badgeIcon("binary", "bin");
+  }
   if (kind === "image") return badge("image", (file.ext || ".img").replace(".", "").slice(0, 4).toUpperCase() || "IMG");
   if (kind === "audio") return badge("audio", "WAV");
   if (kind === "bank") return badge("bank", "BNK");
@@ -318,8 +602,24 @@ function thumbMarkup(file, small = false) {
   const kind = displayKind(file.kind, file.ext);
   const ext = (file.ext || "").toLowerCase();
   const width = small ? 96 : 360;
-  const thumbUrl = apiUrl("/api/thumb", { path: file.path, w: width, v: 3 });
+  const thumbUrl = apiUrl("/api/thumb", { path: file.path, w: width, v: 6 });
   const fallback = `<span class="thumb-fallback">${badgeShort(file)}</span>`;
+  if (ext === ".mtg") {
+    return `<div class="thumb thumb-mtg" data-mtg="${esc(apiUrl("/api/mtg", { path: file.path }))}">
+      <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
+      <div class="mtg-grid"></div>
+      ${fallback}
+    </div>`;
+  }
+  if (ext === ".gim" || ext === ".gmp") {
+    return `<div class="thumb thumb-media thumb-render">
+      <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
+      <img decoding="async" draggable="false" data-thumb-src="${thumbUrl}" alt="">
+      ${fallback}
+    </div>`;
+  }
+  if (ext === ".mesh") return `<div class="thumb thumb-icon">${icon("mesh")}</div>`;
+  if (ext === ".bin") return `<div class="thumb thumb-icon">${icon("bin")}</div>`;
   if (kind === "image") {
     return `<div class="thumb thumb-media">
       <span class="thumb-skeleton skeleton" aria-hidden="true"></span>
@@ -361,6 +661,7 @@ function clearThumbSource(thumb) {
   if (img) delete img.dataset.thumbSrc;
   delete thumb.dataset.snippet;
   delete thumb.dataset.videoSrc;
+  delete thumb.dataset.mtg;
 }
 
 function unpreviewThumb(thumb) {
@@ -395,6 +696,10 @@ function startThumbLoad(thumb) {
     img.src = src;
     return;
   }
+  if (thumb.dataset.mtg) {
+    loadThumbMtg(thumb);
+    return;
+  }
   if (thumb.dataset.snippet) {
     loadThumbSnippet(thumb);
     return;
@@ -418,7 +723,7 @@ function hydrateThumbs(root) {
     thumbRevealObserver.disconnect();
     thumbRevealObserver = null;
   }
-  const nodes = root.querySelectorAll("[data-thumb-src], [data-snippet], [data-video-src]");
+  const nodes = root.querySelectorAll("[data-thumb-src], [data-snippet], [data-video-src], [data-mtg]");
   if (!nodes.length) return;
   const wraps = new Set();
   nodes.forEach((node) => {
@@ -452,6 +757,37 @@ function hydrateThumbs(root) {
     if (inView) setThumbVisible(thumb, true);
     if (near) startThumbLoad(thumb);
   });
+}
+
+function mtgCellMarkup(item) {
+  const ext = (item.ext || "").toLowerCase();
+  const label = ext ? ext.slice(1, 5).toUpperCase() : "FILE";
+  if (item.kind === "image") {
+    return `<span class="mtg-cell mtg-cell-image"><img src="${esc(apiUrl("/api/thumb", { path: item.path, w: 96, v: 6 }))}" alt="" loading="lazy" draggable="false"><b>${esc(label)}</b></span>`;
+  }
+  const name = ext === ".mesh" || ext === ".gim" ? "mesh" : ext === ".xn" ? "code" : "bin";
+  return `<span class="mtg-cell"><span class="mtg-cell-icon">${icon(name)}</span><b>${esc(label)}</b></span>`;
+}
+
+async function loadThumbMtg(thumb) {
+  const url = thumb.dataset.mtg;
+  try {
+    const data = await getJson(url);
+    const list = Array.isArray(data.resources) ? data.resources : [];
+    const total = Number(data.total ?? list.length);
+    if (!list.length) throw new Error("no resources");
+    const grid = thumb.querySelector(".mtg-grid");
+    if (!grid) throw new Error("no grid");
+    const limit = total > 6 ? 5 : 6;
+    grid.innerHTML = list.slice(0, limit).map(mtgCellMarkup).join("");
+    if (total > 6) grid.insertAdjacentHTML("beforeend", `<span class="mtg-cell mtg-more"><b>${total - 5}+</b></span>`);
+    thumb.dataset.ready = "1";
+    revealThumb(thumb);
+  } catch (_) {
+    clearThumbSource(thumb);
+    thumb.classList.add("failed");
+    unpreviewThumb(thumb);
+  }
 }
 
 async function loadThumbSnippet(thumb) {
@@ -502,12 +838,32 @@ function loadThumbVideo(thumb) {
 
 function renderCrumbs(crumbs) {
   const node = $("crumb");
+  if (!crumbs || !crumbs.length) {
+    node.innerHTML = "";
+    node.classList.add("hidden");
+    return;
+  }
+  node.classList.remove("hidden");
   const parts = [`<button data-dir="">${tr("index.all")}</button>`];
-  for (const crumb of crumbs || []) {
+  for (const crumb of crumbs) {
     parts.push('<span class="sep">/</span>');
     parts.push(`<button data-dir="${esc(crumb.path)}">${esc(crumb.name)}</button>`);
   }
   node.innerHTML = parts.join("");
+}
+
+function rerenderRoots() {
+  const node = $("roots");
+  if (!node || !state.roots.length) return;
+  const scrollTop = node.scrollTop;
+  const focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".root") : null;
+  const focusDir = focused ? focused.dataset.dir : "";
+  renderRoots(state.roots);
+  node.scrollTop = scrollTop;
+  if (focusDir) {
+    const next = Array.from(node.querySelectorAll(".root")).find((item) => item.dataset.dir === focusDir);
+    if (next) next.focus({ preventScroll: true });
+  }
 }
 
 function renderRoots(roots) {
@@ -518,18 +874,39 @@ function renderRoots(roots) {
       <span class="root-count">${Number(root.file_count).toLocaleString()}</span>
     </button>`;
   }).join("");
+  setupMarquee($("roots"));
+}
+
+function folderMeta(dir) {
+  return `${Number(dir.count).toLocaleString()} ${tr("stats.files")} · ${formatBytes(dir.bytes)}`;
+}
+
+function folderCardMarkup(dir) {
+  const meta = folderMeta(dir);
+  return `<button class="folder" data-dir="${esc(dir.path)}">
+      <span class="folder-ico">${brandIcon("explorer")}</span>
+      <span class="folder-text">
+        <span class="folder-name">${esc(dir.name)}</span>
+        <span class="folder-meta">${esc(meta)}</span>
+      </span>
+    </button>`;
+}
+
+function folderRowMarkup(dir) {
+  const meta = folderMeta(dir);
+  return `<button class="folder-row" data-dir="${esc(dir.path)}">
+      <span class="folder-row-ico">${brandIcon("explorer")}</span>
+      <span class="folder-row-name">${esc(dir.name)}</span>
+      <span class="folder-row-meta">${esc(meta)}</span>
+    </button>`;
 }
 
 function renderFolders(dirs) {
   if (!dirs.length) return "";
-  return `<div class="folder-grid">${dirs.map((dir) => `
-    <button class="folder" data-dir="${esc(dir.path)}">
-      <span class="folder-ico">${icon("folder")}</span>
-      <span class="folder-text">
-        <span class="folder-name">${esc(dir.name)}</span>
-        <span class="folder-meta">${Number(dir.count).toLocaleString()} ${tr("stats.files")} · ${formatBytes(dir.bytes)}</span>
-      </span>
-    </button>`).join("")}</div>`;
+  if (state.view === "list") {
+    return `<div class="folder-list">${dirs.map(folderRowMarkup).join("")}</div>`;
+  }
+  return `<div class="folder-grid">${dirs.map(folderCardMarkup).join("")}</div>`;
 }
 
 function pickBoxMarkup(file) {
@@ -718,6 +1095,8 @@ async function loadMore() {
     state.files = state.files.concat(more);
     appendFiles(more);
     hydrateThumbs($("content"));
+    setupMarquee($("content"));
+    setupMarquee($("content-topbar"));
     updateCounts();
     updatePreviewNav();
     ensureSentinel();
@@ -775,6 +1154,7 @@ function renderIndex(data, search = false, query = "") {
         </button>`).join("")
       : `<div class="muted" style="font-size:11px">${tr("index.noSubdirs")}</div>`;
   }
+  setupMarquee($("index-pane"));
 }
 
 async function loadStats() {
@@ -812,10 +1192,14 @@ function updateViewButtons() {
   $("view-grid").setAttribute("aria-pressed", String(state.view === "grid"));
   $("view-list").setAttribute("aria-pressed", String(state.view === "list"));
   $("sort").value = state.sort;
+  syncDropdown("sort");
 }
 
-async function loadList(path, push = true, keepKind = false) {
+async function loadList(path, push = true, keepKind = false, keepScroll = false) {
   const token = ++listToken;
+  if (push) pendingRestoreScroll = null;
+  const previousPath = state.path;
+  const previousScroll = window.scrollY;
   const pathChanged = (path || "") !== state.path;
   stopAudio();
   closeViewer();
@@ -827,7 +1211,7 @@ async function loadList(path, push = true, keepKind = false) {
   state.searchMode = false;
   $("search").value = "";
   state.path = path || "";
-  if (pathChanged) window.scrollTo(0, 0);
+  if (pathChanged && !keepScroll) window.scrollTo(0, 0);
   if (!keepKind) state.kind = "";
   state.previewPath = null;
   closeDrawer();
@@ -835,7 +1219,8 @@ async function loadList(path, push = true, keepKind = false) {
     const url = new URL(location.href);
     if (state.path) url.searchParams.set("path", state.path);
     else url.searchParams.delete("path");
-    history.pushState({ path: state.path }, "", url);
+    history.replaceState({ path: previousPath, scroll: previousScroll }, "", location.href);
+    history.pushState({ path: state.path, scroll: 0 }, "", url);
   }
   $("content").innerHTML = skeletonScreen(tr("status.loadingDir"));
   $("where").textContent = state.path || tr("index.all");
@@ -860,14 +1245,19 @@ async function loadList(path, push = true, keepKind = false) {
       updateBatchBar();
     }
     renderCrumbs(data.breadcrumbs);
-    $("where").innerHTML = state.path
-      ? `${esc(state.path.split("/").pop())}<span class="sub">${esc(state.path)}</span>`
-      : tr("index.all");
+    $("where").textContent = state.path ? state.path.split("/").pop() : tr("index.all");
     updateCounts();
     $("content").innerHTML = renderFolders(state.dirs) + renderFiles(state.files) || `<div class="empty">${tr("list.empty")}</div>`;
     hydrateThumbs($("content"));
+    setupMarquee($("content"));
+    setupMarquee($("content-topbar"));
     renderIndex(data);
     ensureSentinel();
+    if (pendingRestoreScroll !== null) {
+      const target = pendingRestoreScroll;
+      pendingRestoreScroll = null;
+      restoreScrollPosition(target);
+    }
     document.querySelectorAll(".root").forEach((node) => {
       const rootPath = node.dataset.dir;
       node.classList.toggle("active", state.path === rootPath || state.path.startsWith(rootPath + "/"));
@@ -881,7 +1271,7 @@ async function loadList(path, push = true, keepKind = false) {
   }
 }
 
-async function search(query) {
+async function search(query, keepScroll = false) {
   const token = ++listToken;
   stopAudio();
   closeViewer();
@@ -893,7 +1283,7 @@ async function search(query) {
   state.searchMode = true;
   state.searchQuery = query;
   state.kind = "";
-  window.scrollTo(0, 0);
+  if (!keepScroll) window.scrollTo(0, 0);
   state.previewPath = null;
   document.querySelectorAll(".root").forEach((node) => node.classList.remove("active"));
   closeDrawer();
@@ -919,6 +1309,8 @@ async function search(query) {
     updateCounts();
     $("content").innerHTML = renderFiles(state.files) || `<div class="empty">${tr("list.noMatches")}</div>`;
     hydrateThumbs($("content"));
+    setupMarquee($("content"));
+    setupMarquee($("content-topbar"));
     renderIndex({ path: "", dirs: [], files: state.files, file_total: state.searchTotal, kind_counts: state.kindCounts }, true, query);
     ensureSentinel();
   } catch (error) {
@@ -1178,6 +1570,8 @@ function renderXnPreview(data, container, file) {
   </div>`;
   const open = container.querySelector("#xn-open-viewer");
   if (open) open.addEventListener("click", () => openScriptViewer(file));
+  setupMarquee(container);
+  requestAnimationFrame(startXnMarquee);
   $("preview-note").textContent = tr("xn.structure");
 }
 
@@ -1210,6 +1604,7 @@ async function openScriptViewer(file) {
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
+  setupMarquee($("viewer"));
   lockViewerScroll();
   try {
     const data = await getJson(apiUrl("/api/xn", { path: file.path }));
@@ -1435,6 +1830,7 @@ function openViewer(file) {
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
   node.classList.add("open");
+  setupMarquee($("viewer"));
   lockViewerScroll();
   if (viewer.mode === "map") {
     openMapViewer(file, token);
@@ -1692,8 +2088,11 @@ function textViewerFoot() {
   return `<div class="viewer-text-actions">
     <div class="viewer-actions" id="viewer-actions"></div>
     <div class="viewer-note" id="viewer-note"></div>
-  </div>
-  <div class="viewer-map" id="viewer-map">
+  </div>`;
+}
+
+function textViewerMap() {
+  return `<div class="viewer-map" id="viewer-map">
     <canvas id="viewer-map-canvas" class="viewer-map-canvas"></canvas>
     <div class="viewer-map-view" id="viewer-map-view"></div>
   </div>`;
@@ -1714,7 +2113,7 @@ async function openTextViewer(file, token) {
     }
     const text = await response.text();
     if (token !== viewer.token) return;
-    stage.innerHTML = `<div class="viewer-text-wrap" id="viewer-text-wrap"><pre class="viewer-text" id="viewer-text"></pre></div>`;
+    stage.innerHTML = `<div class="text-viewer-layout"><div class="viewer-text-wrap" id="viewer-text-wrap"><pre class="viewer-text" id="viewer-text"></pre></div>${textViewerMap()}</div>`;
     const pre = $("viewer-text");
     pre.textContent = text;
     requestAnimationFrame(() => {
@@ -1739,9 +2138,10 @@ function drawTextViewerMap(text) {
   canvas.width = Math.max(1, Math.round(width * dpr));
   canvas.height = Math.max(1, Math.round(height * dpr));
   const ctx = canvas.getContext("2d");
+  const pal = canvasPalette();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(123, 219, 230, .45)";
+  ctx.fillStyle = pal.textMap;
   const lines = text.split("\n");
   const step = Math.max(1, Math.floor(lines.length / 1500));
   const rows = Math.ceil(lines.length / step);
@@ -1976,9 +2376,10 @@ function drawMap() {
   const w = mapView.width;
   const h = mapView.height;
   const scale = mapView.scale || 1;
+  const pal = canvasPalette();
   ctx.setTransform(mapView.dpr, 0, 0, mapView.dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#0a0e10";
+  ctx.fillStyle = pal.bg;
   ctx.fillRect(0, 0, w, h);
 
   const step = mapNiceStep(80 / scale);
@@ -1989,7 +2390,7 @@ function drawMap() {
   const minZ = mapView.centerZ - halfH;
   const maxZ = mapView.centerZ + halfH;
 
-  ctx.strokeStyle = "rgba(191, 200, 203, .1)";
+  ctx.strokeStyle = pal.grid;
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
@@ -2006,7 +2407,7 @@ function drawMap() {
 
   drawMapUnits(ctx, w, h, scale);
 
-  ctx.strokeStyle = "rgba(223, 227, 230, .24)";
+  ctx.strokeStyle = pal.crosshair;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(w / 2 - 8, h / 2);
@@ -2022,10 +2423,11 @@ function drawMap() {
 function drawMapUnits(ctx, w, h, scale) {
   const units = mapUnits();
   if (!units.length) return;
+  const pal = canvasPalette();
   const radius = Math.max(3, Math.min(16, mapView.dotSize));
   const boxes = [];
   let labels = 0;
-  ctx.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.font = canvasFont(11);
   ctx.textBaseline = "middle";
   for (const unit of units) {
     const [x, z] = mapPoint(unit);
@@ -2037,7 +2439,7 @@ function drawMapUnits(ctx, w, h, scale) {
     if (icon) {
       ctx.beginPath();
       ctx.arc(sx, sy, iconSize / 2 + 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(8, 14, 21, .88)";
+      ctx.fillStyle = pal.chip;
       ctx.fill();
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
@@ -2061,10 +2463,10 @@ function drawMapUnits(ctx, w, h, scale) {
     if (lx + width > w - 4 || ly < 28 || ly > h - 6) continue;
     const box = [lx, ly - 7, lx + width, ly + 7];
     if (boxes.some((other) => box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])) continue;
-    ctx.strokeStyle = "#0a0e10";
+    ctx.strokeStyle = pal.labelShadow;
     ctx.lineWidth = 3;
     ctx.strokeText(name, lx, ly);
-    ctx.fillStyle = "#dfe3e6";
+    ctx.fillStyle = pal.text;
     ctx.fillText(name, lx, ly);
     boxes.push(box);
     labels += 1;
@@ -2074,10 +2476,11 @@ function drawMapUnits(ctx, w, h, scale) {
 function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   const top = 24;
   const left = 44;
-  ctx.fillStyle = "rgba(15, 19, 22, .94)";
+  const pal = canvasPalette();
+  ctx.fillStyle = pal.rulerBg;
   ctx.fillRect(0, 0, w, top);
   ctx.fillRect(0, 0, left, h);
-  ctx.strokeStyle = "#3f484b";
+  ctx.strokeStyle = pal.rulerLine;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(0, top + 0.5);
@@ -2085,16 +2488,16 @@ function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   ctx.moveTo(left + 0.5, 0);
   ctx.lineTo(left + 0.5, h);
   ctx.stroke();
-  ctx.font = '10px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.font = canvasFont(10);
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
-  ctx.fillStyle = "#dfe3e6";
+  ctx.fillStyle = pal.text;
   ctx.fillText(`X / ${mapAxis() === "xz" ? "Z" : "Y"}`, 6, top / 2);
-  ctx.fillStyle = "#bfc8cb";
+  ctx.fillStyle = pal.muted;
   for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
     const sx = w / 2 + (x - mapView.centerX) * scale;
     if (sx < left) continue;
-    ctx.strokeStyle = "#5c6669";
+    ctx.strokeStyle = pal.line;
     ctx.beginPath();
     ctx.moveTo(sx, 0);
     ctx.lineTo(sx, 6);
@@ -2104,7 +2507,7 @@ function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
   for (let z = Math.ceil(minZ / step) * step; z <= maxZ; z += step) {
     const sy = h / 2 - (z - mapView.centerZ) * scale;
     if (sy < top) continue;
-    ctx.strokeStyle = "#5c6669";
+    ctx.strokeStyle = pal.line;
     ctx.beginPath();
     ctx.moveTo(0, sy);
     ctx.lineTo(4, sy);
@@ -2115,6 +2518,7 @@ function drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ) {
 }
 
 function buildMapMinimapBase() {
+  const pal = canvasPalette();
   const canvas = mapView.minimap;
   if (!canvas || !mapView.data) {
     mapView.minimapBase = null;
@@ -2132,7 +2536,7 @@ function buildMapMinimapBase() {
   base.height = Math.round(h * dpr);
   const ctx = base.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#0a0e10";
+  ctx.fillStyle = pal.bg;
   ctx.fillRect(0, 0, w, h);
   const bounds = mapView.data.bounds;
   let minX, maxX, minZ, maxZ;
@@ -2155,7 +2559,7 @@ function buildMapMinimapBase() {
   const left = (w - spanX * ms) / 2;
   const top = (h - spanZ * ms) / 2;
   const box = { left, top, ms, minX, maxZ };
-  ctx.fillStyle = "rgba(123, 219, 230, .55)";
+  ctx.fillStyle = pal.points;
   for (const unit of mapUnits()) {
     const [x, z] = mapPoint(unit);
     const mx = left + (x - minX) * ms;
@@ -2186,14 +2590,15 @@ function drawMapMinimap() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(base.canvas, 0, 0, w, h);
+  const pal = canvasPalette();
   const box = base.box;
   mapView.minimapBox = box;
   const viewW = mapView.width / (mapView.scale || 1);
   const viewH = mapView.height / (mapView.scale || 1);
   const vx = box.left + (mapView.centerX - viewW / 2 - box.minX) * box.ms;
   const vy = box.top + (box.maxZ - (mapView.centerZ + viewH / 2)) * box.ms;
-  ctx.fillStyle = "rgba(123, 219, 230, .12)";
-  ctx.strokeStyle = "#7bdbe6";
+  ctx.fillStyle = pal.accentFill;
+  ctx.strokeStyle = pal.accent;
   ctx.lineWidth = 1;
   ctx.fillRect(vx, vy, viewW * box.ms, viewH * box.ms);
   ctx.strokeRect(vx + 0.5, vy + 0.5, Math.max(1, viewW * box.ms - 1), Math.max(1, viewH * box.ms - 1));
@@ -2592,6 +2997,7 @@ async function openGimDirect(file) {
   $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
   void node.offsetWidth;
   node.classList.add("open");
+  setupMarquee($("viewer"));
   lockViewerScroll();
   try {
     const data = await getJson(apiUrl("/api/neox", neoxParams(file)));
@@ -2668,6 +3074,7 @@ function openGimViewer(file, data) {
   stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
   void node.offsetWidth;
   node.classList.add("open");
+  setupMarquee($("viewer"));
   lockViewerScroll();
   try {
     const textureList = data.texture_images || [];
@@ -2921,7 +3328,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     if (oldTimeline) oldTimeline.remove();
     if (animState) {
       foot.insertAdjacentHTML("afterbegin", `<div class="gim-timeline" id="gim-timeline">
-        <button class="gim-timeline-btn" id="gim-play" type="button" title="${tr("gim.pause")}" aria-label="${tr("gim.pause")}">⏸</button>
+        <button class="gim-timeline-btn" id="gim-play" type="button" title="${tr("gim.pause")}" aria-label="${tr("gim.pause")}">${icon("pause")}</button>
         <button class="gim-timeline-btn" id="gim-prev" type="button" title="${tr("gim.prevSecond")}" aria-label="${tr("gim.prevSecond")}">-1s</button>
         <div class="gim-timeline-track" id="gim-track"><div class="gim-timeline-fill" id="gim-fill"></div><div class="gim-timeline-head" id="gim-head"></div></div>
         <span class="gim-timeline-time" id="gim-time">0.00 / ${animState.duration.toFixed(2)}</span>
@@ -3206,7 +3613,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       if (timelineTime) timelineTime.textContent = `${animState.elapsed.toFixed(2)} / ${animState.duration.toFixed(2)}`;
       if (timelineFrame) timelineFrame.textContent = `${animState.frame + 1} / ${animState.frameCount}`;
       if (playButton) {
-        playButton.textContent = animState.playing ? "⏸" : "▶";
+        playButton.innerHTML = animState.playing ? icon("pause") : icon("play");
         const label = animState.playing ? tr("gim.pause") : tr("gim.play");
         playButton.title = label;
         playButton.setAttribute("aria-label", label);
@@ -3616,7 +4023,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     } else {
       gl.disable(gl.CULL_FACE);
     }
-    gl.clearColor(0.039, 0.055, 0.063, 1);
+    const clear = colorToRgb(canvasPalette().bg, [0.039, 0.055, 0.063]);
+    gl.clearColor(clear[0], clear[1], clear[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const pitch = Math.max(-1.55, Math.min(1.55, gim3d.pitch));
     const distance = radius * 2.8 / Math.max(0.05, Math.min(20, gim3d.scale));
@@ -3799,11 +4207,12 @@ function drawGimMinimap(mvp, width, height) {
   const mini = gim3d.minimap;
   const view = gim3d.mapView;
   if (!mini || !view) return;
+  const pal = canvasPalette();
   const ctx = mini.getContext("2d");
   const mw = mini.width, mh = mini.height;
-  ctx.fillStyle = "#0a0e10";
+  ctx.fillStyle = pal.bg;
   ctx.fillRect(0, 0, mw, mh);
-  ctx.fillStyle = "rgba(123,219,230,.55)";
+  ctx.fillStyle = pal.points;
   for (const vertex of gim3d.minimapPoints || []) {
     const point = gimProject(mvp, vertex, width, height);
     if (point) ctx.fillRect((point[0] / width) * mw - 1, (point[1] / height) * mh - 1, 2, 2);
@@ -3816,12 +4225,20 @@ function drawGimMinimap(mvp, width, height) {
 
 async function showPreview(file) {
   const token = ++previewToken;
+  stopXnMarquee();
   state.previewPath = file.path;
   setActiveFile(file.path);
   updatePreviewNav();
   $("preview-name").textContent = file.name;
-  $("preview-badge").textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
-  $("preview-badge").className = `badge ${displayKind(file.kind, file.ext)}`;
+  const previewExt = (file.ext || "").toLowerCase();
+  const previewBadge = $("preview-badge");
+  if (previewExt === ".bin" || previewExt === ".mesh") {
+    previewBadge.className = `badge ${previewExt === ".mesh" ? "model" : "binary"} badge-icon`;
+    previewBadge.innerHTML = icon(previewExt === ".mesh" ? "mesh" : "bin");
+  } else {
+    previewBadge.textContent = (file.ext || file.kind || "FILE").replace(".", "").slice(0, 5).toUpperCase();
+    previewBadge.className = `badge ${displayKind(file.kind, file.ext)}`;
+  }
   $("preview-media").classList.remove("swap-in", "gmp-mode");
   $("preview-media").innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
   $("preview-meta").innerHTML = metaSkeleton();
@@ -3829,6 +4246,7 @@ async function showPreview(file) {
   $("open-image").classList.add("hidden");
   renderOpenActions();
   openDrawerPanel();
+  setupMarquee($("drawer"));
   $("download-link").textContent = tr("drawer.download");
   $("download-link").href = apiUrl("/api/download", { path: file.path });
   $("download-link").setAttribute("download", file.name);
@@ -3942,6 +4360,7 @@ function openDrawerPanel() {
 
 function closeDrawer() {
   previewToken += 1;
+  stopXnMarquee();
   state.previewPath = null;
   setActiveFile(null);
   updatePreviewNav();
@@ -3984,6 +4403,192 @@ async function copyPath() {
   await copyText(state.previewPath, $("copy-path"), tr("drawer.copyPath"));
 }
 
+function restoreScrollPosition(scroll) {
+  let tries = 0;
+  let cancelled = false;
+  const events = ["wheel", "touchstart", "pointerdown", "keydown"];
+  const cleanup = () => events.forEach((name) => window.removeEventListener(name, cancel));
+  const cancel = () => {
+    cancelled = true;
+    cleanup();
+  };
+  events.forEach((name) => window.addEventListener(name, cancel, { passive: true }));
+  const apply = () => {
+    if (cancelled) return;
+    window.scrollTo(0, scroll);
+    if (Math.abs(window.scrollY - scroll) > 2 && tries < 20) {
+      tries += 1;
+      setTimeout(apply, 50);
+    } else {
+      cleanup();
+    }
+  };
+  apply();
+}
+
+
+function setSidebarWidth(width, persist = true) {
+  const next = Math.max(220, Math.min(420, Math.round(Number(width) || 264)));
+  document.documentElement.style.setProperty("--sidebar", `${next}px`);
+  if (persist) {
+    try { localStorage.setItem(SIDEBAR_WIDTH_STORAGE, String(next)); } catch (_) {}
+    setTimeout(() => {
+      setupMarquee($("content"));
+      setupMarquee($("content-topbar"));
+      setupMarquee($("roots"));
+      setupMarquee($("index-pane"));
+    }, 60);
+  }
+  return next;
+}
+
+function initSidebarResize() {
+  let stored = 264;
+  try { stored = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE)) || 264; } catch (_) {}
+  setSidebarWidth(stored, false);
+  const handle = $("sidebar-resizer");
+  if (!handle) return;
+  let drag = null;
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const sidebar = document.querySelector(".sidebar");
+    drag = { x: event.clientX, width: sidebar ? sidebar.getBoundingClientRect().width : 264 };
+    document.documentElement.classList.add("resizing-sidebar");
+    try { handle.setPointerCapture(event.pointerId); } catch (_) {}
+    event.preventDefault();
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    setSidebarWidth(drag.width + event.clientX - drag.x, false);
+  });
+  const end = (event) => {
+    if (!drag) return;
+    const sidebar = document.querySelector(".sidebar");
+    const width = sidebar ? sidebar.getBoundingClientRect().width : drag.width;
+    drag = null;
+    document.documentElement.classList.remove("resizing-sidebar");
+    setSidebarWidth(width, true);
+    try { handle.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  handle.addEventListener("keydown", (event) => {
+    const sidebar = document.querySelector(".sidebar");
+    const current = sidebar ? sidebar.getBoundingClientRect().width : 264;
+    let next = current;
+    if (event.key === "ArrowLeft") next = current - 16;
+    else if (event.key === "ArrowRight") next = current + 16;
+    else if (event.key === "Home") next = 220;
+    else if (event.key === "End") next = 420;
+    else return;
+    event.preventDefault();
+    setSidebarWidth(next, true);
+  });
+  handle.addEventListener("dblclick", () => setSidebarWidth(264, true));
+}
+
+function setIndexCollapsed(collapsed, persist = true) {
+  const workspace = document.querySelector(".workspace");
+  if (!workspace) return;
+  workspace.classList.toggle("index-collapsed", !!collapsed);
+  if (persist) {
+    try { localStorage.setItem(INDEX_COLLAPSE_STORAGE, collapsed ? "1" : "0"); } catch (_) {}
+  }
+  if (!collapsed) setTimeout(() => setupMarquee($("index-pane")), 340);
+}
+
+function initIndexPane() {
+  let stored = false;
+  try { stored = localStorage.getItem(INDEX_COLLAPSE_STORAGE) === "1"; } catch (_) {}
+  setIndexCollapsed(stored, false);
+  const collapse = $("index-collapse");
+  const expand = $("index-expand");
+  if (collapse) collapse.addEventListener("click", () => {
+    setIndexCollapsed(true);
+    if (expand) expand.focus({ preventScroll: true });
+  });
+  if (expand) expand.addEventListener("click", () => {
+    setIndexCollapsed(false);
+    if (collapse) collapse.focus({ preventScroll: true });
+  });
+}
+
+
+const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-meta, .file-row-name, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .viewer-name, .where, .xn-head b, .xn-head > div > span";
+const MARQUEE_HOSTS = ".folder, .folder-row, .file, .file-row, .root, .index-dir, .drawer-head, .viewer-head, .toolbar";
+
+function stopMarquee(el) {
+  if (el.__marqueeAnim) {
+    el.__marqueeAnim.cancel();
+    el.__marqueeAnim = null;
+  }
+  if (el.__marqueeTimer) {
+    clearTimeout(el.__marqueeTimer);
+    el.__marqueeTimer = 0;
+  }
+  el.__marqueeRun = false;
+  el.classList.remove("marquee-moving", "marquee-pause");
+  el.style.textIndent = "";
+}
+
+function startMarquee(el) {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (!el.classList.contains("marquee") || el.__marqueeRun) return;
+  const overflow = el.scrollWidth - el.clientWidth;
+  if (overflow < 2 || typeof el.animate !== "function") return;
+  el.__marqueeRun = true;
+  const travel = Math.max(1400, Math.min(6000, overflow * 22));
+  const run = () => {
+    if (!el.__marqueeRun || !el.isConnected) return;
+    if (el.__marqueeAnim) { el.__marqueeAnim.cancel(); el.__marqueeAnim = null; }
+    el.classList.add("marquee-moving");
+    el.classList.remove("marquee-pause");
+    el.style.textIndent = "0px";
+    const anim = el.animate([{ textIndent: "0px" }, { textIndent: `-${overflow}px` }], { duration: travel, easing: "linear", fill: "forwards" });
+    el.__marqueeAnim = anim;
+    anim.onfinish = () => {
+      if (!el.__marqueeRun || !el.isConnected) return;
+      el.classList.remove("marquee-moving");
+      el.classList.add("marquee-pause");
+      el.__marqueeTimer = setTimeout(() => {
+        el.__marqueeTimer = 0;
+        if (el.__marqueeRun) run();
+      }, 2000);
+    };
+  };
+  run();
+}
+
+function setupMarquee(root) {
+  if (!root) return;
+  root.querySelectorAll(MARQUEE_TARGETS).forEach((el) => {
+    stopMarquee(el);
+    el.classList.remove("marquee");
+    if (el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1) el.classList.add("marquee");
+  });
+}
+
+function startXnMarquee() {
+  document.querySelectorAll("#preview-media .xn-head .marquee").forEach(startMarquee);
+}
+
+function stopXnMarquee() {
+  document.querySelectorAll("#preview-media .xn-head .marquee").forEach(stopMarquee);
+}
+
+function initMarquee() {
+  document.addEventListener("mouseover", (event) => {
+    const host = event.target && event.target.closest ? event.target.closest(MARQUEE_HOSTS) : null;
+    if (!host || (event.relatedTarget && host.contains(event.relatedTarget))) return;
+    host.querySelectorAll(".marquee").forEach(startMarquee);
+  });
+  document.addEventListener("mouseout", (event) => {
+    const host = event.target && event.target.closest ? event.target.closest(MARQUEE_HOSTS) : null;
+    if (!host || (event.relatedTarget && host.contains(event.relatedTarget))) return;
+    host.querySelectorAll(".marquee").forEach(stopMarquee);
+  });
+}
+
 function syncTopbarHeight() {
   const bar = $("content-topbar");
   if (!bar) return;
@@ -3996,6 +4601,8 @@ function rerenderFilesOnly() {
   const body = renderFiles(state.files) || `<div class="empty">${tr(state.searchMode ? "list.noMatches" : "list.empty")}</div>`;
   $("content").innerHTML = (state.searchMode ? "" : renderFolders(state.dirs)) + body;
   hydrateThumbs($("content"));
+  setupMarquee($("content"));
+  setupMarquee($("content-topbar"));
   ensureSentinel();
   syncPickStates();
 }
@@ -4088,6 +4695,8 @@ function renderBatchMenu() {
 }
 
 function openBatchMenu() {
+  if (themeState.menuOpen) closeThemeMenu();
+  closeDropdown();
   batchMenuOpen = true;
   batchMenuPage = "main";
   renderBatchMenu();
@@ -4204,11 +4813,16 @@ function onSearchInput() {
   } else if (state.searchMode) {
     state.searchMode = false;
     window.scrollTo(0, 0);
-    loadList(state.path, false);
+    loadList(state.path, false, false, true);
   }
 }
 
 function bind() {
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  initDropdowns();
+  initSidebarResize();
+  initIndexPane();
+  initMarquee();
   $("content").addEventListener("click", (event) => {
     if (event.target.closest("#retry-more")) {
       loadMore();
@@ -4269,6 +4883,7 @@ function bind() {
   $("search").addEventListener("input", onSearchInput);
   $("sort").addEventListener("change", () => {
     state.sort = $("sort").value;
+    syncDropdown("sort");
     localStorage.setItem("npk-sort", state.sort);
     if (state.searchMode) {
       const query = $("search").value.trim();
@@ -4360,11 +4975,26 @@ function bind() {
     const button = event.target.closest("[data-open]");
     if (button) openWith(button.dataset.open);
   });
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", async (event) => {
     const path = new URLSearchParams(location.search).get("path") || "";
-    loadList(path, false);
+    const scroll = event.state && Number.isFinite(event.state.scroll) ? event.state.scroll : 0;
+    pendingRestoreScroll = scroll;
+    await loadList(path, false, false, true);
   });
   window.addEventListener("resize", syncTopbarHeight);
+  window.addEventListener("resize", () => {
+    clearTimeout(marqueeResizeTimer);
+    marqueeResizeTimer = setTimeout(() => {
+      setupMarquee($("content"));
+      setupMarquee($("content-topbar"));
+      setupMarquee($("roots"));
+      setupMarquee($("index-pane"));
+      if (!$("drawer").classList.contains("hidden")) {
+        setupMarquee($("drawer"));
+        startXnMarquee();
+      }
+    }, 160);
+  });
   window.addEventListener("resize", () => {
     if (!viewerIsOpen()) return;
     if (viewer.mode === "image" && viewer.nw) layoutImageViewer();
@@ -4380,7 +5010,9 @@ function bind() {
   }
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (batchMenuOpen) closeBatchMenu();
+      if (dropdownOpen) closeDropdown();
+      else if (themeState.menuOpen) closeThemeMenu();
+      else if (batchMenuOpen) closeBatchMenu();
       else if (viewerIsOpen()) closeViewer();
       else if (!$("drawer").classList.contains("hidden")) closeDrawer();
       else if ($("search").value) { $("search").value = ""; loadList(state.path, false); }
@@ -4396,6 +5028,18 @@ async function init() {
   bind();
   updateViewButtons();
   syncTopbarHeight();
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => {
+      setupMarquee($("content"));
+      setupMarquee($("content-topbar"));
+      setupMarquee($("roots"));
+      setupMarquee($("index-pane"));
+      if (!$("drawer").classList.contains("hidden")) {
+        setupMarquee($("drawer"));
+        startXnMarquee();
+      }
+    });
+  }
   $("stat-files").innerHTML = `<span class="sk-line stat-sk" style="width:46px"></span>`;
   $("stat-size").innerHTML = `<span class="sk-line stat-sk" style="width:54px"></span>`;
   $("roots").innerHTML = Array.from({ length: 6 }, () => `<div class="root skeleton-root">
@@ -4409,6 +5053,7 @@ async function init() {
 }
 
 async function boot() {
+  initTheme();
   await initI18n();
   await init();
 }

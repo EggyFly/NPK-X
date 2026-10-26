@@ -4,21 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0F1316">
+<meta name="color-scheme" content="dark light">
 <title>NPK-X</title>
-  <link rel="stylesheet" href="/static/style.css?v=48">
+<link rel="icon" type="image/png" href="/static/assets/004083.png">
+<link rel="apple-touch-icon" href="/static/assets/004083.png">
+<script>
+(function () {
+  var choice = "auto";
+  try { choice = localStorage.getItem("npk-theme") || "auto"; } catch (_) {}
+  var light = choice === "light" || (choice === "auto" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", light ? "#f7fafb" : "#0f1316");
+})();
+</script>
+  <link rel="stylesheet" href="/static/style.css?v=67">
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-      <linearGradient id="exp-back" x1="16" y1="4.75" x2="16" y2="11.75" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#FFD152"/>
-        <stop offset="1" stop-color="#FFB83D"/>
-      </linearGradient>
-      <linearGradient id="exp-front" x1="16" y1="11.06" x2="16" y2="29.97" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#7FE0FF"/>
-        <stop offset="1" stop-color="#2E9BE6"/>
-      </linearGradient>
-    </defs>
   <symbol id="i-refresh" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-70q0-17 11.5-28.5T760-800q17 0 28.5 11.5T800-760v200q0 17-11.5 28.5T760-520H560q-17 0-28.5-11.5T520-560q0-17 11.5-28.5T560-600h128q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q68 0 124.5-34.5T692-367q8-14 22.5-19.5t29.5-.5q16 5 23 21t-1 30q-41 80-117 128t-169 48Z"/></symbol>
   <symbol id="i-grid" viewBox="0 -960 960 960"><path fill="currentColor" d="M200-520q-33 0-56.5-23.5T120-600v-160q0-33 23.5-56.5T200-840h160q33 0 56.5 23.5T440-760v160q0 33-23.5 56.5T360-520H200Zm0 400q-33 0-56.5-23.5T120-200v-160q0-33 23.5-56.5T200-440h160q33 0 56.5 23.5T440-360v160q0 33-23.5 56.5T360-120H200Zm400-400q-33 0-56.5-23.5T520-600v-160q0-33 23.5-56.5T600-840h160q33 0 56.5 23.5T840-760v160q0 33-23.5 56.5T760-520H600Zm0 400q-33 0-56.5-23.5T520-200v-160q0-33 23.5-56.5T600-440h160q33 0 56.5 23.5T840-360v160q0 33-23.5 56.5T760-120H600ZM200-600h160v-160H200v160Zm400 0h160v-160H600v160Zm0 400h160v-160H600v160Zm-400 0h160v-160H200v160Zm400-400Zm0 240Zm-240 0Zm0-240Z"/></symbol>
   <symbol id="i-list" viewBox="0 -960 960 960"><path fill="currentColor" d="M120-280v-400q0-33 23.5-56.5T200-760h560q33 0 56.5 23.5T840-680v400q0 33-23.5 56.5T760-200H200q-33 0-56.5-23.5T120-280Zm80-320h80v-80h-80v80Zm160 0h400v-80H360v80Zm0 160h400v-80H360v80Zm0 160h400v-80H360v80Zm-160 0h80v-80h-80v80Zm0-160h80v-80h-80v80Z"/></symbol>
@@ -41,18 +44,22 @@
   <symbol id="i-language" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-155.5t86-127Q252-817 325-848.5T480-880q83 0 155.5 31.5t127 86q54.5 54.5 86 127T880-480q0 82-31.5 155t-86 127.5q-54.5 54.5-127 86T480-80Zm0-82q26-36 45-75t31-83H404q12 44 31 83t45 75Zm-104-16q-18-33-31.5-68.5T322-320H204q29 50 72.5 87t99.5 55Zm208 0q56-18 99.5-55t72.5-87H638q-9 38-22.5 73.5T584-178ZM170-400h136q-3-20-4.5-39.5T300-480q0-21 1.5-40.5T306-560H170q-5 20-7.5 39.5T160-480q0 21 2.5 40.5T170-400Zm216 0h188q3-20 4.5-39.5T580-480q0-21-1.5-40.5T574-560H386q-3 20-4.5 39.5T380-480q0 21 1.5 40.5T386-400Zm268 0h136q5-20 7.5-39.5T800-480q0-21-2.5-40.5T790-560H654q3 20 4.5 39.5T660-480q0 21-1.5 40.5T654-400Zm-16-240h118q-29-50-72.5-87T584-782q18 33 31.5 68.5T638-640Zm-234 0h152q-12-44-31-83t-45-75q-26 36-45 75t-31 83Zm-200 0h118q9-38 22.5-73.5T376-782q-56 18-99.5 55T204-640Z"/></symbol>
   <symbol id="i-sync" viewBox="0 -960 960 960"><path fill="currentColor" d="m233-280 76 76q12 12 11.5 28T308-148q-12 11-28 11.5T252-148L108-292q-6-6-8.5-13T97-320q0-8 2.5-15t8.5-13l144-144q11-11 27.5-11t28.5 11q12 12 12 28.5T308-435l-75 75h567q17 0 28.5 11.5T840-320q0 17-11.5 28.5T800-280H233Zm494-320H160q-17 0-28.5-11.5T120-640q0-17 11.5-28.5T160-680h567l-76-76q-12-12-11.5-28t12.5-28q12-11 28-11.5t28 11.5l144 144q6 6 8.5 13t2.5 15q0 8-2.5 15t-8.5 13L708-468q-11 11-27.5 11T652-468q-12-12-12-28.5t12-28.5l75-75Z"/></symbol>
   <symbol id="i-folder" viewBox="0 -960 960 960"><path fill="currentColor" d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h207q16 0 30.5 6t25.5 17l57 57h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80h640v-400H447l-80-80H160v480Zm0 0v-480 480Z"/></symbol>
+  <symbol id="i-theme-auto" viewBox="0 -960 960 960"><path fill="currentColor" d="M408-412h146l25 73q3 8 10.5 13.5T606-320q15 0 23.5-12.5T633-359L519-661q-3-9-11-14t-17-5h-22q-9 0-17 5t-11 14L327-360q-5 14 3.5 27t24.5 13q10 0 17.5-5.5T383-340l25-72Zm18-52 52-150h4l52 150H426Zm-80 304H240q-33 0-56.5-23.5T160-240v-106l-77-78q-11-12-17-26.5T60-480q0-15 6-29.5T83-536l77-78v-106q0-33 23.5-56.5T240-800h106l78-77q12-11 26.5-17t29.5-6q15 0 29.5 6t26.5 17l78 77h106q33 0 56.5 23.5T800-720v106l77 78q11 12 17 26.5t6 29.5q0 15-6 29.5T877-424l-77 78v106q0 33-23.5 56.5T720-160H614l-78 77q-12 11-26.5 17T480-60q-15 0-29.5-6T424-83l-78-77Zm34-80 100 100 100-100h140v-140l100-100-100-100v-140H580L480-820 380-720H240v140L140-480l100 100v140h140Zm100-240Z"/></symbol>
+  <symbol id="i-theme-light" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-360q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0 80q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480q0 83-58.5 141.5T480-280ZM80-440q-17 0-28.5-11.5T40-480q0-17 11.5-28.5T80-520h80q17 0 28.5 11.5T200-480q0 17-11.5 28.5T160-440H80Zm720 0q-17 0-28.5-11.5T760-480q0-17 11.5-28.5T800-520h80q17 0 28.5 11.5T920-480q0 17-11.5 28.5T880-440h-80ZM480-760q-17 0-28.5-11.5T440-800v-80q0-17 11.5-28.5T480-920q17 0 28.5 11.5T520-880v80q0 17-11.5 28.5T480-760Zm0 720q-17 0-28.5-11.5T440-80v-80q0-17 11.5-28.5T480-200q17 0 28.5 11.5T520-160v80q0 17-11.5 28.5T480-40ZM226-678l-43-42q-12-11-11.5-28t11.5-29q12-12 29-12t28 12l42 43q11 12 11 28t-11 28q-11 12-27.5 11.5T226-678Zm494 495-42-43q-11-12-11-28.5t11-27.5q11-12 27.5-11.5T734-282l43 42q12 11 11.5 28T777-183q-12 12-29 12t-28-12Zm-42-495q-12-11-11.5-27.5T678-734l42-43q11-12 28-11.5t29 11.5q12 12 12 29t-12 28l-43 42q-12 11-28 11t-28-11ZM183-183q-12-12-12-29t12-28l43-42q12-11 28.5-11t27.5 11q12 11 11.5 27.5T282-226l-42 43q-11 12-28 11.5T183-183Zm297-297Z"/></symbol>
+  <symbol id="i-theme-dark" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-120q-151 0-255.5-104.5T120-480q0-138 90-239.5T440-838q13-2 23 3.5t16 14.5q6 9 6.5 21t-7.5 23q-17 26-25.5 55t-8.5 61q0 90 63 153t153 63q31 0 61.5-9t54.5-25q11-7 22.5-6.5T819-479q10 5 15.5 15t3.5 24q-14 138-117.5 229T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/></symbol>
+  <symbol id="i-pause" viewBox="0 -960 960 960"><path fill="currentColor" d="M600-200q-33 0-56.5-23.5T520-280v-400q0-33 23.5-56.5T600-760h80q33 0 56.5 23.5T760-680v400q0 33-23.5 56.5T680-200h-80Zm-320 0q-33 0-56.5-23.5T200-280v-400q0-33 23.5-56.5T280-760h80q33 0 56.5 23.5T440-680v400q0 33-23.5 56.5T360-200h-80Zm320-80h80v-400h-80v400Zm-320 0h80v-400h-80v400Zm0-400v400-400Zm320 0v400-400Z"/></symbol>
   <symbol id="i-expand-more" viewBox="0 -960 960 960"><path fill="currentColor" d="M480-362q-8 0-15-2.5t-13-8.5L268-557q-11-11-11-28t11-28q11-11 28-11t28 11l156 156 156-156q11-11 28-11t28 11q11 11 11 28t-11 28L508-373q-6 6-13 8.5t-15 2.5Z"/></symbol>
-  <symbol id="i-explorer" viewBox="0 0 32 32">
-      <path d="M3.82 4.13C2.86 4.13 2.07 4.91 2.07 5.88V25.19C2.07 26.15 2.86 26.94 3.83 26.94H28.18C29.14 26.94 29.93 26.15 29.93 25.19V9.78C29.93 8.81 29.14 8.03 28.18 8.03H17.31C16.8 8.03 16.3 7.83 15.93 7.48L13 4.68C12.63 4.32 12.13 4.13 11.62 4.13H3.82Z" fill="url(#exp-back)"/>
-      <rect x="2.07" y="11.06" width="27.84" height="18.91" rx="1.75" fill="url(#exp-front)"/>
-      <path d="M6.2 15.4H25.8" stroke="#E9FBFF" stroke-width="1.4" stroke-linecap="round" opacity=".75"/>
+    <symbol id="i-explorer" viewBox="0 0 512 512">
+      <linearGradient id="yesicon-selfhst-file-explorer-SVGB7cZcePa" x1="256.25" x2="256.25" y1="286.85" y2="385.85" gradientTransform="translate(0 -254.85)" gradientUnits="userSpaceOnUse"><stop offset=".46" stop-color="#e09f00"/><stop offset="1" stop-color="#bb8500"/></linearGradient><path fill="url(#yesicon-selfhst-file-explorer-SVGB7cZcePa)" d="M.5 131V54.2C.5 42 10.4 32 22.7 32h133c12.3 0 25 9.5 51.7 47.6h278.9c14.2 0 25.7 8.8 25.7 23V131z"/><linearGradient id="yesicon-selfhst-file-explorer-SVGLY3U7dJW" x1="0" x2="512" y1="538.971" y2="538.971" gradientTransform="translate(0 -254.85)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffe28e"/><stop offset="1" stop-color="#ffcf48"/></linearGradient><path fill="url(#yesicon-selfhst-file-explorer-SVGLY3U7dJW)" d="M0 135.8c0-13.2 10.7-23.9 23.9-23.9h138.3c15 0 46.3-22.8 45.9-23.1-.3-.3 211.9-.1 281.8 0c12.2 0 22.1 9.9 22.1 22.1v345.8c0 12.7-10.3 22.9-22.9 22.9H23.4C10.5 479.6 0 469.1 0 456.2z"/><linearGradient id="yesicon-selfhst-file-explorer-SVGNowbb7tB" x1="51.552" x2="473.105" y1="338.251" y2="759.831" gradientTransform="translate(0 -254.85)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffd65e"/><stop offset=".26" stop-color="#fed45a"/><stop offset=".46" stop-color="#fdd151"/><stop offset=".64" stop-color="#fccb40"/><stop offset=".81" stop-color="#f9c229"/><stop offset=".97" stop-color="#f6b70c"/><stop offset="1" stop-color="#f6b505"/></linearGradient><path fill="url(#yesicon-selfhst-file-explorer-SVGNowbb7tB)" d="M0 145.6c0-14.2 11.5-25.7 25.7-25.7h136.4c15 0 46.3-22.8 45.9-23.1-.3-.3 211.9-.1 281.8 0c12.2 0 22.1 9.9 22.1 22.1v337.8c0 12.7-10.3 22.9-22.9 22.9H23.4C10.5 479.6 0 469.1 0 456.2z"/><linearGradient id="yesicon-selfhst-file-explorer-SVGF6oNyj5T" x1="167.598" x2="332.579" y1="556.638" y2="792.299" gradientTransform="translate(0 -254.85)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1391dd"/><stop offset=".28" stop-color="#118cd8"/><stop offset=".6" stop-color="#0b7dcc"/><stop offset=".94" stop-color="#0166b7"/><stop offset="1" stop-color="#0062b4"/></linearGradient><path fill="url(#yesicon-selfhst-file-explorer-SVGF6oNyj5T)" d="M146.4 335.6h218.8c32.2 0 58.3 26.1 58.3 58.3v86H88v-86c0-32.1 26.2-58.3 58.4-58.3"/><path fill="#114a8b" d="M350.4 409.9H159.8c-1.7 0-3-1.3-3-3s1.3-3 3-3h190.6c1.7 0 3 1.3 3 3s-1.3 3-3 3"/>
     </symbol>
-  <symbol id="i-vscode" viewBox="0 0 24 24">
-      <path fill="#007ACC" d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/>
+    <symbol id="i-vscode" viewBox="0 0 128 128">
+      <mask id="yesicon-devicon-vscode-SVGescYAbDI" width="128" height="128" x="0" y="0" maskUnits="userSpaceOnUse" style="mask-type:alpha"><path fill="#fff" fill-rule="evenodd" d="M90.767 127.126a7.97 7.97 0 0 0 6.35-.244l26.353-12.681a8 8 0 0 0 4.53-7.209V21.009a8 8 0 0 0-4.53-7.21L97.117 1.12a7.97 7.97 0 0 0-9.093 1.548l-50.45 46.026L15.6 32.013a5.33 5.33 0 0 0-6.807.302l-7.048 6.411a5.335 5.335 0 0 0-.006 7.888L20.796 64L1.74 81.387a5.336 5.336 0 0 0 .006 7.887l7.048 6.411a5.33 5.33 0 0 0 6.807.303l21.974-16.68l50.45 46.025a8 8 0 0 0 2.743 1.793Zm5.252-92.183L57.74 64l38.28 29.058V34.943Z" clip-rule="evenodd"/></mask><g mask="url(#yesicon-devicon-vscode-SVGescYAbDI)"><path fill="#0065a9" d="M123.471 13.82L97.097 1.12A7.97 7.97 0 0 0 88 2.668L1.662 81.387a5.333 5.333 0 0 0 .006 7.887l7.052 6.411a5.33 5.33 0 0 0 6.811.303l103.971-78.875c3.488-2.646 8.498-.158 8.498 4.22v-.306a8 8 0 0 0-4.529-7.208Z"/><g filter="url(#yesicon-devicon-vscode-SVGUBw6ic8w)"><path fill="#007acc" d="m123.471 114.181l-26.374 12.698A7.97 7.97 0 0 1 88 125.333L1.662 46.613a5.333 5.333 0 0 1 .006-7.887l7.052-6.411a5.33 5.33 0 0 1 6.811-.303l103.971 78.874c3.488 2.647 8.498.159 8.498-4.219v.306a8 8 0 0 1-4.529 7.208"/></g><g filter="url(#yesicon-devicon-vscode-SVGg9RgH3Uo)"><path fill="#1f9cf0" d="M97.098 126.882A7.98 7.98 0 0 1 88 125.333c2.952 2.952 8 .861 8-3.314V5.98c0-4.175-5.048-6.266-8-3.313a7.98 7.98 0 0 1 9.098-1.549L123.467 13.8A8 8 0 0 1 128 21.01v85.982a8 8 0 0 1-4.533 7.21z"/></g><path fill="url(#yesicon-devicon-vscode-SVGpqCa3cMW)" fill-rule="evenodd" d="M90.69 127.126a7.97 7.97 0 0 0 6.349-.244l26.353-12.681a8 8 0 0 0 4.53-7.21V21.009a8 8 0 0 0-4.53-7.21L97.039 1.12a7.97 7.97 0 0 0-9.093 1.548l-50.45 46.026l-21.974-16.68a5.33 5.33 0 0 0-6.807.302l-7.048 6.411a5.336 5.336 0 0 0-.006 7.888L20.718 64L1.662 81.386a5.335 5.335 0 0 0 .006 7.888l7.048 6.411a5.33 5.33 0 0 0 6.807.303l21.975-16.681l50.45 46.026a8 8 0 0 0 2.742 1.793m5.252-92.184L57.662 64l38.28 29.057z" clip-rule="evenodd" opacity=".25"/></g><defs><filter id="yesicon-devicon-vscode-SVGUBw6ic8w" width="144.744" height="113.408" x="-8.411" y="22.594" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feFlood flood-opacity="0" result="BackgroundImageFix"/><feColorMatrix in="SourceAlpha" result="hardAlpha" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"/><feOffset/><feGaussianBlur stdDeviation="4.167"/><feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/><feBlend in2="BackgroundImageFix" mode="overlay" result="effect1_dropShadow_1_36"/><feBlend in="SourceGraphic" in2="effect1_dropShadow_1_36" result="shape"/></filter><filter id="yesicon-devicon-vscode-SVGg9RgH3Uo" width="56.667" height="144.007" x="79.667" y="-8.004" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feFlood flood-opacity="0" result="BackgroundImageFix"/><feColorMatrix in="SourceAlpha" result="hardAlpha" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"/><feOffset/><feGaussianBlur stdDeviation="4.167"/><feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/><feBlend in2="BackgroundImageFix" mode="overlay" result="effect1_dropShadow_1_36"/><feBlend in="SourceGraphic" in2="effect1_dropShadow_1_36" result="shape"/></filter><linearGradient id="yesicon-devicon-vscode-SVGpqCa3cMW" x1="63.922" x2="63.922" y1=".33" y2="127.67" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
     </symbol>
-  <symbol id="i-idea" viewBox="0 0 24 24">
-      <path fill="#FE315D" d="M0 0v24h24V0zm3.723 3.111h5v1.834h-1.39v6.277h1.39v1.834h-5v-1.834h1.444V4.945H3.723zm11.055 0H17v6.5c0 .612-.055 1.111-.222 1.556-.167.444-.39.777-.723 1.11-.277.279-.666.557-1.11.668a3.933 3.933 0 0 1-1.445.278c-.778 0-1.444-.167-1.944-.445a4.81 4.81 0 0 1-1.279-1.056l1.39-1.555c.277.334.555.555.833.722.277.167.611.278.945.278.389 0 .721-.111 1-.389.221-.278.333-.667.333-1.278zM2.222 19.5h9V21h-9z"/>
+    <symbol id="i-idea" viewBox="0 0 128 128">
+      <defs><linearGradient id="yesicon-devicon-intellij-SVGGTpQ6cbF" x1="-.72" x2="24.144" y1="7.628" y2="61.252" gradientTransform="translate(0 47.745)scale(.4155)" gradientUnits="userSpaceOnUse"><stop offset=".1" stop-color="#fc801d"/><stop offset=".59" stop-color="#fe2857"/></linearGradient><linearGradient id="yesicon-devicon-intellij-SVGqNxvsAjS" x1="4.22" x2="62.921" y1="60.02" y2="1.311" gradientTransform="translate(0 47.745)scale(.4155)" gradientUnits="userSpaceOnUse"><stop offset=".21" stop-color="#fe2857"/><stop offset=".7" stop-color="#007eff"/></linearGradient></defs><path fill="#ff8100" d="M31.9 11.657H8.14c-4.5 0-8.14 3.66-8.14 8.14v23.015c0 2.38 1.04 4.64 2.84 6.18L79.16 114.4a8.2 8.2 0 0 0 5.3 1.96h23.76c4.5 0 8.14-3.64 8.14-8.14V85.207c0-2.38-1.04-4.64-2.84-6.18L37.2 13.618a8.2 8.2 0 0 0-5.3-1.96Z"/><path fill="url(#yesicon-devicon-intellij-SVGGTpQ6cbF)" d="M6.033 50.167H1.69A1.69 1.69 0 0 0 0 51.857v5.439c0 .079.004.162.016.24L2.21 72.884c.12.835.831 1.454 1.675 1.454h6.51a1.69 1.69 0 0 0 1.691-1.691v-7.702c0-.183-.033-.362-.087-.536L7.636 51.322a1.69 1.69 0 0 0-1.603-1.155" transform="translate(.001 -229.824)scale(4.81355)"/><path fill="url(#yesicon-devicon-intellij-SVGqNxvsAjS)" d="M24.9 47.75H10.786c-.677 0-1.288.403-1.554 1.026L2.555 64.35a1.7 1.7 0 0 0-.137.665v7.627c0 .935.756 1.69 1.691 1.69h7.466c.333 0 .661-.099.94-.286l13.324-8.89c.47-.316.752-.843.752-1.408V49.436a1.69 1.69 0 0 0-1.69-1.69z" transform="translate(.001 -229.824)scale(4.81355)"/><path fill="#000" d="M104 24.001H24v80h80z"/><path fill="#fff" d="M51.68 58.797h-5.96v-19.54h5.96v-5.22H34v5.22h5.96v19.54H34v5.22h17.68zm11.76-24.78v20.14c0 .88-.18 1.64-.56 2.32s-.9 1.2-1.58 1.58-1.46.56-2.32.56h-4.3v5.4h5.04c1.82 0 3.44-.4 4.9-1.22s2.6-1.94 3.42-3.38 1.24-3.06 1.24-4.86v-20.54Zm-29.44 60h32v-6H34Z"/>
     </symbol>
+  <symbol id="i-bin" viewBox="0 0 16 16"><path fill="currentColor" d="M4 1.75C4 .784 4.784 0 5.75 0h5.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v8.586A1.75 1.75 0 0 1 14.25 15h-9a.75.75 0 0 1 0-1.5h9a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5H5.75a.25.25 0 0 0-.25.25v2a.75.75 0 0 1-1.5 0Zm-4 6C0 6.784.784 6 1.75 6h1.5C4.216 6 5 6.784 5 7.75v2.5A1.75 1.75 0 0 1 3.25 12h-1.5A1.75 1.75 0 0 1 0 10.25ZM6.75 6h1.5a.75.75 0 0 1 .75.75v3.75h.75a.75.75 0 0 1 0 1.5h-3a.75.75 0 0 1 0-1.5h.75v-3h-.75a.75.75 0 0 1 0-1.5m-5 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h1.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25Zm9.75-5.938V4.25c0 .138.112.25.25.25h2.688l-.011-.013l-2.914-2.914z"/></symbol>
+  <symbol id="i-mesh" viewBox="0 0 464 448"><path fill="currentColor" d="M426 74q-28 0-35 27L231 48q0-8-6-14t-14-6t-14.5 6t-6.5 14t6 14L27 256q-2-1-6-1q-19 0-19 19q0 8 5.5 13.5T21 293q11 0 17-11l153 37q0 1-.5 3.5t-.5 3.5q0 14 10 24t24 10t24-10t10-24q0-7-1-10l117-48q5 5 13 5q7 0 12.5-5.5T405 255q0-10-7-15l19-94q1 0 4 .5t5 .5q15 0 25.5-11t10.5-26t-10.5-25.5T426 74m-203-9l72 88l-73 30l-5-115zm-12 4l4 117l-33 13q0-1-6-7l28-124q2 1 7 1m-27 140v-4l32-13l4 100q-2 0-5 1t-4 1l-33-70q6-6 6-15m61 90q-9-7-19-7l-4-102l77-32l35 43zm59-143l88-35q0 2 5 11l-60 65zm86-41l-90 36l-73-89q2-3 4-9l159 53zM200 66l-28 124q-6-2-8-2q-8 0-14.5 6t-6.5 15q0 1 1 3v2L33 259q-1-1-2-1zM39 278q0-1 1-2v-2q0-6-3-9l110-45q5 9 17 9q4 0 10-2l33 70q-10 6-15 17zm216 34q-2-4-6-10l88-97l34 41q-2 6-2 9t2 9zm139-75q-1 0-3.5-.5t-3.5-.5q-9 0-13 6l-34-41l60-66q6 6 13 9z"/></symbol>
   <symbol id="i-github" viewBox="0 0 24 24">
       <path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
     </symbol>
@@ -60,7 +67,7 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-logo" aria-hidden="true"><svg class="icon"><use href="#i-explorer"></use></svg></div>
+      <div class="brand-logo"><img src="/static/assets/004083.png" alt="" width="44" height="44" decoding="async"></div>
       <div class="brand-text">
         <div class="brand-title">NPK-X</div>
         <div class="brand-sub" data-i18n="app.subtitle">浏览、搜索与预览</div>
@@ -72,8 +79,15 @@
     </div>
     <div class="side-heading" data-i18n="nav.title">目录结构</div>
     <nav class="roots" id="roots"></nav>
-    <div class="side-foot"><span class="status-dot"></span><span data-i18n="status.ready">资源库已就绪</span></div>
+    <a id="project-link" class="project-corner" href="https://github.com/EggyFly/NPK-X" target="_blank" rel="noopener noreferrer" title="项目与更新" data-i18n-title="update.title">
+      <svg class="icon brand" aria-hidden="true"><use href="#i-github"></use></svg>
+      <span class="project-name">NPK-X</span>
+      <span id="project-version" class="project-version">v—</span>
+      <span id="project-update" class="project-update hidden"></span>
+    </a>
   </aside>
+
+  <div class="sidebar-resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" tabindex="0" title="调整侧栏宽度" data-i18n-title="layout.resizeSidebar" aria-label="调整侧栏宽度" data-i18n-aria="layout.resizeSidebar"></div>
 
   <main class="main">
     <div class="content-topbar" id="content-topbar">
@@ -81,32 +95,46 @@
         <div class="searchbox">
           <svg class="icon search-icon" aria-hidden="true"><use href="#i-search"></use></svg>
           <input id="search" type="search" placeholder="搜索资源名称或路径，例如 login、pet、effect" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
-          <kbd>/</kbd>
         </div>
         <div class="view-actions">
-          <label class="select-wrap" title="排序" data-i18n-title="sort.title">
-            <svg class="icon" aria-hidden="true"><use href="#i-sort"></use></svg>
-            <select id="sort" class="sort-select" aria-label="排序" data-i18n-aria="sort.title">
-              <option value="name_asc" data-i18n="sort.nameAsc">名称 A–Z</option>
-              <option value="name_desc" data-i18n="sort.nameDesc">名称 Z–A</option>
-              <option value="size_desc" data-i18n="sort.sizeDesc">大小从大到小</option>
-              <option value="size_asc" data-i18n="sort.sizeAsc">大小从小到大</option>
-              <option value="type" data-i18n="sort.type">按类型</option>
-              <option value="package" data-i18n="sort.package">按来源</option>
-            </select>
-            <svg class="icon select-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
-          </label>
           <button id="refresh" class="icon-btn" title="刷新" data-i18n-title="view.refresh" aria-label="刷新" data-i18n-aria="view.refresh"><svg class="icon"><use href="#i-refresh"></use></svg></button>
           <div class="view-switch" role="group">
             <button id="view-grid" class="icon-btn" aria-pressed="true" title="网格视图" data-i18n-title="view.grid" aria-label="网格视图" data-i18n-aria="view.grid"><svg class="icon"><use href="#i-grid"></use></svg></button>
             <button id="view-list" class="icon-btn" aria-pressed="false" title="列表视图" data-i18n-title="view.list" aria-label="列表视图" data-i18n-aria="view.list"><svg class="icon"><use href="#i-list"></use></svg></button>
           </div>
           <button id="select-mode" class="icon-btn" title="多选模式" data-i18n-title="view.select" aria-label="多选模式" data-i18n-aria="view.select"><svg class="icon"><use href="#i-select"></use></svg></button>
-          <label class="select-wrap language-wrap" title="语言" data-i18n-title="language.title">
-            <svg class="icon" aria-hidden="true"><use href="#i-language"></use></svg>
-            <select id="language" class="sort-select language-select" aria-label="语言" data-i18n-aria="language.title"></select>
-            <svg class="icon select-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
-          </label>
+          <div class="theme-wrap">
+            <button id="theme-toggle" class="icon-btn" type="button" title="主题" aria-label="主题" aria-haspopup="menu" aria-expanded="false" data-i18n-title="theme.title" data-i18n-aria="theme.title"><svg class="icon"><use href="#i-theme-auto"></use></svg></button>
+            <div id="theme-menu" class="theme-menu hidden" role="menu"></div>
+          </div>
+          <span class="view-break" aria-hidden="true"></span>
+          <div class="menu-pair">
+            <div class="menu-select" id="sort-select">
+              <button id="sort-trigger" class="menu-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="排序" data-i18n-title="sort.title">
+                <svg class="icon menu-leading" aria-hidden="true"><use href="#i-sort"></use></svg>
+                <span class="menu-label" id="sort-label">名称 A–Z</span>
+                <svg class="icon menu-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
+              </button>
+              <div id="sort-menu" class="menu-popup hidden" role="listbox" aria-label="排序" data-i18n-aria="sort.title"></div>
+              <select id="sort" class="native-select" tabindex="-1" aria-hidden="true">
+                <option value="name_asc" data-i18n="sort.nameAsc">名称 A–Z</option>
+                <option value="name_desc" data-i18n="sort.nameDesc">名称 Z–A</option>
+                <option value="size_desc" data-i18n="sort.sizeDesc">大小从大到小</option>
+                <option value="size_asc" data-i18n="sort.sizeAsc">大小从小到大</option>
+                <option value="type" data-i18n="sort.type">按类型</option>
+                <option value="package" data-i18n="sort.package">按来源</option>
+              </select>
+            </div>
+            <div class="menu-select" id="language-select">
+              <button id="language-trigger" class="menu-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="语言" data-i18n-title="language.title">
+                <svg class="icon menu-leading" aria-hidden="true"><use href="#i-language"></use></svg>
+                <span class="menu-label" id="language-label">自动</span>
+                <svg class="icon menu-arrow" aria-hidden="true"><use href="#i-expand-more"></use></svg>
+              </button>
+              <div id="language-menu" class="menu-popup hidden" role="listbox" aria-label="语言" data-i18n-aria="language.title"></div>
+              <select id="language" class="native-select" tabindex="-1" aria-hidden="true"></select>
+            </div>
+          </div>
         </div>
       </header>
       <div class="crumb" id="crumb"></div>
@@ -127,23 +155,29 @@
     </div>
     <div class="workspace">
       <section id="content" class="content"></section>
-      <aside class="index-pane" id="index-pane">
-        <div class="index-head">
-          <span data-i18n="index.title">当前目录索引</span>
-        </div>
-        <div class="index-body">
-          <div class="index-path" id="index-path" data-i18n="index.all">全部资源</div>
-          <div class="index-summary" id="index-summary"></div>
-          <div class="index-actions">
-            <button class="mini-btn" id="index-up" data-i18n="index.up">上一级</button>
-            <button class="mini-btn" id="copy-index" data-i18n="index.copyPath">复制路径</button>
+      <div class="index-shell" id="index-shell">
+        <aside class="index-pane" id="index-pane">
+          <div class="index-head">
+            <span data-i18n="index.title">当前目录索引</span>
+            <button id="index-collapse" class="index-toggle" type="button" title="收起索引" data-i18n-title="index.collapse" aria-label="收起索引" data-i18n-aria="index.collapse"><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
           </div>
-          <div class="index-section" data-i18n="index.fileTypes">文件类型</div>
-          <div class="kind-chips" id="index-kinds"></div>
-          <div class="index-section" data-i18n="index.dirs">子目录</div>
-          <div class="index-dirs" id="index-dirs"></div>
+          <div class="index-body">
+            <div class="index-path" id="index-path" data-i18n="index.all">全部资源</div>
+            <div class="index-summary" id="index-summary"></div>
+            <div class="index-actions">
+              <button class="mini-btn" id="index-up" data-i18n="index.up">上一级</button>
+              <button class="mini-btn" id="copy-index" data-i18n="index.copyPath">复制路径</button>
+            </div>
+            <div class="index-section" data-i18n="index.fileTypes">文件类型</div>
+            <div class="kind-chips" id="index-kinds"></div>
+            <div class="index-section" data-i18n="index.dirs">子目录</div>
+            <div class="index-dirs" id="index-dirs"></div>
+          </div>
+        </aside>
+        <div class="index-rail" id="index-rail">
+          <button id="index-expand" class="index-toggle index-rail-btn" type="button" title="展开索引" data-i18n-title="index.expand" aria-label="展开索引" data-i18n-aria="index.expand"><svg class="icon"><use href="#i-chevron-left"></use></svg></button>
         </div>
-      </aside>
+      </div>
     </div>
   </main>
 </div>
@@ -191,12 +225,6 @@
   </div>
 </div>
 
-<a id="project-link" class="project-corner" href="https://github.com/EggyFly/NPK-X" target="_blank" rel="noopener noreferrer" title="项目与更新" data-i18n-title="update.title">
-  <svg class="icon brand" aria-hidden="true"><use href="#i-github"></use></svg>
-  <span class="project-name">NPK-X</span>
-  <span id="project-version" class="project-version">v—</span>
-  <span id="project-update" class="project-update hidden"></span>
-</a>
 <div id="update-toast" class="update-toast hidden" role="status" aria-live="polite">
   <div class="update-toast-copy">
     <b id="update-toast-title"></b>
@@ -215,6 +243,6 @@
   <button id="batch-toast-close" class="icon-btn" type="button" title="关闭" data-i18n-title="common.close" aria-label="关闭" data-i18n-aria="common.close"><svg class="icon"><use href="#i-close"></use></svg></button>
 </div>
 
-  <script src="/static/app.js?v=64"></script>
+  <script src="/static/app.js?v=91"></script>
 </body>
 </html>
