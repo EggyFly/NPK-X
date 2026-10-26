@@ -322,6 +322,12 @@
     "gmp.verts": "Vertices",
     "mtg.textures": "Textures",
     "mtg.note": "The material contains {count} textures, click to preview.",
-    "gmp.pointsToggle": "Point cloud"
+    "gmp.pointsToggle": "Point cloud",
+    "gim.play": "Play",
+    "gim.pause": "Pause",
+    "gim.prevSecond": "Back 1 second",
+    "gim.nextSecond": "Forward 1 second",
+    "gim.timeline": "Animation timeline",
+    "gim.reset": "Reset"
   }
 }

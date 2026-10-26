@@ -2590,6 +2590,7 @@ async function openGimDirect(file) {
     if (token !== viewer.token) return;
     const meshData = data.mesh_data || ((file.ext || "").toLowerCase() === ".mesh" ? data : null);
     if (!meshData || !(meshData.vertices || []).length) throw new Error(data.mesh_error || tr("gmp.noUnits"));
+    if (data.animation) meshData.animation = data.animation;
     const textureList = data.texture_images || [];
     $("viewer-foot").innerHTML = gimFoot();
     bindGimFoot();
@@ -2632,8 +2633,8 @@ function bindGimFoot() {
   }
   if (reset) reset.addEventListener("click", () => { gim3d.yaw = 0.6; gim3d.pitch = 0.35; gim3d.scale = 1; });
   if (pointsToggle) {
-    pointsToggle.checked = false;
-    gim3d.points = false;
+    pointsToggle.checked = true;
+    gim3d.points = true;
     pointsToggle.addEventListener("change", () => { gim3d.points = pointsToggle.checked; });
   }
 }
@@ -2664,6 +2665,7 @@ function openGimViewer(file, data) {
     const textureList = data.texture_images || [];
     const material = data.material || {};
     if (Array.isArray(data.materials)) material.materials = data.materials;
+    if (data.animation && data.mesh_data) data.mesh_data.animation = data.animation;
     renderGim3D(stage, data.mesh_data, token, textureList[0] ? apiUrl("/api/image", { path: textureList[0] }) : "", material);
   } catch (error) {
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
@@ -2712,6 +2714,59 @@ function gimMultiply(a, b) {
   return out;
 }
 
+function gimInvertAffine(m) {
+  const a00 = m[0], a01 = m[1], a02 = m[2];
+  const a10 = m[4], a11 = m[5], a12 = m[6];
+  const a20 = m[8], a21 = m[9], a22 = m[10];
+  const b01 = a22 * a11 - a12 * a21;
+  const b11 = -a22 * a10 + a12 * a20;
+  const b21 = a21 * a10 - a11 * a20;
+  const det = a00 * b01 + a01 * b11 + a02 * b21;
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = 1 / det;
+  const out = new Float32Array(16);
+  out[0] = b01 * inv;
+  out[1] = (-a22 * a01 + a02 * a21) * inv;
+  out[2] = (a12 * a01 - a02 * a11) * inv;
+  out[4] = b11 * inv;
+  out[5] = (a22 * a00 - a02 * a20) * inv;
+  out[6] = (-a12 * a00 + a02 * a10) * inv;
+  out[8] = b21 * inv;
+  out[9] = (-a21 * a00 + a01 * a20) * inv;
+  out[10] = (a11 * a00 - a01 * a10) * inv;
+  const tx = m[12], ty = m[13], tz = m[14];
+  out[12] = -(out[0] * tx + out[4] * ty + out[8] * tz);
+  out[13] = -(out[1] * tx + out[5] * ty + out[9] * tz);
+  out[14] = -(out[2] * tx + out[6] * ty + out[10] * tz);
+  out[15] = 1;
+  return out;
+}
+
+function gimTrsMatrix(values) {
+  const tx = values[0], ty = values[1], tz = values[2];
+  let x = values[3], y = values[4], z = values[5], w = values[6];
+  const length = Math.hypot(x, y, z, w) || 1;
+  x /= length; y /= length; z /= length; w /= length;
+  const sx = values[7], sy = values[8], sz = values[9];
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2;
+  const yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
+  return new Float32Array([
+    (1 - (yy + zz)) * sx, (xy + wz) * sx, (xz - wy) * sx, 0,
+    (xy - wz) * sy, (1 - (xx + zz)) * sy, (yz + wx) * sy, 0,
+    (xz + wy) * sz, (yz - wx) * sz, (1 - (xx + yy)) * sz, 0,
+    tx, ty, tz, 1,
+  ]);
+}
+
+function gimBase64Float32(value) {
+  const binary = atob(value || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Float32Array(bytes.buffer);
+}
+
 function gimPerspective(fovy, aspect, near, far) {
   const f = 1 / Math.tan(fovy / 2);
   const nf = 1 / (near - far);
@@ -2756,6 +2811,11 @@ function gimProject(mvp, vertex, w, h) {
 }
 
 function disposeGim3D() {
+  if (gim3d.animKeyHandler) { document.removeEventListener("keydown", gim3d.animKeyHandler); gim3d.animKeyHandler = null; }
+  const foot = $("viewer-foot");
+  if (foot) { foot.classList.remove("has-timeline"); const timeline = foot.querySelector(".gim-timeline"); if (timeline) timeline.remove(); }
+  const stats = $("viewer-stats");
+  if (stats) stats.textContent = "";
   if (gim3d.raf) { cancelAnimationFrame(gim3d.raf); gim3d.raf = 0; }
   const gl = gim3d.gl;
   if (gl) {
@@ -2772,6 +2832,42 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   if (!verts.length || !indices.length) throw new Error("no vertices");
   const uvs = meshData.uvs || [];
   const normals = meshData.normals || [];
+  const animData = meshData.animation && meshData.animation.tracks ? meshData.animation : null;
+  let animState = null;
+  if (animData && Array.isArray(meshData.joints) && meshData.joints.length) {
+    const boneCount = animData.parents.length;
+    const bindMatrices = [];
+    const inverseBind = [];
+    const bindLocal = [];
+    for (let index = 0; index < boneCount; index += 1) {
+      const matrix = new Float32Array(animData.bind.slice(index * 16, index * 16 + 16));
+      bindMatrices.push(matrix);
+      const inverse = gimInvertAffine(matrix);
+      inverseBind.push(inverse);
+      const parent = animData.parents[index];
+      bindLocal.push(parent >= 0 && parent < boneCount && inverseBind[parent]
+        ? gimMultiply(inverseBind[parent], matrix)
+        : matrix);
+    }
+    const trackForBone = new Int32Array(boneCount).fill(-1);
+    (animData.track_bones || []).forEach((bone, track) => {
+      if (bone >= 0 && bone < boneCount) trackForBone[bone] = track;
+    });
+    const trackData = gimBase64Float32(animData.tracks);
+    const jointMap = Array.isArray(animData.joint_map) ? animData.joint_map : null;
+    const frameCount = Math.max(1, Number(animData.frame_count) || 1);
+    const trackCount = Math.max(1, Number(animData.track_count) || 1);
+    if (trackData.length >= frameCount * trackCount * 10) {
+      animState = {
+        data: animData, boneCount, bindLocal, inverseBind, trackForBone, trackData, jointMap,
+        vertexBones: Array.isArray(animData.vertex_bones) ? animData.vertex_bones : null,
+        trackCount, frameCount,
+        fps: Number(animData.fps) || 30,
+        duration: Number(animData.duration) || frameCount / (Number(animData.fps) || 30),
+        frame: -1, playing: true, elapsed: 0, last: 0,
+      };
+    }
+  }
   const treeMaterials = material && Array.isArray(material.materials) ? material.materials : [];
   const firstTreeMaterial = treeMaterials[0] || null;
   const submeshList = Array.isArray(meshData.submeshes) ? meshData.submeshes : [];
@@ -2805,9 +2901,31 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     if (distance > radius) radius = distance;
   }
   radius = radius || 1;
-  stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
-    <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${Number(indices.length / 3).toLocaleString()} tris</div>`;
+  stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>`;
+  const statsNode = $("viewer-stats");
+  if (statsNode) {
+    statsNode.textContent = `${Number(verts.length).toLocaleString()} verts · ${Number(indices.length / 3).toLocaleString()} tris`;
+  }
+  const foot = $("viewer-foot");
+  if (foot) {
+    foot.classList.toggle("has-timeline", !!animState);
+    const oldTimeline = foot.querySelector(".gim-timeline");
+    if (oldTimeline) oldTimeline.remove();
+    if (animState) {
+      foot.insertAdjacentHTML("afterbegin", `<div class="gim-timeline" id="gim-timeline">
+        <button class="gim-timeline-btn" id="gim-play" type="button" title="${tr("gim.pause")}" aria-label="${tr("gim.pause")}">⏸</button>
+        <button class="gim-timeline-btn" id="gim-prev" type="button" title="${tr("gim.prevSecond")}" aria-label="${tr("gim.prevSecond")}">-1s</button>
+        <div class="gim-timeline-track" id="gim-track"><div class="gim-timeline-fill" id="gim-fill"></div><div class="gim-timeline-head" id="gim-head"></div></div>
+        <span class="gim-timeline-time" id="gim-time">0.00 / ${animState.duration.toFixed(2)}</span>
+        <span class="gim-timeline-frame" id="gim-frame">1 / ${animState.frameCount}</span>
+        <button class="gim-timeline-btn" id="gim-next" type="button" title="${tr("gim.nextSecond")}" aria-label="${tr("gim.nextSecond")}">+1s</button>
+        <button class="gim-timeline-btn" id="gim-reset-anim" type="button" title="${tr("gim.reset")}" aria-label="${tr("gim.reset")}">${tr("gim.reset")}</button>
+      </div>`);
+    }
+  }
   const canvas = $("gim-canvas");
+  canvas.tabIndex = 0;
+  canvas.focus({ preventScroll: true });
   const gl = canvas.getContext("webgl2", { antialias: true, alpha: false })
     || canvas.getContext("webgl", { antialias: true, alpha: false })
     || canvas.getContext("experimental-webgl");
@@ -3048,11 +3166,14 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const useUint32 = maxIndex > 65535;
   if (useUint32 && !isWebGL2 && !gl.getExtension("OES_element_index_uint")) throw new Error("index buffer too large");
   const indexData = useUint32 ? new Uint32Array(indices) : new Uint16Array(indices);
+  const attributeBuffers = {};
   const bindAttribute = (name, size, data) => {
     const location = gl.getAttribLocation(program, name);
     if (location < 0) return;
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    const buffer = gl.createBuffer();
+    attributeBuffers[name] = buffer;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(location);
     gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
   };
@@ -3062,6 +3183,149 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   bindAttribute("a_tangent", 4, tangentData);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
+  if (animState) {
+    animState.posBuffer = attributeBuffers.a_pos;
+    animState.normalBuffer = attributeBuffers.a_norm;
+    const timelineFill = $("gim-fill");
+    const timelineHead = $("gim-head");
+    const timelineTime = $("gim-time");
+    const timelineFrame = $("gim-frame");
+    const playButton = $("gim-play");
+    const updateTimeline = () => {
+      const progress = animState.duration > 0 ? Math.min(1, animState.elapsed / animState.duration) : 0;
+      if (timelineFill) timelineFill.style.width = `${(progress * 100).toFixed(2)}%`;
+      if (timelineHead) timelineHead.style.left = `${(progress * 100).toFixed(2)}%`;
+      if (timelineTime) timelineTime.textContent = `${animState.elapsed.toFixed(2)} / ${animState.duration.toFixed(2)}`;
+      if (timelineFrame) timelineFrame.textContent = `${animState.frame + 1} / ${animState.frameCount}`;
+      if (playButton) {
+        playButton.textContent = animState.playing ? "⏸" : "▶";
+        const label = animState.playing ? tr("gim.pause") : tr("gim.play");
+        playButton.title = label;
+        playButton.setAttribute("aria-label", label);
+      }
+    };
+    const applyFrame = (frameIndex) => {
+      const frame = Math.max(0, Math.min(animState.frameCount - 1, frameIndex));
+      const locals = new Array(animState.boneCount);
+      for (let bone = 0; bone < animState.boneCount; bone += 1) {
+        const track = animState.trackForBone[bone];
+        if (track >= 0) {
+          const offset = (frame * animState.trackCount + track) * 10;
+          locals[bone] = gimTrsMatrix(animState.trackData.subarray(offset, offset + 10));
+        } else {
+          locals[bone] = animState.bindLocal[bone];
+        }
+      }
+      const globals = new Array(animState.boneCount);
+      const resolve = (index) => {
+        if (globals[index]) return globals[index];
+        const parent = animState.data.parents[index];
+        globals[index] = parent >= 0 && parent < animState.boneCount
+          ? gimMultiply(resolve(parent), locals[index])
+          : locals[index];
+        return globals[index];
+      };
+      for (let bone = 0; bone < animState.boneCount; bone += 1) resolve(bone);
+      const skin = new Array(animState.boneCount);
+      for (let bone = 0; bone < animState.boneCount; bone += 1) {
+        skin[bone] = animState.inverseBind[bone] ? gimMultiply(globals[bone], animState.inverseBind[bone]) : globals[bone];
+      }
+      for (let index = 0; index < verts.length; index += 1) {
+        const rigidBone = animState.vertexBones ? animState.vertexBones[index] : -1;
+        const jointRow = rigidBone >= 0 ? [rigidBone, 255, 255, 255] : (meshData.joints[index] || []);
+        const weightRow = rigidBone >= 0 ? [1, 0, 0, 0] : (meshData.weights[index] || []);
+        let px = 0, py = 0, pz = 0, nx = 0, ny = 0, nz = 0, total = 0;
+        const sourceNormal = normals[index] || [0, 1, 0];
+        for (let slot = 0; slot < 4; slot += 1) {
+          let joint = jointRow[slot];
+          const weight = weightRow[slot];
+          if (joint === 255) continue;
+          if (animState.jointMap) joint = animState.jointMap[joint];
+          if (!(joint >= 0) || joint >= animState.boneCount || !(weight > 1e-7)) continue;
+          const matrix = skin[joint];
+          const x = verts[index][0], y = verts[index][1], z = verts[index][2];
+          px += weight * (matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12]);
+          py += weight * (matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13]);
+          pz += weight * (matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]);
+          nx += weight * (matrix[0] * sourceNormal[0] + matrix[4] * sourceNormal[1] + matrix[8] * sourceNormal[2]);
+          ny += weight * (matrix[1] * sourceNormal[0] + matrix[5] * sourceNormal[1] + matrix[9] * sourceNormal[2]);
+          nz += weight * (matrix[2] * sourceNormal[0] + matrix[6] * sourceNormal[1] + matrix[10] * sourceNormal[2]);
+          total += weight;
+        }
+        if (total > 1e-8) {
+          px /= total; py /= total; pz /= total;
+          nx /= total; ny /= total; nz /= total;
+          const length = Math.hypot(nx, ny, nz) || 1;
+          positionData[index * 3] = px;
+          positionData[index * 3 + 1] = py;
+          positionData[index * 3 + 2] = pz;
+          normalData[index * 3] = nx / length;
+          normalData[index * 3 + 1] = ny / length;
+          normalData[index * 3 + 2] = nz / length;
+        } else {
+          positionData[index * 3] = verts[index][0];
+          positionData[index * 3 + 1] = verts[index][1];
+          positionData[index * 3 + 2] = verts[index][2];
+          normalData[index * 3] = sourceNormal[0];
+          normalData[index * 3 + 1] = sourceNormal[1];
+          normalData[index * 3 + 2] = sourceNormal[2];
+        }
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, animState.posBuffer);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, positionData);
+      gl.bindBuffer(gl.ARRAY_BUFFER, animState.normalBuffer);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, normalData);
+      animState.frame = frame;
+      updateTimeline();
+    };
+    animState.applyFrame = applyFrame;
+    animState.updateTimeline = updateTimeline;
+    const seek = (time, wrap = false) => {
+      const duration = animState.duration || 1;
+      animState.elapsed = wrap
+        ? ((time % duration) + duration) % duration
+        : Math.max(0, Math.min(duration, time));
+      animState.last = performance.now();
+      animState.applyFrame(Math.floor(animState.elapsed * animState.fps));
+    };
+    if (playButton) {
+      playButton.addEventListener("click", () => {
+        animState.playing = !animState.playing;
+        animState.last = performance.now();
+        updateTimeline();
+      });
+    }
+    const previousButton = $("gim-prev");
+    const nextButton = $("gim-next");
+    if (previousButton) previousButton.addEventListener("click", () => seek(animState.elapsed - 1));
+    if (nextButton) nextButton.addEventListener("click", () => seek(animState.elapsed + 1));
+    const resetAnimationButton = $("gim-reset-anim");
+    if (resetAnimationButton) resetAnimationButton.addEventListener("click", () => seek(0));
+    const animationKeyHandler = (event) => {
+      if ((event.code !== "Space" && event.key !== " ") || event.repeat) return;
+      const viewerNode = $("viewer");
+      if (!viewerNode || !viewerNode.classList.contains("open")) return;
+      const active = document.activeElement;
+      if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
+      event.preventDefault();
+      animState.playing = !animState.playing;
+      animState.last = performance.now();
+      updateTimeline();
+    };
+    document.addEventListener("keydown", animationKeyHandler);
+    gim3d.animKeyHandler = animationKeyHandler;
+    const timelineTrack = $("gim-track");
+    if (timelineTrack) {
+      timelineTrack.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+        const rect = timelineTrack.getBoundingClientRect();
+        seek(Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))) * animState.duration);
+      });
+    }
+    animState.playing = true;
+    animState.last = performance.now();
+    animState.applyFrame(0);
+  }
   const uMvp = gl.getUniformLocation(program, "u_mvp");
   const uTex = gl.getUniformLocation(program, "u_tex");
   const uHasTex = gl.getUniformLocation(program, "u_has_tex");
@@ -3297,6 +3561,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     });
   }
   canvas.addEventListener("pointerdown", (event) => {
+    canvas.focus({ preventScroll: true });
     gim3d.drag = true; gim3d.px = event.clientX; gim3d.py = event.clientY;
     canvas.setPointerCapture(event.pointerId);
   });
@@ -3316,6 +3581,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   }, { passive: false });
   const draw = () => {
     if (token !== viewer.token) return;
+    if (animState && animState.playing) {
+      const now = performance.now();
+      if (!animState.last) animState.last = now;
+      animState.elapsed += (now - animState.last) / 1000;
+      animState.last = now;
+      if (animState.elapsed >= animState.duration) animState.elapsed %= animState.duration;
+      const frame = Math.min(animState.frameCount - 1, Math.floor(animState.elapsed * animState.fps));
+      if (frame !== animState.frame) animState.applyFrame(frame);
+      else if (animState.updateTimeline) animState.updateTimeline();
+    }
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const width = canvas.clientWidth || 800;
     const height = canvas.clientHeight || 500;
@@ -3501,7 +3776,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       gl.uniform1f(uHasTex, 0);
       gl.uniform1f(uHasNormal, 0);
       gl.uniform3f(uColor, 1.0, 0.82, 0.4);
-      gl.drawArrays(gl.POINTS, 0, verts.length);
+      gl.drawElements(gl.POINTS, indexData.length, useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
     }
     if (gim3d.zoomInput && Number(gim3d.zoomInput.value) !== Math.round(gim3d.scale * 100)) {
       gim3d.zoomInput.value = Math.round(gim3d.scale * 100);

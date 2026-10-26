@@ -47,6 +47,7 @@ import resource_inspect
 import neox_object
 import mesh_parse
 import neox_pose
+import neox_anim
 import image_convert
 import gmp_parse
 import xn_crypto
@@ -2169,7 +2170,32 @@ class Handler(BaseHTTPRequestHandler):
                             if parsed.get("joints") and (query.get("pose", ["1"])[0] or "1") != "0":
                                 anim_path = self._mesh_animation_path(mesh_path)
                                 anim_row = self._row(anim_path) if anim_path else None
-                                if anim_row:
+                                animation = None
+                                if anim_path:
+                                    data["animation_path"] = anim_path
+                                    raw_path = Path(anim_path).with_suffix(".rawanimation").as_posix()
+                                    raw_row = self._row(raw_path)
+                                    data["raw_animation_path"] = raw_path
+                                    data["raw_animation_found"] = bool(raw_row)
+                                    if raw_row:
+                                        try:
+                                            skeleton = neox_pose.parse_skeleton(mesh_payload)
+                                            animation = neox_anim.build_animation(
+                                                mesh_payload, parsed, skeleton,
+                                                self._entry_payload(raw_row),
+                                                self.server.cache_root / "anim_frames",
+                                                Path(__file__).parent / "acl_decode.exe",
+                                                decoder_v10=Path(__file__).parent / "acl_decode_v10.exe",
+                                                cached_animation=self._entry_payload(anim_row),
+                                            )
+                                            if not animation:
+                                                data["animation_error"] = "build returned none"
+                                        except Exception as exc:
+                                            animation = None
+                                            data["animation_error"] = f"{type(exc).__name__}: {exc}"
+                                if animation:
+                                    data["animation"] = animation
+                                elif anim_row:
                                     try:
                                         posed, pose_report = neox_pose.apply_cached_pose(
                                             parsed, mesh_payload, self._entry_payload(anim_row)

@@ -322,6 +322,12 @@
     "gmp.verts": "顶点",
     "mtg.textures": "贴图",
     "mtg.note": "材质包含 {count} 张贴图, 点击可预览。",
-    "gmp.pointsToggle": "点阵图"
+    "gmp.pointsToggle": "点阵图",
+    "gim.play": "播放",
+    "gim.pause": "暂停",
+    "gim.prevSecond": "前移 1 秒",
+    "gim.nextSecond": "后移 1 秒",
+    "gim.timeline": "动画时间轴",
+    "gim.reset": "复位"
   }
 }

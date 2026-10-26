@@ -520,6 +520,14 @@ def parse(data: bytes) -> dict:
         if face_start - data_start == geometry:
             variant = "v4-115"
             vertices = _choose_115_positions(data, data_start, total_vcount, indices)
+            xs = [vertex[0] for vertex in vertices]
+            zs = [vertex[2] for vertex in vertices]
+            center_x = (min(xs) + max(xs)) * 0.5
+            center_z = (min(zs) + max(zs)) * 0.5
+            for vertex in vertices:
+                vertex[0] = (vertex[0] - center_x) / 1024.0
+                vertex[1] = vertex[1] / 4096.0
+                vertex[2] = (vertex[2] - center_z) / 1024.0
             normals = _compute_normals(vertices, indices)
         else:
             vertex_flag = data[data_start]
@@ -583,10 +591,11 @@ def parse(data: bytes) -> dict:
         joints = []
         weights = []
         if skin_start + 12 * total_vcount <= data_end:
+            weight_start = skin_start + 4 * total_vcount
             for index in range(total_vcount):
-                offset = skin_start + index * 12
+                offset = skin_start + index * 4
                 joint_row = tuple(data[offset:offset + 4])
-                raw = struct.unpack_from("<4H", data, offset + 4)
+                raw = struct.unpack_from("<4H", data, weight_start + index * 8)
                 total = sum(raw) or 1
                 joints.append(joint_row)
                 weights.append(tuple(round(value / total, 6) for value in raw))

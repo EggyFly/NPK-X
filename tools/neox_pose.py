@@ -162,6 +162,8 @@ def recover_joint_remap(parsed, skeleton):
         for raw_joint in joint_row:
             if raw_joint != 255 and raw_joint > max_raw:
                 max_raw = raw_joint
+    if joints and max_raw < bone_count:
+        return list(range(bone_count)), {"matched": 0, "identity": True, "bones": bone_count}
     palette_size = max(bone_count, max_raw + 1)
     lows = [[float("inf")] * 3 for _ in range(palette_size)]
     highs = [[-float("inf")] * 3 for _ in range(palette_size)]

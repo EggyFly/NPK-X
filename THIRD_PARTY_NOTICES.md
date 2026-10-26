@@ -33,3 +33,6 @@
 * 本项目自己的研究代码不复制任何第三方项目中的密钥材料或保护绕过逻辑；mode 3 结构、密钥与表来自对本机客户端构建的离线验证，详见 `docs/NXPK_MODE3_FORMAT.md`。
 
 如需再分发本工具包，请保留 `licenses/`、`THIRD_PARTY_NOTICES.md` 以及各第三方目录中的许可证文件。
+
+- ACL (Animation Compression Library) 1.2.0, MIT License, https://github.com/nfrechette/acl — used by tools/acl_decode.exe for legacy NeoX ACL v4 animation clips.
+- ACL (Animation Compression Library) 2.1.0 decoder binary `tools/acl_decode_v10.exe` from the NeoX Blender action add-on, MIT-licensed upstream ACL, used for legacy ACL v10 clips.

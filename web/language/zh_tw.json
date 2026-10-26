@@ -322,6 +322,12 @@
     "gmp.verts": "頂點",
     "mtg.textures": "貼圖",
     "mtg.note": "材質包含 {count} 張貼圖, 點擊可預覽。",
-    "gmp.pointsToggle": "點陣圖"
+    "gmp.pointsToggle": "點陣圖",
+    "gim.play": "播放",
+    "gim.pause": "暫停",
+    "gim.prevSecond": "前移 1 秒",
+    "gim.nextSecond": "後移 1 秒",
+    "gim.timeline": "動畫時間軸",
+    "gim.reset": "重設"
   }
 }
