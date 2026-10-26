@@ -46,6 +46,7 @@ import rebuild_data
 import resource_inspect
 import neox_object
 import mesh_parse
+import neox_pose
 import image_convert
 import gmp_parse
 import xn_crypto
@@ -285,6 +286,7 @@ def material_tree(data: dict, resolve=None) -> list:
         intensity = [1.0, 1.0, 1.0, 1.0]
         base_color = [1.0, 1.0, 1.0, 1.0]
         tint_value = 1.0
+        alpha_ref = 0.0
         axis = 0.0
         lerp_center = 0.0
         lerp_contrast = 0.5
@@ -295,6 +297,8 @@ def material_tree(data: dict, resolve=None) -> list:
         pattern_depth = 0.0
         pattern_rotation = 0.0
         repeat_scale = 1.0
+        texture_para = [1.0, 1.0, 0.0, 0.0]
+        rotation_angle = 0.0
         tiling = False
         base_normal = ""
         pattern_tex = ""
@@ -340,6 +344,11 @@ def material_tree(data: dict, resolve=None) -> list:
                 base_color = [float(x) for x in value[:4]]
             elif node_class == "TintValue" and isinstance(value, (int, float)):
                 tint_value = float(value)
+            elif "AlphaRef" in obj:
+                try:
+                    alpha_ref = float(obj["AlphaRef"])
+                except (TypeError, ValueError):
+                    pass
             elif node_class == "Axis" and isinstance(value, (int, float)):
                 axis = float(value)
             elif node_class == "LerpCenter" and isinstance(value, (int, float)):
@@ -360,6 +369,10 @@ def material_tree(data: dict, resolve=None) -> list:
                 pattern_rotation = float(value)
             elif node_class == "RepeatScale" and isinstance(value, (int, float)):
                 repeat_scale = float(value)
+            elif node_class == "TexturePara" and isinstance(value, list):
+                texture_para = [float(x) for x in value[:4]]
+            elif node_class == "RotationAngle" and isinstance(value, (int, float)):
+                rotation_angle = float(value)
             elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
                 slot = resolve(value) if resolve else value
                 if node_class == "Tex0":
@@ -429,6 +442,7 @@ def material_tree(data: dict, resolve=None) -> list:
             "intensity": intensity,
             "base_color": base_color,
             "tint_value": tint_value,
+            "alpha_ref": alpha_ref,
             "axis": axis,
             "lerp_center": lerp_center,
             "lerp_contrast": lerp_contrast,
@@ -439,6 +453,8 @@ def material_tree(data: dict, resolve=None) -> list:
             "pattern_depth": pattern_depth,
             "pattern_rotation": pattern_rotation,
             "repeat_scale": repeat_scale,
+            "texture_para": texture_para,
+            "rotation_angle": rotation_angle,
             "tiling": tiling,
             "base_normal": base_normal,
             "pattern_tex": pattern_tex,
@@ -1461,6 +1477,30 @@ class Handler(BaseHTTPRequestHandler):
                 continue
         return None, None
 
+    def _mesh_animation_path(self, mesh_path: str) -> str | None:
+        folder = Path(mesh_path).parent.as_posix()
+        stem = Path(mesh_path).stem
+        base = stem.split("_lod")[0]
+        connection = db_connect(self.server.db_path)
+        try:
+            rows = connection.execute(
+                "SELECT path FROM files WHERE lower(ext)='.animation' AND path LIKE ? ORDER BY path",
+                (f"{folder}/%",),
+            ).fetchall()
+        finally:
+            connection.close()
+        paths = [row["path"] for row in rows]
+        for path in paths:
+            if f"animations_{base}/" in path and Path(path).name == "idle.animation":
+                return path
+        for path in paths:
+            if Path(path).name == "idle.animation":
+                return path
+        for path in paths:
+            if f"animations_{base}/" in path:
+                return path
+        return paths[0] if paths else None
+
     def _resolve_ref(self, base_path: str, ref: str) -> str | None:
         target = [p for p in ref.replace("\\", "/").split("/") if p not in ("", ".")]
         candidate = "/".join(target)
@@ -2126,6 +2166,24 @@ class Handler(BaseHTTPRequestHandler):
                                 center, half = self._gim_bounds(data)
                                 if center and half:
                                     parsed = mesh_parse.denormalize(parsed, center, half)
+                            if parsed.get("joints") and (query.get("pose", ["1"])[0] or "1") != "0":
+                                anim_path = self._mesh_animation_path(mesh_path)
+                                anim_row = self._row(anim_path) if anim_path else None
+                                if anim_row:
+                                    try:
+                                        posed, pose_report = neox_pose.apply_cached_pose(
+                                            parsed, mesh_payload, self._entry_payload(anim_row)
+                                        )
+                                        if posed:
+                                            old = parsed["bounds"]
+                                            new = posed["bounds"]
+                                            old_span = [max(1e-5, old["max"][axis] - old["min"][axis]) for axis in range(3)]
+                                            new_span = [new["max"][axis] - new["min"][axis] for axis in range(3)]
+                                            if all(0.5 <= new_span[axis] / old_span[axis] <= 3 for axis in range(3)):
+                                                parsed = posed
+                                                data["pose"] = pose_report
+                                    except Exception:
+                                        pass
                             data["mesh_data"] = parsed
                             if data.get("materials"):
                                 mapping = submesh_materials(data)

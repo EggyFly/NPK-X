@@ -52,7 +52,10 @@ def main() -> int:
                 print(f"  bone_count(u16@+12)={u16(data, offset + 20)}")
             print_strings(data, offset + 24, offset + 8 + size)
         elif name == "NAME":
-            print_strings(data, offset + 8, offset + 8 + size)
+            start = offset + 8
+            count = u32(data, start)
+            print(f"  names={count}")
+            print_strings(data, start + 4, offset + 8 + size)
         elif name == "DATA":
             end = min(offset + 8 + size, len(data))
             start = offset + 8

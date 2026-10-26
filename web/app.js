@@ -252,6 +252,11 @@ async function getJson(url) {
   return response.json();
 }
 
+function neoxParams(file) {
+  const pose = new URLSearchParams(location.search).get("pose");
+  return pose === "0" ? { path: file.path, pose: "0" } : { path: file.path };
+}
+
 const KIND_LABEL = {};
 const ROOT_LABEL = {};
 
@@ -2581,7 +2586,7 @@ async function openGimDirect(file) {
   node.classList.add("open");
   lockViewerScroll();
   try {
-    const data = await getJson(apiUrl("/api/neox", { path: file.path }));
+    const data = await getJson(apiUrl("/api/neox", neoxParams(file)));
     if (token !== viewer.token) return;
     const meshData = data.mesh_data || ((file.ext || "").toLowerCase() === ".mesh" ? data : null);
     if (!meshData || !(meshData.vertices || []).length) throw new Error(data.mesh_error || tr("gmp.noUnits"));
@@ -2803,8 +2808,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   stage.innerHTML = `<canvas id="gim-canvas" class="gim-canvas"></canvas>
     <div class="map-hud">${Number(verts.length).toLocaleString()} verts · ${Number(indices.length / 3).toLocaleString()} tris</div>`;
   const canvas = $("gim-canvas");
-  const gl = canvas.getContext("webgl", { antialias: true, alpha: false }) || canvas.getContext("experimental-webgl");
+  const gl = canvas.getContext("webgl2", { antialias: true, alpha: false })
+    || canvas.getContext("webgl", { antialias: true, alpha: false })
+    || canvas.getContext("experimental-webgl");
   if (!gl) throw new Error("WebGL unavailable");
+  const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gim3d.canvas = canvas;
   gim3d.gl = gl;
@@ -2874,6 +2882,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform vec3 u_bound_half;
     uniform float u_tiling;
     uniform float u_repeat_scale;
+    uniform float u_repeat_always;
+    uniform vec4 u_texture_para;
+    uniform float u_rotation_angle;
+    uniform vec4 u_base_color;
+    uniform float u_tint_value;
+    uniform vec4 u_intensity;
+    uniform float u_alpha_ref;
     uniform sampler2D u_pattern_tex;
     uniform float u_has_pattern;
     uniform vec2 u_pattern_scale;
@@ -2886,7 +2901,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl_FragColor = vec4(u_color, 1.0);
         return;
       }
-      vec2 sample_uv = v_uv * u_repeat_scale;
+      vec2 sample_uv = v_uv;
+      sample_uv -= 0.5;
+      sample_uv *= u_texture_para.xy;
+      float texture_angle = radians(u_rotation_angle);
+      if (abs(texture_angle) > 0.0001) {
+        float texture_sin = sin(texture_angle), texture_cos = cos(texture_angle);
+        sample_uv = vec2(sample_uv.x * texture_cos - sample_uv.y * texture_sin, sample_uv.x * texture_sin + sample_uv.y * texture_cos);
+      }
+      sample_uv += 0.5;
+      sample_uv += u_texture_para.zw;
+      if (u_repeat_always > 0.5) sample_uv *= u_repeat_scale;
       if (u_tiling > 0.5) {
         vec3 an = abs(normalize(v_normal));
         vec3 p = v_local / 2.64 * u_repeat_scale;
@@ -2926,9 +2951,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           color = mix(color, u_design.rgb, clamp(pattern_mask, 0.0, 1.0));
         }
       }
+      color *= u_base_color.rgb * u_tint_value;
       float alpha = u_has_tex > 0.5 ? texel.a : 1.0;
       if (u_opacity_tex > 1.5) alpha = 1.0;
       else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
+      alpha *= u_base_color.a;
       if (u_sprite > 0.5) {
         color *= u_tint.rgb * 2.0;
         alpha *= u_tint.a * 2.0;
@@ -2952,9 +2979,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         } else {
           n = tex_normal * 2.0 - 1.0;
         }
+        n.xy *= u_intensity.r;
         normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
         light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
       }
+      if (alpha < u_alpha_ref) discard;
       gl_FragColor = vec4(color * light, clamp(alpha, 0.0, 1.0));
     }`);
   if (!program) throw new Error("shader failed");
@@ -3017,7 +3046,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   let maxIndex = 0;
   for (const value of indices) if (value > maxIndex) maxIndex = value;
   const useUint32 = maxIndex > 65535;
-  if (useUint32 && !gl.getExtension("OES_element_index_uint")) throw new Error("index buffer too large");
+  if (useUint32 && !isWebGL2 && !gl.getExtension("OES_element_index_uint")) throw new Error("index buffer too large");
   const indexData = useUint32 ? new Uint32Array(indices) : new Uint16Array(indices);
   const bindAttribute = (name, size, data) => {
     const location = gl.getAttribLocation(program, name);
@@ -3059,6 +3088,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uBoundHalf = gl.getUniformLocation(program, "u_bound_half");
   const uTiling = gl.getUniformLocation(program, "u_tiling");
   const uRepeatScale = gl.getUniformLocation(program, "u_repeat_scale");
+  const uRepeatAlways = gl.getUniformLocation(program, "u_repeat_always");
+  const uTexturePara = gl.getUniformLocation(program, "u_texture_para");
+  const uRotationAngle = gl.getUniformLocation(program, "u_rotation_angle");
+  const uBaseColor = gl.getUniformLocation(program, "u_base_color");
+  const uTintValue = gl.getUniformLocation(program, "u_tint_value");
+  const uIntensity = gl.getUniformLocation(program, "u_intensity");
+  const uAlphaRef = gl.getUniformLocation(program, "u_alpha_ref");
+  const repeatAlwaysFor = (group) => {
+    const surface = String(group && group.surface || "").toLowerCase();
+    return surface.includes("change_color") && !surface.includes("change_color_object");
+  };
   const uPatternTex = gl.getUniformLocation(program, "u_pattern_tex");
   const uHasPattern = gl.getUniformLocation(program, "u_has_pattern");
   const uPatternScale = gl.getUniformLocation(program, "u_pattern_scale");
@@ -3067,6 +3107,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uPatternColorKey = gl.getUniformLocation(program, "u_pattern_color_key");
   const uOpacityTex = gl.getUniformLocation(program, "u_opacity_tex");
   const potImage = (image) => {
+    if (isWebGL2) return image;
     const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
     const width = next(image.width), height = next(image.height);
     if (width === image.width && height === image.height) return image;
@@ -3116,6 +3157,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   }
   gl.uniform1f(uTiling, 0);
   gl.uniform1f(uRepeatScale, 1);
+  gl.uniform1f(uRepeatAlways, 0);
+  gl.uniform4f(uTexturePara, 1, 1, 0, 0);
+  gl.uniform1f(uRotationAngle, 0);
+  gl.uniform4f(uBaseColor, 1, 1, 1, 1);
+  gl.uniform1f(uTintValue, 1);
+  gl.uniform4f(uIntensity, 1, 1, 1, 1);
+  gl.uniform1f(uAlphaRef, 0);
   gl.uniform1i(uPatternTex, 3);
   gl.uniform1f(uHasPattern, 0);
   gl.uniform2f(uPatternScale, 1, 1);
@@ -3139,6 +3187,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform1f(uTiling, firstTreeMaterial.tiling ? 1 : 0);
     const repeatScale = Number(firstTreeMaterial.repeat_scale);
     gl.uniform1f(uRepeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
+    gl.uniform1f(uRepeatAlways, repeatAlwaysFor(firstTreeMaterial) ? 1 : 0);
+    const texturePara = Array.isArray(firstTreeMaterial.texture_para) ? firstTreeMaterial.texture_para : [1, 1, 0, 0];
+    gl.uniform4f(uTexturePara, Number(texturePara[0]) || 1, Number(texturePara[1]) || 1, Number(texturePara[2]) || 0, Number(texturePara[3]) || 0);
+    gl.uniform1f(uRotationAngle, Number(firstTreeMaterial.rotation_angle) || 0);
+    const baseColor = Array.isArray(firstTreeMaterial.base_color) ? firstTreeMaterial.base_color : [1, 1, 1, 1];
+    gl.uniform4f(uBaseColor, Number(baseColor[0]) || 0, Number(baseColor[1]) || 0, Number(baseColor[2]) || 0, Number(baseColor[3]) || 0);
+    gl.uniform1f(uTintValue, Number.isFinite(Number(firstTreeMaterial.tint_value)) ? Number(firstTreeMaterial.tint_value) : 1);
+    const intensity = Array.isArray(firstTreeMaterial.intensity) ? firstTreeMaterial.intensity : [1, 1, 1, 1];
+    gl.uniform4f(uIntensity, Number(intensity[0]) || 0, Number(intensity[1]) || 0, Number(intensity[2]) || 0, Number(intensity[3]) || 0);
+    gl.uniform1f(uAlphaRef, Number(firstTreeMaterial.alpha_ref) || 0);
     gl.uniform1f(uOpacityTex, firstTreeMaterial.opacity_tex === "tex1" ? 1 : (firstTreeMaterial.opacity_tex === "none" ? 2 : 0));
     const patternPara = Array.isArray(firstTreeMaterial.pattern_para) ? firstTreeMaterial.pattern_para : [1, 1, 0, 0];
     gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
@@ -3364,6 +3422,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform1f(uTiling, mat.tiling ? 1 : 0);
         const repeatScale = Number(mat.repeat_scale);
         gl.uniform1f(uRepeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
+        gl.uniform1f(uRepeatAlways, repeatAlwaysFor(mat) ? 1 : 0);
+        const texturePara = Array.isArray(mat.texture_para) ? mat.texture_para : [1, 1, 0, 0];
+        gl.uniform4f(uTexturePara, Number(texturePara[0]) || 1, Number(texturePara[1]) || 1, Number(texturePara[2]) || 0, Number(texturePara[3]) || 0);
+        gl.uniform1f(uRotationAngle, Number(mat.rotation_angle) || 0);
+        const baseColor = Array.isArray(mat.base_color) ? mat.base_color : [1, 1, 1, 1];
+        gl.uniform4f(uBaseColor, Number(baseColor[0]) || 0, Number(baseColor[1]) || 0, Number(baseColor[2]) || 0, Number(baseColor[3]) || 0);
+        gl.uniform1f(uTintValue, Number.isFinite(Number(mat.tint_value)) ? Number(mat.tint_value) : 1);
+        const intensity = Array.isArray(mat.intensity) ? mat.intensity : [1, 1, 1, 1];
+        gl.uniform4f(uIntensity, Number(intensity[0]) || 0, Number(intensity[1]) || 0, Number(intensity[2]) || 0, Number(intensity[3]) || 0);
+        gl.uniform1f(uAlphaRef, Number(mat.alpha_ref) || 0);
         gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
         gl.uniform1f(uOpacityTex, mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0));
         const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
@@ -3507,7 +3575,7 @@ async function showPreview(file) {
     } else if (ext === ".gim" || ext === ".mtg") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("gmp.loading");
-      const data = await getJson(apiUrl("/api/neox", { path: file.path }));
+      const data = await getJson(apiUrl("/api/neox", neoxParams(file)));
       if (token !== previewToken) return;
       renderNeoXPreview(data, media, file);
     } else if (kind === "script") {
