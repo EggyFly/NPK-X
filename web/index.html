@@ -18,7 +18,7 @@
   if (meta) meta.setAttribute("content", light ? "#f7fafb" : "#0f1316");
 })();
 </script>
-  <link rel="stylesheet" href="/static/style.css?v=67">
+  <link rel="stylesheet" href="/static/style.css?v=68">
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -186,7 +186,10 @@
   <div class="drawer-head">
     <div class="drawer-title">
       <div id="preview-badge" class="badge">FILE</div>
-      <div class="drawer-name" id="preview-name" data-i18n="drawer.preview">预览</div>
+      <div class="drawer-label">
+        <div class="drawer-name" id="preview-name" data-i18n="drawer.preview">预览</div>
+        <div class="drawer-sub hidden" id="preview-sub"></div>
+      </div>
     </div>
     <button id="close-drawer" class="icon-btn" title="关闭" data-i18n-title="drawer.close" aria-label="关闭" data-i18n-aria="drawer.close"><svg class="icon"><use href="#i-close"></use></svg></button>
   </div>
@@ -216,7 +219,10 @@
 <div id="viewer" class="viewer hidden" aria-hidden="true" role="dialog" aria-modal="true">
   <div class="viewer-panel">
     <div class="viewer-head">
-      <div class="viewer-name" id="viewer-name"></div>
+      <div class="viewer-title">
+        <div class="viewer-name" id="viewer-name"></div>
+        <div class="viewer-sub hidden" id="viewer-sub"></div>
+      </div>
       <span class="viewer-stats" id="viewer-stats"></span>
       <button id="viewer-close" class="icon-btn" title="关闭" data-i18n-title="viewer.close" aria-label="关闭" data-i18n-aria="viewer.close"><svg class="icon"><use href="#i-close"></use></svg></button>
     </div>
@@ -243,6 +249,6 @@
   <button id="batch-toast-close" class="icon-btn" type="button" title="关闭" data-i18n-title="common.close" aria-label="关闭" data-i18n-aria="common.close"><svg class="icon"><use href="#i-close"></use></svg></button>
 </div>
 
-  <script src="/static/app.js?v=107"></script>
+  <script src="/static/app.js?v=108"></script>
 </body>
 </html>

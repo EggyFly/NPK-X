@@ -27,6 +27,7 @@ const state = {
   selectMode: false,
   selected: new Set(),
   roots: [],
+  names: new Map(),
 };
 
 const batchPick = { img: "png", aud: "wav" };
@@ -543,6 +544,7 @@ const EXT_KIND = {
   ".animconfig": "binary", ".animgraph": "model", ".animation": "model",
   ".trackgroup": "model",
 };
+const NAME_EXT = new Set([".gmp", ".xn", ".wem"]);
 
 const TEXT_THUMB_EXT = new Set([
   ".json", ".xml", ".txt", ".conf", ".plist", ".atlas", ".lod", ".ini",
@@ -903,6 +905,199 @@ function hydrateThumbs(root) {
   });
 }
 
+let nameObserver = null;
+let nameQueue = new Set();
+let nameTimer = 0;
+let nameEpoch = 0;
+let nameBusy = false;
+let fileNodeMap = new Map();
+
+function indexFileNodes(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-file]").forEach((node) => fileNodeMap.set(node.dataset.file, node));
+}
+
+function displayNameFor(file) {
+  const name = state.names.get(file.path) || "";
+  return name && name !== file.name ? name : "";
+}
+
+function namePending(file) {
+  return NAME_EXT.has((file.ext || "").toLowerCase()) && !state.names.has(file.path);
+}
+
+function absorbNames(files) {
+  for (const file of files || []) {
+    if (typeof file.display_name === "string" && file.display_name) {
+      state.names.set(file.path, file.display_name);
+    }
+  }
+}
+
+function beginNameEpoch() {
+  nameEpoch += 1;
+  nameQueue.clear();
+  if (nameTimer) {
+    clearTimeout(nameTimer);
+    nameTimer = 0;
+  }
+  if (nameObserver) {
+    nameObserver.disconnect();
+    nameObserver = null;
+  }
+}
+
+function queueName(path) {
+  if (!path || state.names.has(path) || nameQueue.has(path)) return;
+  nameQueue.add(path);
+  if (!nameTimer) nameTimer = setTimeout(flushNames, 80);
+}
+
+function queueFileNames(file) {
+  if (file && NAME_EXT.has((file.ext || "").toLowerCase())) queueName(file.path);
+}
+
+async function flushNames() {
+  if (nameBusy) return;
+  nameTimer = 0;
+  const batch = Array.from(nameQueue).slice(0, 40);
+  batch.forEach((path) => nameQueue.delete(path));
+  if (!batch.length) return;
+  nameBusy = true;
+  try {
+    const epoch = nameEpoch;
+    const query = new URLSearchParams();
+    batch.forEach((path) => query.append("path", path));
+    let data = null;
+    let ok = false;
+    try {
+      data = await getJson(`/api/names?${query.toString()}`);
+      ok = true;
+    } catch (_) {}
+    if (epoch !== nameEpoch || !ok) return;
+    const names = (data && data.names) || {};
+    for (const path of batch) {
+      if (!state.names.has(path)) state.names.set(path, "");
+      const node = fileNodeMap.get(path);
+      if (node) delete node.dataset.nameFile;
+    }
+    const applied = [];
+    for (const [path, name] of Object.entries(names)) {
+      if (typeof name === "string" && name) {
+        state.names.set(path, name);
+        applied.push([path, name]);
+      }
+    }
+    if (applied.length) applyNames(applied);
+  } finally {
+    nameBusy = false;
+    if (nameQueue.size) nameTimer = setTimeout(flushNames, 40);
+  }
+}
+
+function takePendingName(node) {
+  queueName(node.dataset.file);
+  delete node.dataset.nameFile;
+  if (nameObserver) nameObserver.unobserve(node);
+}
+
+function ensureNameObserver() {
+  if (nameObserver || !window.IntersectionObserver) return;
+  nameObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) takePendingName(entry.target);
+    }
+  }, { rootMargin: "800px 0px" });
+}
+
+function watchNameNodes(nodes) {
+  if (!nodes.length) return;
+  if (!window.IntersectionObserver) {
+    nodes.forEach(takePendingName);
+    return;
+  }
+  ensureNameObserver();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  nodes.forEach((node) => {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom >= -800 && rect.top <= viewportHeight + 800) takePendingName(node);
+    else nameObserver.observe(node);
+  });
+}
+
+function hydrateNames(root) {
+  if (!root) return;
+  if (nameObserver) {
+    nameObserver.disconnect();
+    nameObserver = null;
+  }
+  watchNameNodes(Array.from(root.querySelectorAll("[data-name-file]")));
+}
+
+let nameScrollTimer = 0;
+function queueVisibleNames() {
+  if (nameScrollTimer) clearTimeout(nameScrollTimer);
+  nameScrollTimer = setTimeout(() => {
+    nameScrollTimer = 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    document.querySelectorAll("[data-name-file]").forEach((node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom >= -800 && rect.top <= viewportHeight + 800) takePendingName(node);
+    });
+  }, 220);
+}
+
+function initNameHydration() {
+  window.addEventListener("scroll", queueVisibleNames, { passive: true });
+}
+
+function updateNameNode(node, name) {
+  const filename = node.dataset.filename || "";
+  if (name === filename) {
+    delete node.dataset.nameFile;
+    return;
+  }
+  if (node.classList.contains("file-row")) {
+    const nameEl = node.querySelector(".file-row-name");
+    const label = node.querySelector(".file-row-label");
+    if (nameEl) nameEl.textContent = name;
+    if (label && !label.querySelector(".file-row-sub") && filename) {
+      const sub = document.createElement("span");
+      sub.className = "file-row-sub";
+      sub.textContent = filename;
+      label.appendChild(sub);
+    }
+  } else {
+    const nameEl = node.querySelector(".file-name");
+    const meta = node.querySelector(".file-meta");
+    if (nameEl) nameEl.textContent = name;
+    if (meta && !meta.querySelector(".file-sub") && filename) {
+      const sub = document.createElement("span");
+      sub.className = "file-sub";
+      sub.textContent = filename;
+      const sep = document.createElement("span");
+      sep.className = "meta-sep";
+      sep.textContent = " · ";
+      meta.insertBefore(sep, meta.firstChild);
+      meta.insertBefore(sub, sep);
+    }
+  }
+  delete node.dataset.nameFile;
+  refreshMarqueeTargets(node);
+}
+
+function applyNames(entries) {
+  for (const [path, name] of entries) {
+    const node = fileNodeMap.get(path);
+    if (node && node.isConnected) updateNameNode(node, name);
+    if (state.previewPath === path) {
+      const file = state.files.find((item) => item.path === path);
+      if (file) setPreviewTitle(file);
+    }
+    if (viewer.path === path && viewer.file) setViewerTitle(viewer.file);
+  }
+}
+
 function mtgCellMarkup(item) {
   const ext = (item.ext || "").toLowerCase();
   const label = ext ? ext.slice(1, 5).toUpperCase() : "FILE";
@@ -1068,10 +1263,15 @@ function pickBoxMarkup(file) {
 
 function fileRowMarkup(file) {
   const act = itemAction(file);
-  return `<div class="file-row${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}">
+  const display = displayNameFor(file);
+  const sub = display ? `<span class="file-row-sub">${esc(file.name)}</span>` : "";
+  const pending = namePending(file) ? ` data-name-file="1"` : "";
+  return `<div class="file-row${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}" data-filename="${esc(file.name)}"${pending}>
     ${pickBoxMarkup(file)}
     <div class="file-row-thumb">${thumbMarkup(file, true)}</div>
-    <div class="file-row-name" title="${esc(file.path)}">${esc(file.name)}</div>
+    <div class="file-row-label" title="${esc(file.path)}">
+      <span class="file-row-name">${esc(display || file.name)}</span>${sub}
+    </div>
     <div class="file-row-size">${formatBytes(file.size)}</div>
     <div class="file-row-pkg">${esc(file.package)}</div>
     <div class="file-row-action">
@@ -1082,13 +1282,16 @@ function fileRowMarkup(file) {
 
 function fileCardMarkup(file) {
   const act = itemAction(file);
-  return `<div class="file${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}" title="${esc(file.path)}">
+  const display = displayNameFor(file);
+  const sub = display ? `<span class="file-sub">${esc(file.name)}</span><span class="meta-sep"> · </span>` : "";
+  const pending = namePending(file) ? ` data-name-file="1"` : "";
+  return `<div class="file${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}" data-filename="${esc(file.name)}"${pending} title="${esc(file.path)}">
     ${thumbMarkup(file)}
     ${pickBoxMarkup(file)}
     <div class="file-info">
       <div class="file-text">
-        <div class="file-name">${esc(file.name)}</div>
-        <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
+        <div class="file-name">${esc(display || file.name)}</div>
+        <div class="file-meta">${sub}${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
       </div>
       <button class="zoom-btn ${act.name === "play" ? "play-btn" : ""}" type="button" data-action="${act.name}" title="${act.label}" aria-label="${act.label}">${icon(act.icon)}</button>
     </div>
@@ -1109,6 +1312,9 @@ function appendFiles(files) {
   if (!container) return;
   const markup = files.map(state.view === "list" ? fileRowMarkup : fileCardMarkup).join("");
   container.insertAdjacentHTML("beforeend", markup);
+  const added = Array.from(container.querySelectorAll("[data-file]")).slice(-files.length);
+  added.forEach((node) => fileNodeMap.set(node.dataset.file, node));
+  watchNameNodes(added.filter((node) => node.hasAttribute("data-name-file")));
 }
 
 function skeletonScreen(hint) {
@@ -1236,6 +1442,7 @@ async function loadMore() {
       : await getJson(apiUrl("/api/list", { path: state.path, sort: state.sort, kind: state.kind, limit: PAGE_SIZE, offset: state.files.length }));
     if (token !== listToken) return;
     const more = data.files || [];
+    absorbNames(more);
     if (state.searchMode) state.searchTotal = Number(data.total ?? state.searchTotal);
     else state.fileTotal = Number(data.file_total ?? state.fileTotal);
     if (!more.length) {
@@ -1349,6 +1556,7 @@ function updateViewButtons() {
 async function loadList(path, push = true, keepKind = false, keepScroll = false) {
   const token = ++listToken;
   beginThumbEpoch();
+  beginNameEpoch();
   if (push) pendingRestoreScroll = null;
   const previousPath = state.path;
   const previousScroll = window.scrollY;
@@ -1387,6 +1595,7 @@ async function loadList(path, push = true, keepKind = false, keepScroll = false)
     }));
     if (token !== listToken) return;
     state.files = data.files || [];
+    absorbNames(state.files);
     state.dirs = data.dirs || [];
     state.dirSummary = data.dir_summary || null;
     state.kindCounts = data.kind_counts || {};
@@ -1399,8 +1608,11 @@ async function loadList(path, push = true, keepKind = false, keepScroll = false)
     renderCrumbs(data.breadcrumbs);
     $("where").textContent = state.path ? state.path.split("/").pop() : tr("index.all");
     updateCounts();
+    fileNodeMap = new Map();
     $("content").innerHTML = renderFolders(state.dirs) + renderFiles(state.files) || `<div class="empty">${tr("list.empty")}</div>`;
+    indexFileNodes($("content"));
     hydrateThumbs($("content"));
+    hydrateNames($("content"));
     setupMarquee($("content"));
     setupMarquee($("content-topbar"));
     renderIndex(data);
@@ -1426,6 +1638,7 @@ async function loadList(path, push = true, keepKind = false, keepScroll = false)
 async function search(query, keepScroll = false) {
   const token = ++listToken;
   beginThumbEpoch();
+  beginNameEpoch();
   stopAudio();
   closeViewer();
   state.loadingMore = false;
@@ -1450,6 +1663,7 @@ async function search(query, keepScroll = false) {
     const data = await getJson(apiUrl("/api/search", { q: query, limit: PAGE_SIZE, offset: 0, sort: state.sort }));
     if (token !== listToken) return;
     state.files = data.files || [];
+    absorbNames(state.files);
     state.dirs = [];
     state.kindCounts = data.kind_counts || {};
     state.searchTotal = Number(data.total ?? state.files.length);
@@ -1460,8 +1674,11 @@ async function search(query, keepScroll = false) {
     }
     renderCrumbs([]);
     updateCounts();
+    fileNodeMap = new Map();
     $("content").innerHTML = renderFiles(state.files) || `<div class="empty">${tr("list.noMatches")}</div>`;
+    indexFileNodes($("content"));
     hydrateThumbs($("content"));
+    hydrateNames($("content"));
     setupMarquee($("content"));
     setupMarquee($("content-topbar"));
     renderIndex({ path: "", dirs: [], files: state.files, file_total: state.searchTotal, kind_counts: state.kindCounts }, true, query);
@@ -1752,7 +1969,7 @@ async function openScriptViewer(file) {
   viewer.file = file;
   viewer.path = file.path;
   viewer.mode = "script";
-  $("viewer-name").textContent = file.name;
+  setViewerTitle(file);
   $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("drawer.note.script")}</div>`;
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
@@ -1986,7 +2203,7 @@ function openViewer(file) {
   viewer.path = file.path;
   const ext = (file.ext || "").toLowerCase();
   viewer.mode = ext === ".gmp" ? "map" : isTextView(file) ? "text" : "image";
-  $("viewer-name").textContent = file.name;
+  setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
   void node.offsetWidth;
@@ -2019,7 +2236,7 @@ function clearViewerContent() {
   mapView.minimapBase = null;
   mapView.icons = {};
   mapView.dragging = false;
-  $("viewer-name").textContent = "";
+  setViewerTitle(null);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
   unlockViewerScroll();
@@ -3155,7 +3372,7 @@ async function openGimDirect(file) {
   viewer.file = file;
   viewer.path = file.path;
   viewer.mode = "image";
-  $("viewer-name").textContent = file.name;
+  setViewerTitle(file);
   $("viewer-foot").innerHTML = "";
   $("viewer-stage").innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
   void node.offsetWidth;
@@ -3230,7 +3447,7 @@ function openGimViewer(file, data) {
   viewer.file = file;
   viewer.path = file.path;
   viewer.mode = "image";
-  $("viewer-name").textContent = file.name;
+  setViewerTitle(file);
   $("viewer-foot").innerHTML = gimFoot();
   bindGimFoot();
   const stage = $("viewer-stage");
@@ -4386,13 +4603,39 @@ function drawGimMinimap(mvp, width, height) {
   view.style.height = `${Math.min(mh, mh / gim3d.scale)}px`;
 }
 
+function setPreviewTitle(file) {
+  const name = (file && displayNameFor(file)) || "";
+  $("preview-name").textContent = name || (file ? file.name : "");
+  const sub = $("preview-sub");
+  if (sub) {
+    sub.textContent = name && file ? file.name : "";
+    sub.classList.toggle("hidden", !name);
+  }
+  if (file) queueFileNames(file);
+  const head = document.querySelector("#drawer .drawer-head");
+  if (head) refreshMarqueeTargets(head);
+}
+
+function setViewerTitle(file) {
+  const name = (file && displayNameFor(file)) || "";
+  $("viewer-name").textContent = name || (file ? file.name : "");
+  const sub = $("viewer-sub");
+  if (sub) {
+    sub.textContent = name && file ? file.name : "";
+    sub.classList.toggle("hidden", !name);
+  }
+  if (file) queueFileNames(file);
+  const head = document.querySelector("#viewer .viewer-head");
+  if (head) refreshMarqueeTargets(head);
+}
+
 async function showPreview(file) {
   const token = ++previewToken;
   stopXnMarquee();
   state.previewPath = file.path;
   setActiveFile(file.path);
   updatePreviewNav();
-  $("preview-name").textContent = file.name;
+  setPreviewTitle(file);
   const previewExt = (file.ext || "").toLowerCase();
   const previewBadge = $("preview-badge");
   if (previewExt === ".bin" || previewExt === ".mesh") {
@@ -4525,6 +4768,11 @@ function closeDrawer() {
   previewToken += 1;
   stopXnMarquee();
   state.previewPath = null;
+  const sub = $("preview-sub");
+  if (sub) {
+    sub.textContent = "";
+    sub.classList.add("hidden");
+  }
   setActiveFile(null);
   updatePreviewNav();
   const drawer = $("drawer");
@@ -4677,7 +4925,7 @@ function initIndexPane() {
 }
 
 
-const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-meta, .file-row-name, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .viewer-name, .where, .xn-head b, .xn-head > div > span";
+const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-meta, .file-row-name, .file-row-sub, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .drawer-sub, .viewer-name, .viewer-sub, .where, .xn-head b, .xn-head > div > span";
 const MARQUEE_HOSTS = ".folder, .folder-row, .file, .file-row, .root, .index-dir, .drawer-head, .viewer-head, .toolbar";
 const MARQUEE_HOVER_HOSTS = MARQUEE_HOSTS.split(",").map((item) => item.trim() + ":hover").join(", ");
 
@@ -4812,29 +5060,41 @@ function startHoveredMarquees() {
   });
 }
 
+function resetMarqueeTarget(el) {
+  if (el.__marqueeRun) return false;
+  stopMarquee(el);
+  el.classList.remove("marquee");
+  const inner = el.querySelector(":scope > .marquee-inner");
+  if (inner) {
+    el.innerHTML = "";
+    while (inner.firstChild) {
+      const node = inner.firstChild;
+      if (node.classList && node.classList.contains("marquee-copy")) break;
+      el.appendChild(node);
+    }
+    el.style.removeProperty("--marquee-shift");
+  }
+  return true;
+}
+
+function measureMarqueeTarget(el) {
+  if (el.__marqueeRun) return;
+  if (el.clientWidth > 0 && el.scrollWidth - el.clientWidth > 1) el.classList.add("marquee");
+}
+
 function setupMarquee(root) {
   if (!root) return;
   const targets = root.querySelectorAll(MARQUEE_TARGETS);
-  targets.forEach((el) => {
-    if (el.__marqueeRun) return;
-    stopMarquee(el);
-    el.classList.remove("marquee");
-    const inner = el.querySelector(":scope > .marquee-inner");
-    if (inner) {
-      el.innerHTML = "";
-      while (inner.firstChild) {
-        const node = inner.firstChild;
-        if (node.classList && node.classList.contains("marquee-copy")) break;
-        el.appendChild(node);
-      }
-      el.style.removeProperty("--marquee-shift");
-    }
-  });
-  targets.forEach((el) => {
-    if (el.__marqueeRun) return;
-    if (el.clientWidth > 0 && el.scrollWidth - el.clientWidth > 1) el.classList.add("marquee");
-  });
+  targets.forEach(resetMarqueeTarget);
+  targets.forEach(measureMarqueeTarget);
   startHoveredMarquees();
+}
+
+function refreshMarqueeTargets(root) {
+  if (!root) return;
+  root.querySelectorAll(MARQUEE_TARGETS).forEach((el) => {
+    if (resetMarqueeTarget(el)) measureMarqueeTarget(el);
+  });
 }
 
 function startXnMarquee() {
@@ -4877,8 +5137,11 @@ function rerenderFilesOnly() {
   if (!wrap) return;
   beginThumbEpoch();
   const body = renderFiles(state.files) || `<div class="empty">${tr(state.searchMode ? "list.noMatches" : "list.empty")}</div>`;
+  fileNodeMap = new Map();
   $("content").innerHTML = (state.searchMode ? "" : renderFolders(state.dirs)) + body;
+  indexFileNodes($("content"));
   hydrateThumbs($("content"));
+  hydrateNames($("content"));
   setupMarquee($("content"));
   setupMarquee($("content-topbar"));
   ensureSentinel();
@@ -5101,6 +5364,7 @@ function bind() {
   initSidebarResize();
   initIndexPane();
   initMarquee();
+  initNameHydration();
   $("content").addEventListener("click", (event) => {
     if (event.target.closest("#retry-more")) {
       loadMore();

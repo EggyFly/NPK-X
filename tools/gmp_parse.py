@@ -206,6 +206,45 @@ def _looks_msgpack(raw: bytes) -> bool:
     return 0x80 <= marker <= 0x9F or 0xDC <= marker <= 0xDF
 
 
+def _find_map_name(value, depth=0):
+    if depth > 30:
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("map_name", b"map_name"):
+                return item
+        for item in value.values():
+            found = _find_map_name(item, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for item in value[:400]:
+            found = _find_map_name(item, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def read_map_name(payload: bytes) -> str | None:
+    if not payload.startswith(b"DZ") and ZSTD_MAGIC not in payload[:4096]:
+        raise ValueError("not a GMP container")
+    for index, (offset, compressed, raw) in enumerate(_frames(payload)):
+        if index >= 5:
+            break
+        if len(raw) > 2 * 1024 * 1024:
+            continue
+        try:
+            value, end = _decode(raw)
+        except (MsgpackError, RecursionError):
+            continue
+        found = _find_map_name(value)
+        if found is not None:
+            text = _text(found).strip()
+            if text:
+                return text
+    return None
+
+
 def _frames(payload: bytes):
     pos = 0
     while True:

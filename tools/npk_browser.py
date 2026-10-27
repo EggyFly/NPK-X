@@ -111,6 +111,27 @@ BATCH_TIME_BUDGET = 600
 BATCH_BODY_LIMIT = 2 * 1024 * 1024
 
 
+def clean_map_name(value: str | None, stem: str) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or "")).strip().strip("/")
+    if not text or text == stem:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("maps_") or lowered.startswith("dtmb_name_"):
+        return ""
+    if text.isdigit() or re.fullmatch(r"\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}.*", text):
+        return ""
+    prefix = stem + "_"
+    if text.startswith(prefix):
+        text = text[len(prefix):].strip()
+    elif stem.isdigit():
+        match = re.match(r"^\d+[-_](.+)$", text)
+        if match:
+            text = match.group(1).strip()
+    if not text or text == stem:
+        return ""
+    return text[:120]
+
+
 def zip_arc_name(path: str) -> str:
     parts = []
     for part in str(path).replace("\\", "/").split("/"):
@@ -763,6 +784,11 @@ class BrowserServer(ThreadingHTTPServer):
     _gmp_sem = threading.Semaphore(2)
     _gmp_cache_lock = threading.Lock()
     _gmp_cache: dict = {}
+    _names_lock = threading.Lock()
+    _names: dict | None = None
+    _names_key: str | None = None
+    _wem_banks_lock = threading.Lock()
+    _wem_banks: dict | None = None
     _xn_sem = threading.Semaphore(2)
     _xn_cache_lock = threading.Lock()
     _xn_cache: dict = {}
@@ -1904,6 +1930,129 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._gmp_cache.pop(next(iter(BrowserServer._gmp_cache)))
         return data
 
+    def _name_key(self) -> str:
+        raw = json.dumps(self.server.fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def _name_store(self) -> dict:
+        key = self._name_key()
+        with BrowserServer._names_lock:
+            if BrowserServer._names is not None and BrowserServer._names_key == key:
+                return BrowserServer._names
+            items = {}
+            path = self.server.cache_root / "names.json"
+            try:
+                payload = json.loads(path.read_text("utf-8"))
+                if payload.get("key") == key and isinstance(payload.get("items"), dict):
+                    items = {str(name): str(value) for name, value in payload["items"].items()}
+            except (OSError, ValueError, TypeError):
+                items = {}
+            BrowserServer._names = items
+            BrowserServer._names_key = key
+            return items
+
+    def _save_names(self, store: dict) -> None:
+        with BrowserServer._names_lock:
+            snapshot = dict(store)
+            key = BrowserServer._names_key or self._name_key()
+            path = self.server.cache_root / "names.json"
+            tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                payload = {"key": key, "items": snapshot}
+                tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                pass
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _wem_bank_map(self) -> dict:
+        with BrowserServer._wem_banks_lock:
+            if BrowserServer._wem_banks is not None:
+                return BrowserServer._wem_banks
+            connection = db_connect(self.server.db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT f.*, p.path AS package_path FROM files f JOIN packages p ON f.package=p.name WHERE f.ext='.bnk' ORDER BY f.path"
+                ).fetchall()
+            finally:
+                connection.close()
+            mapping = {}
+            for row in rows:
+                try:
+                    bank = bnk_parse.parse_bank(self._entry_payload(row))
+                except Exception:
+                    continue
+                for track in bank.hirc.get("music_tracks", []):
+                    media_id = track.get("media_id")
+                    if isinstance(media_id, int):
+                        mapping.setdefault(media_id, row["path"])
+            BrowserServer._wem_banks = mapping
+            return mapping
+
+    def _gmp_display_name(self, row) -> str:
+        key = (row["path"], row["signature"], row["packed_hash"])
+        with BrowserServer._gmp_cache_lock:
+            data = BrowserServer._gmp_cache.get(key)
+        if data is not None:
+            return data.get("map_name") or ""
+        try:
+            return gmp_parse.read_map_name(self._entry_payload(row)) or ""
+        except Exception:
+            return ""
+
+    def _display_name(self, row) -> str:
+        ext = (row["ext"] or "").lower()
+        stem = Path(row["path"]).stem
+        if ext == ".xn":
+            value = self._xn_name_map().get(int(row["signature"]))
+            text = value.strip() if isinstance(value, str) else ""
+            return text if text and text != stem else ""
+        if ext == ".gmp":
+            return clean_map_name(self._gmp_display_name(row), stem)
+        if ext == ".wem":
+            if not stem.isdigit():
+                return ""
+            bank = self._wem_bank_map().get(int(stem))
+            name = Path(bank).stem if bank else ""
+            return name if name and not name.isdigit() else ""
+        return ""
+
+    def _resolve_names(self, rows) -> dict:
+        store = self._name_store()
+        names = {}
+        dirty = False
+        for row in rows:
+            path = row["path"]
+            ext = (row["ext"] or "").lower()
+            if ext == ".xn":
+                name = self._display_name(row)
+            elif path in store:
+                name = store[path]
+            else:
+                name = self._display_name(row)
+                if ext in (".gmp", ".wem"):
+                    store[path] = name
+                    dirty = True
+            if name:
+                names[path] = name
+        if dirty:
+            self._save_names(store)
+        return names
+
+    def _cached_display_name(self, row, store: dict, xn_names: dict) -> str:
+        path = row["path"]
+        if path in store:
+            return store[path]
+        if (row["ext"] or "").lower() != ".xn":
+            return ""
+        value = xn_names.get(int(row["signature"]))
+        text = value.strip() if isinstance(value, str) else ""
+        return text if text and text != Path(path).stem else ""
+
     def _xn_name_map(self) -> dict:
         path = Path(self.server.xn_names_path) if self.server.xn_names_path else Path(__file__).resolve().parent.parent / "data" / "xn_names.json"
         try:
@@ -2302,14 +2451,19 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         summary_row = connection.execute("SELECT COUNT(*),COALESCE(SUM(unpacked),0) FROM files").fetchone()
                         dir_summary = {"files": summary_row[0], "bytes": summary_row[1]}
-                    files = [
-                        {
+                    name_store = self._name_store()
+                    xn_names = self._xn_name_map()
+                    files = []
+                    for row in file_rows:
+                        item = {
                             "name": row["name"], "path": row["path"], "size": row["unpacked"],
                             "kind": row["kind"], "ext": row["ext"], "package": row["package"],
                             "signature": f"{row['signature']:08x}",
                         }
-                        for row in file_rows
-                    ]
+                        display_name = self._cached_display_name(row, name_store, xn_names)
+                        if display_name:
+                            item["display_name"] = display_name
+                        files.append(item)
                 finally:
                     connection.close()
                 crumbs = []
@@ -2324,6 +2478,31 @@ class Handler(BaseHTTPRequestHandler):
                     "kind_counts": kind_counts, "kind_filter": kind_filter,
                     "dir_summary": dir_summary, "sort": sort_key,
                 })
+                return
+            if route == "/api/names":
+                paths = []
+                seen = set()
+                for value in query.get("path", []):
+                    path = (value or "").strip("/").replace("\\", "/")
+                    if not path or path in seen:
+                        continue
+                    seen.add(path)
+                    paths.append(path)
+                    if len(paths) >= 64:
+                        break
+                if not paths:
+                    self._json({"names": {}})
+                    return
+                connection = db_connect(self.server.db_path)
+                try:
+                    marks = ",".join("?" for _ in paths)
+                    rows = connection.execute(
+                        f"SELECT f.*, p.path AS package_path FROM files f JOIN packages p ON f.package=p.name WHERE f.path IN ({marks})",
+                        paths,
+                    ).fetchall()
+                finally:
+                    connection.close()
+                self._json({"names": self._resolve_names(rows)})
                 return
             if route == "/api/search":
                 query_text = (query.get("q", [""])[0] or "").strip()
@@ -2349,14 +2528,19 @@ class Handler(BaseHTTPRequestHandler):
                         f"SELECT name,path,unpacked,kind,ext,package,signature FROM files WHERE lower(path) LIKE lower(?) ESCAPE '\\' ORDER BY {sort_expr} LIMIT ? OFFSET ?",
                         (pattern, limit, offset),
                     )
-                    files = [
-                        {
+                    name_store = self._name_store()
+                    xn_names = self._xn_name_map()
+                    files = []
+                    for row in rows:
+                        item = {
                             "name": row["name"], "path": row["path"], "size": row["unpacked"],
                             "kind": row["kind"], "ext": row["ext"], "package": row["package"],
                             "signature": f"{row['signature']:08x}",
                         }
-                        for row in rows
-                    ]
+                        display_name = self._cached_display_name(row, name_store, xn_names)
+                        if display_name:
+                            item["display_name"] = display_name
+                        files.append(item)
                 finally:
                     connection.close()
                 self._json({

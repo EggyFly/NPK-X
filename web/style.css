@@ -620,6 +620,8 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .file-text { min-width: 0; flex: 1; }
 .file-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-meta { color: var(--md-on-surface-variant); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-sub { font-size: 10px; }
+.meta-sep { opacity: .7; }
 
 .zoom-btn {
   flex: none; width: 30px; height: 30px; border-radius: var(--md-shape-full); border: 0;
@@ -655,7 +657,9 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .file-row-thumb .thumb-tag, .file-row-thumb .thumb-play { display: none; }
 .file-row-action { display: flex; justify-content: flex-end; }
 .file-row .badge { justify-self: center; }
+.file-row-label { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .file-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.file-row-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-on-surface-variant); font-size: 10px; }
 .file-row-size, .file-row-pkg { color: var(--md-on-surface-variant); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .list-sentinel {
@@ -802,7 +806,9 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .drawer-nav .mini-btn { min-height: 30px; padding: 3px 10px; }
 .drawer-pos { color: var(--md-on-surface-variant); font: 10px/1 var(--md-font-mono); letter-spacing: .5px; }
 .drawer-title { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.drawer-label { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .drawer-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.drawer-sub { color: var(--md-on-surface-variant); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 .drawer-body { padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
 .preview-media {
   min-height: 120px; display: flex; align-items: center; justify-content: center;
@@ -1003,7 +1009,9 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 14px 10px 20px; border-bottom: 1px solid var(--md-outline-variant);
 }
+.viewer-title { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .viewer-name { min-width: 0; font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-sub { color: var(--md-on-surface-variant); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-stage {
   position: relative; flex: 1; min-height: 0; overflow: hidden;
   background: var(--md-surface-container-lowest); touch-action: none;
