@@ -1399,7 +1399,21 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 
 .marquee {
   --marquee-fade: 14px;
+  --marquee-shift: 0px;
   text-overflow: clip;
   -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
   mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - var(--marquee-fade)), transparent 100%);
+}
+.marquee > .marquee-inner {
+  display: inline-block;
+  white-space: nowrap;
+  vertical-align: top;
+  transform: translateX(var(--marquee-shift));
+  will-change: transform;
+}
+.marquee > .marquee-inner > .marquee-copy {
+  display: inline-block;
+  padding-left: 28px;
+  white-space: nowrap;
+  vertical-align: top;
 }

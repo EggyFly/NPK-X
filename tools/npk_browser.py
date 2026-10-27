@@ -32,6 +32,7 @@ import uuid
 import webbrowser
 import zipfile
 import zstandard
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -732,9 +733,16 @@ def ensure_catalog(
     return build_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver)
 
 
+class ThumbPending(Exception):
+    def __init__(self, retry_after: float = 0.5):
+        super().__init__("thumbnail pending")
+        self.retry_after = retry_after
+
+
 class BrowserServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
 
     db_path: Path
     cache_root: Path
@@ -743,7 +751,15 @@ class BrowserServer(ThreadingHTTPServer):
     vgmstream: str | None
     fingerprint: dict
     _cache_lock = threading.Lock()
-    _thumb_sem = threading.Semaphore(3)
+    _thumb_sem = threading.Semaphore(8)
+    _thumb_pool_lock = threading.Lock()
+    _thumb_pools: dict = {}
+    _thumb_jobs_lock = threading.Lock()
+    _thumb_jobs: dict = {}
+    _thumb_pending: dict = {}
+    _thumb_limits = {"image": 6, "wave": 4, "gim": 6, "gmp": 4}
+    _thumb_grace = {"image": 8.0, "wave": 8.0, "gim": 1.6, "gmp": 1.6}
+    _thumb_backlog = 96
     _gmp_sem = threading.Semaphore(2)
     _gmp_cache_lock = threading.Lock()
     _gmp_cache: dict = {}
@@ -767,11 +783,10 @@ class BrowserServer(ThreadingHTTPServer):
     _last_prune = 0.0
 
     def read_artifact(self, path: Path) -> bytes | None:
-        with self._cache_lock:
-            try:
-                return path.read_bytes()
-            except FileNotFoundError:
-                return None
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
 
     def prune_cache(self) -> None:
         if self.cache_limit <= 0:
@@ -813,6 +828,55 @@ class BrowserServer(ThreadingHTTPServer):
         target = self.artifacts / name
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
+
+    def thumb_pool(self, kind: str) -> ThreadPoolExecutor:
+        with self._thumb_pool_lock:
+            pool = self._thumb_pools.get(kind)
+            if pool is None:
+                pool = ThreadPoolExecutor(
+                    max_workers=self._thumb_limits.get(kind, 4),
+                    thread_name_prefix=f"thumb-{kind}",
+                )
+                self._thumb_pools[kind] = pool
+            return pool
+
+    def thumb_submit(self, kind: str, cache: Path, work):
+        key = str(cache)
+        with self._thumb_jobs_lock:
+            future = self._thumb_jobs.get(key)
+            if future is not None and not future.done():
+                return future, False
+            if self._thumb_pending.get(kind, 0) >= self._thumb_backlog:
+                return None, False
+            future = self.thumb_pool(kind).submit(work)
+            self._thumb_jobs[key] = future
+            self._thumb_pending[kind] = self._thumb_pending.get(kind, 0) + 1
+        future.add_done_callback(lambda done: self._thumb_finish(key, kind, done))
+        return future, True
+
+    def _thumb_finish(self, key: str, kind: str, future) -> None:
+        with self._thumb_jobs_lock:
+            if self._thumb_jobs.get(key) is future:
+                self._thumb_jobs.pop(key, None)
+            self._thumb_pending[kind] = max(0, self._thumb_pending.get(kind, 0) - 1)
+
+    def thumb_await(self, future, kind: str, wait: bool):
+        if not wait:
+            raise ThumbPending(0.25)
+        try:
+            return future.result(timeout=self._thumb_grace.get(kind, 3.0))
+        except FutureTimeoutError:
+            raise ThumbPending(0.45 if kind in ("gim", "gmp") else 0.8) from None
+
+    def close_thumbnails(self) -> None:
+        with self._thumb_pool_lock:
+            pools = list(self._thumb_pools.values())
+            self._thumb_pools.clear()
+        for pool in pools:
+            pool.shutdown(wait=False, cancel_futures=True)
+        with self._thumb_jobs_lock:
+            self._thumb_jobs.clear()
+            self._thumb_pending.clear()
 
 
 def db_connect(path: Path) -> sqlite3.Connection:
@@ -1304,8 +1368,19 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return target, converted
 
-    def _image_thumb(self, row, width: int) -> bytes:
+    def _image_thumb(self, row, width: int, wait: bool = True) -> bytes:
         cache = self.server.artifact(row, f"_img_w{width}.png", "thumb")
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        future, _ = self.server.thumb_submit(
+            "image", cache, lambda: self._image_thumb_render(row, width, cache)
+        )
+        if future is None:
+            raise ThumbPending(0.4)
+        return self.server.thumb_await(future, "image", wait)
+
+    def _image_thumb_render(self, row, width: int, cache: Path) -> bytes:
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
@@ -1396,85 +1471,101 @@ class Handler(BaseHTTPRequestHandler):
                 except FileNotFoundError:
                     pass
 
-    def _waveform_thumb(self, row, width: int) -> bytes:
+    def _waveform_thumb(self, row, width: int, wait: bool = True) -> bytes:
         if _soundfile is None or _np is None:
             raise ValueError("waveform preview unavailable")
         cache = self.server.artifact(row, f"_wave3_w{width}.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
-        with BrowserServer._thumb_sem:
-            thumb = self.server.read_artifact(cache)
-            if thumb is not None:
-                return thumb
+        future, _ = self.server.thumb_submit(
+            "wave", cache, lambda: self._waveform_thumb_render(row, width, cache)
+        )
+        if future is None:
+            raise ThumbPending(0.6)
+        return self.server.thumb_await(future, "wave", wait)
+
+    def _waveform_thumb_render(self, row, width: int, cache: Path) -> bytes:
+        thumb = self.server.read_artifact(cache)
+        if thumb is not None:
+            return thumb
+        try:
+            mono, _rate = self._waveform_samples(row)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"cannot decode audio: {exc}") from None
+        if not mono.size:
+            raise ValueError("audio has no samples")
+        height = max(48, int(round(width * 0.625)))
+        bins = _np.array_split(_np.abs(mono), width)
+        peaks = _np.array(
+            [float(part.max()) if part.size else 0.0 for part in bins], dtype="float32"
+        )
+        peak = float(peaks.max())
+        peaks = _np.sqrt(peaks / peak) if peak > 0 else _np.zeros(width, dtype="float32")
+        highlight = float(_np.percentile(peaks, 99)) if peak > 0 else 1.0
+        if highlight >= 1.0:
+            # Fully saturated tracks would otherwise paint every lane amber.
+            highlight = 1.01
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        mid = height / 2
+        top = []
+        bottom = []
+        for x, value in enumerate(peaks):
+            amplitude = max(1.0, float(value) * height * 0.34)
+            top.append((x, mid - amplitude))
+            bottom.append((x, mid + amplitude))
+        draw.polygon(top + list(reversed(bottom)), fill=(0, 140, 150, 42))
+        draw.line((0, int(mid), width - 1, int(mid)), fill=(128, 128, 128, 60))
+        normal = (0, 140, 150, 230)
+        hot = (190, 120, 0, 240)
+        for x in range(max(0, width - 1)):
+            color = hot if max(float(peaks[x]), float(peaks[x + 1])) >= highlight else normal
+            draw.line((top[x][0], top[x][1], top[x + 1][0], top[x + 1][1]), fill=color, width=2)
+            draw.line((bottom[x][0], bottom[x][1], bottom[x + 1][0], bottom[x + 1][1]), fill=color, width=2)
+        tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            image.save(tmp, "PNG")
+            thumb = tmp.read_bytes()
+            os.replace(tmp, cache)
+        finally:
             try:
-                mono, _rate = self._waveform_samples(row)
-            except ValueError:
-                raise
-            except Exception as exc:
-                raise ValueError(f"cannot decode audio: {exc}") from None
-            if not mono.size:
-                raise ValueError("audio has no samples")
-            height = max(48, int(round(width * 0.625)))
-            bins = _np.array_split(_np.abs(mono), width)
-            peaks = _np.array(
-                [float(part.max()) if part.size else 0.0 for part in bins], dtype="float32"
-            )
-            peak = float(peaks.max())
-            peaks = _np.sqrt(peaks / peak) if peak > 0 else _np.zeros(width, dtype="float32")
-            highlight = float(_np.percentile(peaks, 99)) if peak > 0 else 1.0
-            if highlight >= 1.0:
-                # Fully saturated tracks would otherwise paint every lane amber.
-                highlight = 1.01
-            image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            mid = height / 2
-            top = []
-            bottom = []
-            for x, value in enumerate(peaks):
-                amplitude = max(1.0, float(value) * height * 0.34)
-                top.append((x, mid - amplitude))
-                bottom.append((x, mid + amplitude))
-            draw.polygon(top + list(reversed(bottom)), fill=(0, 140, 150, 42))
-            draw.line((0, int(mid), width - 1, int(mid)), fill=(128, 128, 128, 60))
-            normal = (0, 140, 150, 230)
-            hot = (190, 120, 0, 240)
-            for x in range(max(0, width - 1)):
-                color = hot if max(float(peaks[x]), float(peaks[x + 1])) >= highlight else normal
-                draw.line((top[x][0], top[x][1], top[x + 1][0], top[x + 1][1]), fill=color, width=2)
-                draw.line((bottom[x][0], bottom[x][1], bottom[x + 1][0], bottom[x + 1][1]), fill=color, width=2)
-            tmp = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
-            try:
-                image.save(tmp, "PNG")
-                thumb = tmp.read_bytes()
-                os.replace(tmp, cache)
-            finally:
-                try:
-                    tmp.unlink()
-                except FileNotFoundError:
-                    pass
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
         self.server.prune_cache()
         return thumb
 
-    def _thumbnail(self, row, width: int) -> bytes:
+    def _thumbnail(self, row, width: int, wait: bool = True) -> bytes:
+        row = dict(row)
         ext = (row["ext"] or "").lower()
         kind = row["kind"] or ""
         if ext == ".gim":
-            return self._gim_thumb(row, width)
+            return self._gim_thumb(row, width, wait)
         if ext == ".gmp":
-            return self._gmp_thumb(row, width)
+            return self._gmp_thumb(row, width, wait)
         if kind == "image" or ext in IMAGE_EXT:
-            return self._image_thumb(row, width)
+            return self._image_thumb(row, width, wait)
         if kind in ("audio", "bank") or ext in AUDIO_EXT:
-            return self._waveform_thumb(row, width)
+            return self._waveform_thumb(row, width, wait)
         raise ValueError("thumbnail not available for this type")
 
-    def _gim_thumb(self, row, width: int) -> bytes:
+    def _gim_thumb(self, row, width: int, wait: bool = True) -> bytes:
         width = min(max(32, width), 512)
         cache = self.server.artifact(row, f"_gim_w{width}_v1.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
+        future, _ = self.server.thumb_submit(
+            "gim", cache, lambda: self._gim_thumb_render(row, width, cache)
+        )
+        if future is None:
+            raise ThumbPending(0.45)
+        return self.server.thumb_await(future, "gim", wait)
+
+    def _gim_thumb_render(self, row, width: int, cache: Path) -> bytes:
         with BrowserServer._thumb_sem:
             thumb = self.server.read_artifact(cache)
             if thumb is not None:
@@ -1513,12 +1604,20 @@ class Handler(BaseHTTPRequestHandler):
             self.server.prune_cache()
             return thumb
 
-    def _gmp_thumb(self, row, width: int) -> bytes:
+    def _gmp_thumb(self, row, width: int, wait: bool = True) -> bytes:
         width = min(max(32, width), 512)
         cache = self.server.artifact(row, f"_gmp_w{width}_v1.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
+        future, _ = self.server.thumb_submit(
+            "gmp", cache, lambda: self._gmp_thumb_render(row, width, cache)
+        )
+        if future is None:
+            raise ThumbPending(0.45)
+        return self.server.thumb_await(future, "gmp", wait)
+
+    def _gmp_thumb_render(self, row, width: int, cache: Path) -> bytes:
         with BrowserServer._thumb_sem:
             thumb = self.server.read_artifact(cache)
             if thumb is not None:
@@ -2612,9 +2711,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not row:
                     self._error("not found", 404)
                     return
-                width = min(max(int(query.get("w", ["256"])[0] or 256), 32), 1024)
                 try:
-                    thumb = self._thumbnail(row, width)
+                    width = min(max(int(query.get("w", ["256"])[0] or 256), 32), 1024)
+                except ValueError:
+                    self._error("invalid width", 400)
+                    return
+                wait = (query.get("wait", ["1"])[0] or "1") != "0"
+                try:
+                    thumb = self._thumbnail(row, width, wait)
+                except ThumbPending as exc:
+                    self._json({"state": "pending", "retry_after": round(exc.retry_after, 3)}, 202)
+                    return
                 except ValueError as exc:
                     self._error(str(exc), 415)
                     return
@@ -2945,6 +3052,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nstopping...")
     finally:
+        server.close_thumbnails()
         server.server_close()
     return 0
 

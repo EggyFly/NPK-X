@@ -669,11 +669,151 @@ function unpreviewThumb(thumb) {
   if (thumbRevealObserver) thumbRevealObserver.unobserve(thumb);
 }
 
+const THUMB_FETCH_LIMIT = 6;
+const THUMB_FETCH_TIMEOUT = 30000;
+const THUMB_RETRY_LIMIT = 240;
+let thumbEpoch = 0;
+let thumbRunning = 0;
+const thumbJobs = new Map();
+const thumbQueue = [[], []];
+
+function beginThumbEpoch() {
+  thumbEpoch += 1;
+  thumbQueue[0].length = 0;
+  thumbQueue[1].length = 0;
+  for (const job of Array.from(thumbJobs.values())) cancelThumbJob(job);
+}
+
+function cancelThumbJob(job) {
+  if (job.cancelled) return;
+  job.cancelled = true;
+  thumbJobs.delete(job.key);
+  if (job.controller) job.controller.abort();
+  for (const waiter of job.waiters) waiter.reject(new Error("thumbnail cancelled"));
+  job.waiters.length = 0;
+}
+
+function enqueueThumbJob(job) {
+  if (job.cancelled || job.epoch !== thumbEpoch) return;
+  thumbQueue[job.priority === 0 ? 0 : 1].push(job);
+  pumpThumbQueue();
+}
+
+function raiseThumbPriority(job) {
+  if (job.priority === 0) return;
+  job.priority = 0;
+  const index = thumbQueue[1].indexOf(job);
+  if (index >= 0) {
+    thumbQueue[1].splice(index, 1);
+    thumbQueue[0].push(job);
+  }
+}
+
+function pumpThumbQueue() {
+  while (thumbRunning < THUMB_FETCH_LIMIT) {
+    const job = thumbQueue[0].shift() || thumbQueue[1].shift();
+    if (!job) return;
+    if (job.cancelled || job.epoch !== thumbEpoch) continue;
+    thumbRunning += 1;
+    void runThumbJob(job);
+  }
+}
+
+async function runThumbJob(job) {
+  job.controller = new AbortController();
+  const timer = setTimeout(() => job.controller.abort(), THUMB_FETCH_TIMEOUT);
+  let retryDelay = 0;
+  try {
+    const response = await fetch(job.url, { cache: "default", signal: job.controller.signal });
+    if (job.cancelled || job.epoch !== thumbEpoch) return;
+    if (response.status === 202) {
+      job.retries += 1;
+      if (job.retries > THUMB_RETRY_LIMIT) throw new Error("thumbnail timeout");
+      retryDelay = 450;
+      try {
+        const data = await response.json();
+        const retry = Number(data && data.retry_after);
+        if (Number.isFinite(retry) && retry > 0) retryDelay = Math.max(200, retry * 1000);
+      } catch (_) {}
+      return;
+    }
+    if (!response.ok) throw new Error(`thumbnail ${response.status}`);
+    const blob = await response.blob();
+    if (job.cancelled || job.epoch !== thumbEpoch) return;
+    thumbJobs.delete(job.key);
+    for (const waiter of job.waiters) waiter.resolve(URL.createObjectURL(blob));
+    job.waiters.length = 0;
+  } catch (error) {
+    if (job.cancelled) return;
+    const failure = error && error.name === "AbortError" ? new Error("thumbnail timeout") : error;
+    thumbJobs.delete(job.key);
+    for (const waiter of job.waiters) waiter.reject(failure);
+    job.waiters.length = 0;
+  } finally {
+    clearTimeout(timer);
+    thumbRunning = Math.max(0, thumbRunning - 1);
+    if (retryDelay) {
+      setTimeout(() => {
+        if (!job.cancelled && job.epoch === thumbEpoch) enqueueThumbJob(job);
+      }, retryDelay * (0.85 + Math.random() * 0.3));
+    }
+    pumpThumbQueue();
+  }
+}
+
+function scheduleThumb(url, priority = 1) {
+  const key = `${thumbEpoch}|${url}`;
+  let job = thumbJobs.get(key);
+  if (!job) {
+    job = {
+      key, url, epoch: thumbEpoch, priority: priority === 0 ? 0 : 1,
+      retries: 0, waiters: [], controller: null, cancelled: false,
+    };
+    thumbJobs.set(key, job);
+    enqueueThumbJob(job);
+  } else if (priority === 0) {
+    raiseThumbPriority(job);
+  }
+  return new Promise((resolve, reject) => job.waiters.push({ resolve, reject }));
+}
+
+async function loadThumbImage(img, thumb, src, soft = false, priority = null) {
+  const rank = priority === null ? (thumb && thumb.dataset.visible === "1" ? 0 : 1) : priority;
+  try {
+    const blobUrl = await scheduleThumb(src, rank);
+    if (!img.isConnected) {
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+    const revoke = () => URL.revokeObjectURL(blobUrl);
+    img.addEventListener("load", revoke, { once: true });
+    img.addEventListener("error", revoke, { once: true });
+    img.src = blobUrl;
+  } catch (_) {
+    if (soft) {
+      img.style.display = "none";
+      return;
+    }
+    if (!thumb.isConnected) return;
+    img.style.display = "none";
+    clearThumbSource(thumb);
+    thumb.classList.add("failed");
+    unpreviewThumb(thumb);
+  }
+}
+
 function revealThumb(thumb) {
   if (thumb.dataset.visible !== "1" || thumb.dataset.ready !== "1") return;
   if (thumb.classList.contains("loaded") || thumb.classList.contains("failed")) return;
   clearThumbSource(thumb);
-  requestAnimationFrame(() => thumb.classList.add("loaded"));
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    thumb.classList.add("loaded");
+  };
+  setTimeout(show, 48);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(show);
   unpreviewThumb(thumb);
 }
 
@@ -693,7 +833,7 @@ function startThumbLoad(thumb) {
       thumb.classList.add("failed");
       unpreviewThumb(thumb);
     }, { once: true });
-    img.src = src;
+    loadThumbImage(img, thumb, src);
     return;
   }
   if (thumb.dataset.mtg) {
@@ -711,7 +851,11 @@ function startThumbLoad(thumb) {
 
 function setThumbVisible(thumb, visible) {
   thumb.dataset.visible = visible ? "1" : "0";
-  if (visible) revealThumb(thumb);
+  if (!visible) return;
+  revealThumb(thumb);
+  const img = thumb.querySelector("img[data-thumb-src]");
+  const job = img && img.dataset.thumbSrc ? thumbJobs.get(`${thumbEpoch}|${img.dataset.thumbSrc}`) : null;
+  if (job) raiseThumbPriority(job);
 }
 
 function hydrateThumbs(root) {
@@ -763,7 +907,7 @@ function mtgCellMarkup(item) {
   const ext = (item.ext || "").toLowerCase();
   const label = ext ? ext.slice(1, 5).toUpperCase() : "FILE";
   if (item.kind === "image") {
-    return `<span class="mtg-cell mtg-cell-image"><img src="${esc(apiUrl("/api/thumb", { path: item.path, w: 96, v: 6 }))}" alt="" loading="lazy" draggable="false"><b>${esc(label)}</b></span>`;
+    return `<span class="mtg-cell mtg-cell-image"><img data-thumb-src="${esc(apiUrl("/api/thumb", { path: item.path, w: 96, v: 6 }))}" alt="" draggable="false"><b>${esc(label)}</b></span>`;
   }
   const name = ext === ".mesh" || ext === ".gim" ? "mesh" : ext === ".xn" ? "code" : "bin";
   return `<span class="mtg-cell"><span class="mtg-cell-icon">${icon(name)}</span><b>${esc(label)}</b></span>`;
@@ -773,6 +917,7 @@ async function loadThumbMtg(thumb) {
   const url = thumb.dataset.mtg;
   try {
     const data = await getJson(url);
+    if (!thumb.isConnected) return;
     const list = Array.isArray(data.resources) ? data.resources : [];
     const total = Number(data.total ?? list.length);
     if (!list.length) throw new Error("no resources");
@@ -781,6 +926,11 @@ async function loadThumbMtg(thumb) {
     const limit = total > 6 ? 5 : 6;
     grid.innerHTML = list.slice(0, limit).map(mtgCellMarkup).join("");
     if (total > 6) grid.insertAdjacentHTML("beforeend", `<span class="mtg-cell mtg-more"><b>${total - 5}+</b></span>`);
+    grid.querySelectorAll("img[data-thumb-src]").forEach((img) => {
+      const src = img.dataset.thumbSrc;
+      delete img.dataset.thumbSrc;
+      loadThumbImage(img, thumb, src, true);
+    });
     thumb.dataset.ready = "1";
     revealThumb(thumb);
   } catch (_) {
@@ -794,6 +944,7 @@ async function loadThumbSnippet(thumb) {
   const url = thumb.dataset.snippet;
   try {
     const data = await getJson(url);
+    if (!thumb.isConnected) return;
     if (!data.text) {
       clearThumbSource(thumb);
       thumb.classList.add("failed");
@@ -814,6 +965,7 @@ async function loadThumbSnippet(thumb) {
 }
 
 function loadThumbVideo(thumb) {
+  if (!thumb.isConnected) return;
   const src = thumb.dataset.videoSrc;
   const video = document.createElement("video");
   video.muted = true;
@@ -1196,6 +1348,7 @@ function updateViewButtons() {
 
 async function loadList(path, push = true, keepKind = false, keepScroll = false) {
   const token = ++listToken;
+  beginThumbEpoch();
   if (push) pendingRestoreScroll = null;
   const previousPath = state.path;
   const previousScroll = window.scrollY;
@@ -1272,6 +1425,7 @@ async function loadList(path, push = true, keepKind = false, keepScroll = false)
 
 async function search(query, keepScroll = false) {
   const token = ++listToken;
+  beginThumbEpoch();
   stopAudio();
   closeViewer();
   state.loadingMore = false;
@@ -1790,11 +1944,19 @@ function ensureMapIcons() {
     const url = mapIconUrl(eid);
     if (!url || mapView.icons[eid]) continue;
     const img = new Image();
-    img.onload = () => {
-      mapView.icons[eid] = img;
-      requestMapDraw();
-    };
-    img.src = url;
+    scheduleThumb(url, 0).then((blobUrl) => {
+      if (!mapView.data) {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      img.addEventListener("load", () => {
+        URL.revokeObjectURL(blobUrl);
+        mapView.icons[eid] = img;
+        requestMapDraw();
+      }, { once: true });
+      img.addEventListener("error", () => URL.revokeObjectURL(blobUrl), { once: true });
+      img.src = blobUrl;
+    }).catch(() => {});
   }
 }
 
@@ -1901,7 +2063,7 @@ function imageViewerFoot(file, mapUrl) {
     <button class="mini-btn" id="viewer-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("viewer.fitShort")}</button>
   </div>
   <div class="viewer-map" id="viewer-map">
-    <img id="viewer-map-img" alt="" src="${esc(mapSource)}">
+    <img id="viewer-map-img" alt="" data-viewer-thumb="${esc(mapSource)}">
     <div class="viewer-map-view" id="viewer-map-view"></div>
   </div>`;
 }
@@ -1910,6 +2072,8 @@ function openImageViewer(file, token, sourceUrl, mapUrl) {
   const stage = $("viewer-stage");
   const isMap = (file.ext || "").toLowerCase() === ".gmp";
   $("viewer-foot").innerHTML = imageViewerFoot(file, mapUrl);
+  const mapThumb = $("viewer-map-img");
+  if (mapThumb && mapThumb.dataset.viewerThumb) loadThumbImage(mapThumb, null, mapThumb.dataset.viewerThumb, true, 0);
   stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${isMap ? tr("viewer.loadingMap") : tr("viewer.loadingImage")}</div>`;
   const img = new Image();
   img.id = "viewer-image";
@@ -4536,7 +4700,7 @@ function startFallbackMarqueeTicker() {
       return;
     }
     marqueeActive.forEach((el) => updateMarquee(el, performance.now()));
-    marqueeTicker.timer = setTimeout(tick, 32);
+    marqueeTicker.timer = setTimeout(tick, 16);
   };
   tick();
 }
@@ -4544,7 +4708,7 @@ function startFallbackMarqueeTicker() {
 function ensureMarqueeTicker() {
   if (marqueeTicker) return;
   try {
-    const source = "const id=setInterval(()=>postMessage(0),32);self.onmessage=()=>{clearInterval(id);self.close();};";
+    const source = "const id=setInterval(()=>postMessage(0),16);self.onmessage=()=>{clearInterval(id);self.close();};";
     const url = URL.createObjectURL(new Blob([source], { type: "application/javascript" }));
     const worker = new Worker(url);
     URL.revokeObjectURL(url);
@@ -4577,19 +4741,22 @@ function updateMarquee(el, now) {
     el.__marqueePos = 0;
     el.classList.remove("marquee-pause");
     el.classList.add("marquee-moving");
-    el.style.textIndent = "0px";
+    el.style.setProperty("--marquee-shift", "0px");
     return;
   }
   const raw = Math.max(0, now - el.__marqueeStart);
   el.__marqueeStart = now;
-  el.__marqueePos = Math.min(el.__marqueePos + Math.min(raw, 64), el.__marqueeTravel);
-  const progress = el.__marqueePos / el.__marqueeTravel;
-  el.style.textIndent = `-${el.__marqueeOverflow * progress}px`;
-  if (el.__marqueePos >= el.__marqueeTravel) {
+  const next = el.__marqueePos + Math.min(raw, 64);
+  if (next >= el.__marqueeTravel) {
+    el.__marqueePos = 0;
     el.classList.remove("marquee-moving");
     el.classList.add("marquee-pause");
     el.__marqueePausedUntil = now + 2000;
+    el.style.setProperty("--marquee-shift", "0px");
+    return;
   }
+  el.__marqueePos = next;
+  el.style.setProperty("--marquee-shift", `${-el.__marqueeLoop * (next / el.__marqueeTravel)}px`);
 }
 
 function stopMarquee(el) {
@@ -4599,29 +4766,42 @@ function stopMarquee(el) {
   el.__marqueeTravel = 0;
   el.__marqueeOverflow = 0;
   el.__marqueePos = 0;
-  el.__marqueePausedUntil = 0;
   el.classList.remove("marquee-moving", "marquee-pause");
-  el.style.textIndent = "";
+  el.style.removeProperty("--marquee-shift");
   if (!marqueeActive.size) stopMarqueeTicker();
 }
 
 function startMarquee(el) {
   if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   if (!el.classList.contains("marquee") || el.__marqueeRun) return;
+  let inner = el.querySelector(":scope > .marquee-inner");
+  if (!inner) {
+    inner = document.createElement("span");
+    inner.className = "marquee-inner";
+    while (el.firstChild) inner.appendChild(el.firstChild);
+    el.appendChild(inner);
+  }
+  if (!inner.querySelector(":scope > .marquee-copy")) {
+    const copy = document.createElement("span");
+    copy.className = "marquee-copy";
+    copy.innerHTML = inner.innerHTML;
+    inner.appendChild(copy);
+  }
+  const first = inner.firstElementChild;
+  const unit = first ? first.getBoundingClientRect().width : 0;
   const overflow = el.scrollWidth - el.clientWidth;
-  if (overflow < 2) {
+  if (overflow < 2 || unit < 8) {
     el.classList.remove("marquee");
     return;
   }
   el.__marqueeRun = true;
   el.__marqueeStart = performance.now();
-  el.__marqueeTravel = Math.max(1400, Math.min(6000, overflow * 22));
-  el.__marqueeOverflow = overflow;
+  el.__marqueeLoop = unit;
+  el.__marqueeTravel = Math.max(525, Math.min(6000, unit * 25));
   el.__marqueePos = 0;
-  el.__marqueePausedUntil = 0;
   el.classList.add("marquee-moving");
   el.classList.remove("marquee-pause");
-  el.style.textIndent = "0px";
+  el.style.setProperty("--marquee-shift", "0px");
   marqueeActive.add(el);
   ensureMarqueeTicker();
 }
@@ -4639,6 +4819,16 @@ function setupMarquee(root) {
     if (el.__marqueeRun) return;
     stopMarquee(el);
     el.classList.remove("marquee");
+    const inner = el.querySelector(":scope > .marquee-inner");
+    if (inner) {
+      el.innerHTML = "";
+      while (inner.firstChild) {
+        const node = inner.firstChild;
+        if (node.classList && node.classList.contains("marquee-copy")) break;
+        el.appendChild(node);
+      }
+      el.style.removeProperty("--marquee-shift");
+    }
   });
   targets.forEach((el) => {
     if (el.__marqueeRun) return;
@@ -4685,6 +4875,7 @@ function syncTopbarHeight() {
 function rerenderFilesOnly() {
   const wrap = document.querySelector("#content .file-list, #content .file-grid");
   if (!wrap) return;
+  beginThumbEpoch();
   const body = renderFiles(state.files) || `<div class="empty">${tr(state.searchMode ? "list.noMatches" : "list.empty")}</div>`;
   $("content").innerHTML = (state.searchMode ? "" : renderFolders(state.dirs)) + body;
   hydrateThumbs($("content"));
