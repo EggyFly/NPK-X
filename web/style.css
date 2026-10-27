@@ -620,8 +620,7 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .file-text { min-width: 0; flex: 1; }
 .file-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-meta { color: var(--md-on-surface-variant); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.file-sub { font-size: 10px; }
-.meta-sep { opacity: .7; }
+.file-filename { color: var(--md-on-surface-variant); font-size: 10px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .zoom-btn {
   flex: none; width: 30px; height: 30px; border-radius: var(--md-shape-full); border: 0;

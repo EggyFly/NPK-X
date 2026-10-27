@@ -1069,17 +1069,14 @@ function updateNameNode(node, name) {
     }
   } else {
     const nameEl = node.querySelector(".file-name");
-    const meta = node.querySelector(".file-meta");
+    const text = node.querySelector(".file-text");
     if (nameEl) nameEl.textContent = name;
-    if (meta && !meta.querySelector(".file-sub") && filename) {
-      const sub = document.createElement("span");
-      sub.className = "file-sub";
-      sub.textContent = filename;
-      const sep = document.createElement("span");
-      sep.className = "meta-sep";
-      sep.textContent = " · ";
-      meta.insertBefore(sep, meta.firstChild);
-      meta.insertBefore(sub, sep);
+    if (text && !text.querySelector(".file-filename") && filename) {
+      const line = document.createElement("div");
+      line.className = "file-filename";
+      line.textContent = filename;
+      const meta = text.querySelector(".file-meta");
+      if (meta) text.insertBefore(line, meta);
     }
   }
   delete node.dataset.nameFile;
@@ -1283,7 +1280,7 @@ function fileRowMarkup(file) {
 function fileCardMarkup(file) {
   const act = itemAction(file);
   const display = displayNameFor(file);
-  const sub = display ? `<span class="file-sub">${esc(file.name)}</span><span class="meta-sep"> · </span>` : "";
+  const filenameLine = display ? `<div class="file-filename">${esc(file.name)}</div>` : "";
   const pending = namePending(file) ? ` data-name-file="1"` : "";
   return `<div class="file${state.selectMode && state.selected.has(file.path) ? " picked" : ""}" data-file="${esc(file.path)}" data-filename="${esc(file.name)}"${pending} title="${esc(file.path)}">
     ${thumbMarkup(file)}
@@ -1291,7 +1288,8 @@ function fileCardMarkup(file) {
     <div class="file-info">
       <div class="file-text">
         <div class="file-name">${esc(display || file.name)}</div>
-        <div class="file-meta">${sub}${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
+        ${filenameLine}
+        <div class="file-meta">${esc(KIND_LABEL[displayKind(file.kind, file.ext)] || file.kind)} · ${formatBytes(file.size)}</div>
       </div>
       <button class="zoom-btn ${act.name === "play" ? "play-btn" : ""}" type="button" data-action="${act.name}" title="${act.label}" aria-label="${act.label}">${icon(act.icon)}</button>
     </div>
@@ -4925,7 +4923,7 @@ function initIndexPane() {
 }
 
 
-const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-meta, .file-row-name, .file-row-sub, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .drawer-sub, .viewer-name, .viewer-sub, .where, .xn-head b, .xn-head > div > span";
+const MARQUEE_TARGETS = ".folder-name, .folder-meta, .folder-row-name, .folder-row-meta, .file-name, .file-filename, .file-meta, .file-row-name, .file-row-sub, .file-row-size, .file-row-pkg, .root-name, .index-dir span:first-child, .drawer-name, .drawer-sub, .viewer-name, .viewer-sub, .where, .xn-head b, .xn-head > div > span";
 const MARQUEE_HOSTS = ".folder, .folder-row, .file, .file-row, .root, .index-dir, .drawer-head, .viewer-head, .toolbar";
 const MARQUEE_HOVER_HOSTS = MARQUEE_HOSTS.split(",").map((item) => item.trim() + ":hover").join(", ");
 

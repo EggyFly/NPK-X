@@ -2053,6 +2053,28 @@ class Handler(BaseHTTPRequestHandler):
         text = value.strip() if isinstance(value, str) else ""
         return text if text and text != Path(path).stem else ""
 
+    def _search_by_display_name(self, query_text: str, connection, limit: int, offset: int) -> list:
+        needle = query_text.lower()
+        name_hits = {path: name for path, name in self._name_store().items() if needle in name.lower()}
+        for signature, module in self._xn_name_map().items():
+            if needle in module.lower():
+                row = connection.execute(
+                    "SELECT path FROM files WHERE signature=? AND ext='.xn' LIMIT 1",
+                    (signature,),
+                ).fetchone()
+                if row:
+                    name_hits.setdefault(row["path"], module)
+        if not name_hits:
+            return []
+        paths = sorted(name_hits)
+        marks = ",".join("?" for _ in paths)
+        rows = connection.execute(
+            f"SELECT name,path,unpacked,kind,ext,package,signature FROM files WHERE path IN ({marks}) ORDER BY path",
+            paths,
+        ).fetchall()
+        rows.sort(key=lambda row: (row["path"].rsplit("/", 1)[-1].lower(), row["path"]))
+        return rows[offset:offset + limit]
+
     def _xn_name_map(self) -> dict:
         path = Path(self.server.xn_names_path) if self.server.xn_names_path else Path(__file__).resolve().parent.parent / "data" / "xn_names.json"
         try:
@@ -2527,9 +2549,16 @@ class Handler(BaseHTTPRequestHandler):
                     rows = connection.execute(
                         f"SELECT name,path,unpacked,kind,ext,package,signature FROM files WHERE lower(path) LIKE lower(?) ESCAPE '\\' ORDER BY {sort_expr} LIMIT ? OFFSET ?",
                         (pattern, limit, offset),
-                    )
+                    ).fetchall()
                     name_store = self._name_store()
                     xn_names = self._xn_name_map()
+                    if not total_matches:
+                        rows = self._search_by_display_name(query_text, connection, limit, offset)
+                        if rows:
+                            kind_counts = {}
+                            for row in rows:
+                                kind_counts[row["kind"]] = kind_counts.get(row["kind"], 0) + 1
+                            total_matches = len(rows)
                     files = []
                     for row in rows:
                         item = {
