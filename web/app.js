@@ -3406,8 +3406,9 @@ out vec3 v_bitangent;
 out float v_light;
 void main() {
   mat3 rot = mat3(a_model);
-  v_norm = normalize(rot * a_norm);
-  vec3 tangent = normalize(rot * a_tangent.xyz);
+  mat3 nmat = transpose(inverse(rot));
+  v_norm = normalize(nmat * a_norm);
+  vec3 tangent = normalize(nmat * a_tangent.xyz);
   v_tangent = tangent;
   v_bitangent = cross(v_norm, tangent) * a_tangent.w;
   v_local = a_pos;
@@ -3415,7 +3416,7 @@ void main() {
   v_paint1 = a_paint1;
   v_paint2 = a_paint2;
   v_paint3 = a_paint3;
-  v_light = 0.42 + 0.58 * abs(dot(v_norm, normalize(vec3(0.45, 0.8, 0.35))));
+  v_light = 0.55 + 0.5 * abs(dot(v_norm, normalize(vec3(0.45, 0.8, 0.35))));
   gl_Position = u_view_proj * a_model * vec4(a_pos, 1.0);
 }`;
 
@@ -3433,9 +3434,13 @@ in float v_light;
 uniform sampler2D u_tex0;
 uniform sampler2D u_tex1;
 uniform sampler2D u_tex2;
+uniform sampler2D u_tex3;
 uniform float u_has_tex0;
 uniform float u_has_tex1;
 uniform float u_has_tex2;
+uniform float u_has_tex3;
+uniform vec4 u_pattern_color;
+uniform float u_pattern_mode;
 uniform float u_color_mode;
 uniform float u_axis;
 uniform float u_lerp_center;
@@ -3446,7 +3451,6 @@ uniform vec4 u_mask2;
 uniform vec4 u_mask3;
 uniform vec4 u_base_color;
 uniform float u_tint_value;
-uniform vec4 u_emissive;
 uniform float u_normal_intensity;
 uniform float u_opacity_tex;
 uniform float u_alpha_ref;
@@ -3459,7 +3463,19 @@ uniform vec3 u_bound_min;
 uniform vec3 u_bound_half;
 uniform vec3 u_fallback;
 uniform float u_use_paint;
+uniform float u_lerp_linear;
+uniform float u_emissive_kind;
+uniform vec4 u_emissive_color;
+uniform vec4 u_ei;
+uniform float u_intensity_a;
+uniform float u_glass;
 out vec4 out_color;
+vec3 mapSrgb2Lin(vec3 c) {
+  return pow(max(c, vec3(0.0)), vec3(2.2));
+}
+vec3 mapLin2Srgb(vec3 c) {
+  return pow(max(c, vec3(0.0)), vec3(0.4545));
+}
 void main() {
   vec2 uv = v_uv;
   uv -= 0.5;
@@ -3484,31 +3500,89 @@ void main() {
   vec4 m0 = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? vec4(v_paint1.rgb, 1.0) : u_mask0;
   vec4 m1 = u_use_paint > 0.5 && v_paint2.r >= 0.0 ? vec4(v_paint2.rgb, 1.0) : u_mask1;
   vec4 m2 = u_use_paint > 0.5 && v_paint3.r >= 0.0 ? vec4(v_paint3.rgb, 1.0) : u_mask2;
-  vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
-  vec3 color = painted;
-  if (u_color_mode > 2.5) {
-    color = u_has_tex0 > 0.5 ? tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb : painted;
-  } else if (u_color_mode > 1.5) {
-    vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
-    float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
-    float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
-    final_axis *= final_axis;
-    color = mix(m0.rgb, m1.rgb, final_axis * (tex0.r * 0.5 + 0.5));
-    color = mix(color, m2.rgb, (1.0 - final_axis) * tex0.g);
-    color = mix(color, u_mask3.rgb, tex0.b);
-  } else if (u_color_mode > 0.5) {
-    color = mix(m0.rgb, m1.rgb, tex0.r);
-    color = mix(color, m2.rgb, tex0.g);
-    color = mix(color, u_mask3.rgb, tex0.b);
-  } else if (u_has_tex0 > 0.5) {
-    color = tex0.rgb;
+  vec3 color;
+  bool color_linear = false;
+  float alpha;
+  if (u_glass > 0.5) {
+    color = u_base_color.rgb * u_tint_value;
+    alpha = u_base_color.a * v_paint1.a * 0.6;
+  } else {
+    vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
+    color = painted;
+    if (u_color_mode > 3.5) {
+      color = u_has_tex0 > 0.5 ? mix(m0.rgb, m1.rgb, tex0.g) : painted;
+      color = mix(color, m2.rgb, tex0.b);
+      color = mix(color, u_mask3.rgb, tex0.a);
+    } else if (u_color_mode > 2.5) {
+      color = u_has_tex0 > 0.5 ? tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb : painted;
+    } else if (u_color_mode > 1.5) {
+      vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+      float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
+      float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
+      final_axis *= final_axis;
+      color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), final_axis * (tex0.r * 0.5 + 0.5));
+      color = mix(color, mapSrgb2Lin(m2.rgb), (1.0 - final_axis) * tex0.g);
+      color = mix(color, mapSrgb2Lin(u_mask3.rgb), tex0.b);
+      color_linear = true;
+    } else if (u_color_mode > 0.5) {
+      if (u_lerp_linear > 0.5) {
+        color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), tex0.r);
+        color = mix(color, mapSrgb2Lin(m2.rgb), tex0.g);
+        color = mix(color, mapSrgb2Lin(u_mask3.rgb), tex0.b);
+        color_linear = true;
+      } else {
+        color = mix(m0.rgb, m1.rgb, tex0.r);
+        color = mix(color, m2.rgb, tex0.g);
+        color = mix(color, u_mask3.rgb, tex0.b);
+      }
+    } else if (u_has_tex0 > 0.5) {
+      color = tex0.rgb;
+    }
+    color *= u_base_color.rgb * u_tint_value;
+    alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
+    if (u_opacity_tex > 1.5) alpha = 1.0;
+    else if (u_opacity_tex > 0.5) alpha = tex1.a;
+    alpha *= u_base_color.a * v_paint1.a;
   }
-  color *= u_base_color.rgb * u_tint_value;
-  color += tex2.a * u_emissive.rgb;
-  float alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
-  if (u_opacity_tex > 1.5) alpha = 1.0;
-  else if (u_opacity_tex > 0.5) alpha = tex1.a;
-  alpha *= u_base_color.a * v_paint1.a;
+  vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : mapSrgb2Lin(color);
+  if (u_pattern_mode > 0.5 && u_has_tex3 > 0.5) {
+    vec3 an = abs(normalize(v_norm));
+    vec3 p = v_local * u_repeat_scale;
+    vec2 puv;
+    if (an.x >= an.y && an.x >= an.z) puv = p.yz;
+    else if (an.y >= an.z) puv = p.xz;
+    else puv = p.yx;
+    puv *= u_texture_para.xy;
+    vec4 pattern = texture(u_tex3, puv);
+    vec3 tiling_col = mapSrgb2Lin(pattern.r * u_pattern_color.rgb);
+    albedo_lin = mix(albedo_lin, tiling_col, pattern.r * u_pattern_color.a);
+  }
+  vec3 emissive = vec3(0.0);
+  if (u_emissive_kind > 0.5 && u_emissive_kind < 1.5) {
+    emissive = mapSrgb2Lin(tex2.a * u_emissive_color.rgb * u_intensity_a);
+  } else if (u_emissive_kind > 1.5 && u_emissive_kind < 2.5) {
+    emissive = mapSrgb2Lin(tex2.a * u_emissive_color.rgb) * u_intensity_a;
+  } else if (u_emissive_kind > 2.5 && u_emissive_kind < 3.5) {
+    vec4 chain = mix(u_mask0 * u_ei.r, u_mask1 * u_ei.g, tex0.r);
+    chain = mix(chain, u_mask2 * u_ei.b, tex0.g);
+    chain = mix(chain, u_mask3 * u_ei.a, tex0.b);
+    emissive = tex2.a * chain.rgb + u_emissive_color.rgb * u_intensity_a;
+  } else if (u_emissive_kind > 3.5 && u_emissive_kind < 4.5) {
+    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), tex0.r);
+    chain = mix(chain, vec3(u_ei.b), tex0.g);
+    chain = mix(chain, vec3(u_ei.a), tex0.b);
+    emissive = tex2.a * chain + u_emissive_color.rgb * u_intensity_a;
+  } else if (u_emissive_kind > 4.5 && u_emissive_kind < 5.5) {
+    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), tex0.r);
+    chain = mix(chain, vec3(u_ei.b), tex0.g);
+    chain = mix(chain, vec3(u_ei.a), tex0.b);
+    emissive = tex2.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity_a;
+  } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
+    vec3 chain = tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g + tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a;
+    emissive = tex2.a * chain + u_emissive_color.rgb * u_intensity_a;
+  } else if (u_emissive_kind > 7.5) {
+    emissive = u_emissive_color.rgb * (tex2.a * u_intensity_a * u_tint_value);
+  }
   if (alpha < u_alpha_ref) discard;
   vec3 normal = normalize(v_norm);
   float light = u_unlit > 0.5 ? 1.0 : v_light;
@@ -3516,9 +3590,10 @@ void main() {
     vec3 n = tex1.xyz * 2.0 - 1.0;
     n.xy *= u_normal_intensity;
     normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
-    light = 0.42 + 0.58 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
+    light = 0.55 + 0.5 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
   }
-  out_color = vec4(color * light, clamp(alpha, 0.0, 1.0));
+  vec3 final_lin = albedo_lin * light + emissive;
+  out_color = vec4(mapLin2Srgb(final_lin), clamp(alpha, 0.0, 1.0));
 }`;
 
 const MAP3D_POINT_VS = `#version 300 es
@@ -3671,15 +3746,20 @@ function map3DUnitPaint(unit) {
   return out;
 }
 
-function map3DViewProj() {
+function map3DCameraEye() {
   const camera = map3d.camera;
-  const eye = [
+  return [
     camera.target[0] + camera.distance * Math.cos(camera.pitch) * Math.sin(camera.yaw),
     camera.target[1] + camera.distance * Math.sin(camera.pitch),
     camera.target[2] + camera.distance * Math.cos(camera.pitch) * Math.cos(camera.yaw),
   ];
+}
+
+function map3DViewProj() {
+  const camera = map3d.camera;
+  const eye = map3DCameraEye();
   const view = gimLookAt(eye, camera.target, [0, 1, 0]);
-  const proj = gimPerspective(Math.PI / 4, (map3d.canvas.width || 1) / (map3d.canvas.height || 1), Math.max(1, camera.distance * 0.01), camera.distance * 10);
+  const proj = gimPerspective(Math.PI / 4, (map3d.canvas.width || 1) / (map3d.canvas.height || 1), Math.max(0.5, camera.distance * 0.02), camera.distance * 8);
   return gimMultiply(proj, view);
 }
 
@@ -3688,7 +3768,7 @@ function resizeMap3D() {
   if (!canvas || !mapView.stage) return;
   const width = Math.max(1, mapView.stage.clientWidth);
   const height = Math.max(1, mapView.stage.clientHeight);
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dpr = Math.min(2, Math.max(1.5, window.devicePixelRatio || 1));
   const scaledWidth = Math.round(width * dpr);
   const scaledHeight = Math.round(height * dpr);
   if (canvas.width === scaledWidth && canvas.height === scaledHeight) return;
@@ -3877,6 +3957,17 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths) {
   const bounds = mesh.bounds || {};
   const min = Array.isArray(bounds.min) ? bounds.min : [0, 0, 0];
   const max = Array.isArray(bounds.max) ? bounds.max : [0, 0, 0];
+  const center = [0, 0, 0];
+  for (const unit of units) {
+    const position = unit.position || [0, 0, 0];
+    center[0] += Number(position[0]) || 0;
+    center[1] += Number(position[1]) || 0;
+    center[2] += Number(position[2]) || 0;
+  }
+  const unitTotal = Math.max(1, units.length);
+  center[0] /= unitTotal;
+  center[1] /= unitTotal;
+  center[2] /= unitTotal;
   map3d.models.set(model, {
     vao,
     positionBuffer,
@@ -3894,6 +3985,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths) {
     indexCount: indices.length,
     indexType: use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
     fallback: map3DModelColor(model),
+    center,
     boundMin: [Number(min[0]) || 0, Number(min[1]) || 0, Number(min[2]) || 0],
     boundHalf: [
       Math.max(0.0001, ((Number(max[0]) || 0) - (Number(min[0]) || 0)) / 2),
@@ -3915,6 +4007,7 @@ function map3DLoadTexture(path, done) {
     return;
   }
   if (map3d.textureCache.size + map3d.texturePending.size >= 300) {
+    mapMsgAdd("info", tr("map.msg.info"), tr("map.3d.textureLimit", { count: 300 }));
     done(null);
     return;
   }
@@ -3939,7 +4032,7 @@ function map3DLoadTexture(path, done) {
         return;
       }
       let source = image;
-      const maxSize = 512;
+      const maxSize = 1024;
       if (image.width > maxSize || image.height > maxSize) {
         const scale = maxSize / Math.max(image.width, image.height);
         const canvas = document.createElement("canvas");
@@ -3953,11 +4046,24 @@ function map3DLoadTexture(path, done) {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const small = source.width <= 32 && source.height <= 32;
+      if (small) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      } else {
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      }
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, small ? gl.NEAREST : gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      if (!small) {
+        const aniso = gl.getExtension("EXT_texture_filter_anisotropic");
+        if (aniso) {
+          const max = gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 1;
+          gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, max));
+        }
+      }
+      texture.__small = small;
       gl.bindTexture(gl.TEXTURE_2D, null);
       finish(texture);
       requestMap3DDraw();
@@ -3982,7 +4088,7 @@ function map3DLoadMaterialTextures(model, materials, texturePaths) {
     requestMap3DDraw();
   };
   materials.forEach((material, index) => {
-    const slots = [material.tex0, material.tex1, material.tex2];
+    const slots = [material.tex0, material.tex1, material.tex2, material.tex3];
     if (index === 0 && fallback[0]) slots[0] = slots[0] || fallback[0];
     slots.forEach((path, slot) => {
       if (!path) return;
@@ -4001,8 +4107,8 @@ function map3DApplyMaterial(entry, group) {
     gl.uniform4f(u["mask" + index], Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0, Number(value[3]) || 0);
   }
   const tex = entry.textures[group.material] || [];
-  for (let index = 0; index < 3; index += 1) {
-    const texture = tex[index] || null;
+  for (let index = 0; index < 4; index += 1) {
+    const texture = (index === 1 && tex[index] && tex[index].__small) ? null : (tex[index] || null);
     gl.activeTexture(gl.TEXTURE0 + index);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1f(u["hasTex" + index], texture ? 1 : 0);
@@ -4020,10 +4126,18 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform4f(u.baseColor, Number(base[0]) || 0, Number(base[1]) || 0, Number(base[2]) || 0, Number(base[3]) || 0);
   const tintValue = Number(mat.tint_value);
   gl.uniform1f(u.tintValue, Number.isFinite(tintValue) ? tintValue : 1);
-  const intensity = Array.isArray(mat.intensity) ? mat.intensity : [1, 1, 1, 1];
+  const intensity = Array.isArray(mat.intensity) ? mat.intensity : [1, 1, 1, 0];
   const emissive = Array.isArray(mat.emissive_color) ? mat.emissive_color : [0, 0, 0, 0];
-  const emissivePower = Number(intensity[3]) || 0;
-  gl.uniform4f(u.emissive, (Number(emissive[0]) || 0) * emissivePower, (Number(emissive[1]) || 0) * emissivePower, (Number(emissive[2]) || 0) * emissivePower, 0);
+  gl.uniform4f(u.emissiveColor, Number(emissive[0]) || 0, Number(emissive[1]) || 0, Number(emissive[2]) || 0, Number(emissive[3]) || 0);
+  const ei = Array.isArray(mat.emissive_intensity) ? mat.emissive_intensity : [0, 0, 0, 0];
+  gl.uniform4f(u.ei, Number(ei[0]) || 0, Number(ei[1]) || 0, Number(ei[2]) || 0, Number(ei[3]) || 0);
+  gl.uniform1f(u.intensityA, Number(intensity[3]) || 0);
+  gl.uniform1f(u.emissiveKind, Number(mat.emissive_kind) || 0);
+  gl.uniform1f(u.lerpLinear, Number(mat.lerp_linear) || 0);
+  gl.uniform1f(u.glass, surface.includes("glass") ? 1 : 0);
+  gl.uniform1f(u.patternMode, surface.includes("tiling") ? 1 : 0);
+  const patternColor = Array.isArray(mat.pattern_color) ? mat.pattern_color : [1, 1, 1, 1];
+  gl.uniform4f(u.patternColor, Number(patternColor[0]) || 0, Number(patternColor[1]) || 0, Number(patternColor[2]) || 0, Number(patternColor[3]) || 0);
   const normalIntensity = Number(intensity[0]);
   gl.uniform1f(u.normalIntensity, Number.isFinite(normalIntensity) ? normalIntensity : 1);
   const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
@@ -4127,15 +4241,27 @@ function drawMap3D() {
     gl.uniformMatrix4fv(map3d.uViewProj, false, vp);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    const eye = map3DCameraEye();
+    const draws = [];
     for (const entry of map3d.models.values()) {
-      gl.bindVertexArray(entry.vao);
-      const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
+      const center = entry.center || [0, 0, 0];
+      const dist = (center[0] - eye[0]) ** 2 + (center[1] - eye[1]) ** 2 + (center[2] - eye[2]) ** 2;
       for (const group of entry.groups) {
         const mat = entry.materials[group.material] || {};
-        map3DApplyMaterial(entry, group);
-        gl.depthMask(!mat.transparent);
-        gl.drawElementsInstanced(gl.TRIANGLES, group.count, entry.indexType, group.offset * bytes, entry.count);
+        draws.push({ entry, group, mat, dist, transparent: mat.transparent === true });
       }
+    }
+    draws.sort((a, b) => {
+      if (a.transparent !== b.transparent) return a.transparent ? 1 : -1;
+      return b.dist - a.dist;
+    });
+    for (const draw of draws) {
+      const entry = draw.entry;
+      gl.bindVertexArray(entry.vao);
+      const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
+      map3DApplyMaterial(entry, draw.group);
+      gl.depthMask(!draw.transparent);
+      gl.drawElementsInstanced(gl.TRIANGLES, draw.group.count, entry.indexType, draw.group.offset * bytes, entry.count);
     }
     gl.depthMask(true);
     gl.disable(gl.BLEND);
@@ -4145,6 +4271,8 @@ function drawMap3D() {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, null);
     gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
   if (map3d.pointCount) {
@@ -4254,23 +4382,27 @@ async function openMap3D(file, data) {
   map3d.uLineColor = gl.getUniformLocation(map3d.lineProgram, "u_color");
   const uniform = (name) => gl.getUniformLocation(map3d.program, name);
   map3d.uniforms = {
-    tex0: uniform("u_tex0"), tex1: uniform("u_tex1"), tex2: uniform("u_tex2"),
-    hasTex0: uniform("u_has_tex0"), hasTex1: uniform("u_has_tex1"), hasTex2: uniform("u_has_tex2"),
+    tex0: uniform("u_tex0"), tex1: uniform("u_tex1"), tex2: uniform("u_tex2"), tex3: uniform("u_tex3"),
+    hasTex0: uniform("u_has_tex0"), hasTex1: uniform("u_has_tex1"), hasTex2: uniform("u_has_tex2"), hasTex3: uniform("u_has_tex3"),
+    patternColor: uniform("u_pattern_color"), patternMode: uniform("u_pattern_mode"),
     colorMode: uniform("u_color_mode"), axis: uniform("u_axis"),
     lerpCenter: uniform("u_lerp_center"), lerpContrast: uniform("u_lerp_contrast"),
     mask0: uniform("u_mask0"), mask1: uniform("u_mask1"), mask2: uniform("u_mask2"), mask3: uniform("u_mask3"),
     baseColor: uniform("u_base_color"), tintValue: uniform("u_tint_value"),
-    emissive: uniform("u_emissive"), normalIntensity: uniform("u_normal_intensity"),
+    emissiveColor: uniform("u_emissive_color"), normalIntensity: uniform("u_normal_intensity"),
     opacityTex: uniform("u_opacity_tex"), alphaRef: uniform("u_alpha_ref"), unlit: uniform("u_unlit"),
     texturePara: uniform("u_texture_para"), rotationAngle: uniform("u_rotation_angle"),
     tiling: uniform("u_tiling"), repeatScale: uniform("u_repeat_scale"),
     boundMin: uniform("u_bound_min"), boundHalf: uniform("u_bound_half"), fallback: uniform("u_fallback"),
-    usePaint: uniform("u_use_paint"),
+    usePaint: uniform("u_use_paint"), emissiveKind: uniform("u_emissive_kind"),
+    ei: uniform("u_ei"), intensityA: uniform("u_intensity_a"),
+    lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
   };
   gl.useProgram(map3d.program);
   gl.uniform1i(map3d.uniforms.tex0, 0);
   gl.uniform1i(map3d.uniforms.tex1, 1);
   gl.uniform1i(map3d.uniforms.tex2, 2);
+  gl.uniform1i(map3d.uniforms.tex3, 3);
   map3d.data = data;
   map3d.ready = false;
   map3d.units = (data.units || []).filter((unit) => Array.isArray(unit.position));
@@ -5100,6 +5232,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const diffuseUrl = firstTreeMaterial && firstTreeMaterial.tex0
     ? apiUrl("/api/image", { path: firstTreeMaterial.tex0 })
     : (textureUrl || (textureFiles[0] ? apiUrl("/api/image", { path: textureFiles[0] }) : ""));
+  const mrsUrl = firstTreeMaterial && firstTreeMaterial.tex2
+    ? apiUrl("/api/image", { path: firstTreeMaterial.tex2 })
+    : "";
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const vertex of verts) {
@@ -5192,9 +5327,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform sampler2D u_tex;
     uniform sampler2D u_normal_tex;
     uniform sampler2D u_base_normal_tex;
+    uniform sampler2D u_tex2;
     uniform float u_has_tex;
     uniform float u_has_normal;
     uniform float u_has_base_normal;
+    uniform float u_has_tex2;
     uniform float u_normal_mode;
     uniform float u_flat;
     uniform float u_unlit;
@@ -5228,6 +5365,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform float u_pattern_rotation;
     uniform float u_pattern_color_key;
     uniform float u_opacity_tex;
+    uniform float u_glass;
+    uniform float u_lerp_linear;
+    uniform float u_emissive_kind;
+    uniform vec4 u_emissive_color;
+    uniform vec4 u_ei;
+    vec3 srgb2lin(vec3 c) {
+      return pow(max(c, vec3(0.0)), vec3(2.2));
+    }
+    vec3 lin2srgb(vec3 c) {
+      return pow(max(c, vec3(0.0)), vec3(0.4545));
+    }
     void main() {
       if (u_flat > 0.5) {
         gl_FragColor = vec4(u_color, 1.0);
@@ -5253,47 +5401,96 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       }
       vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
       vec4 normal_texel = u_has_normal > 0.5 ? texture2D(u_normal_tex, sample_uv) : vec4(0.5, 0.5, 1.0, 1.0);
-      vec3 color = u_has_tex > 0.5 ? texel.rgb : u_color;
-      if (u_color_mode > 2.5) {
-        color = texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb;
-      } else if (u_color_mode > 1.5) {
-        vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
-        float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
-        float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
-        final_axis *= final_axis;
-        float mask1 = final_axis * (texel.r * 0.5 + 0.5);
-        float mask2 = (1.0 - final_axis) * texel.g;
-        color = mix(u_mask0.rgb, u_mask1.rgb, mask1);
-        color = mix(color, u_mask2.rgb, mask2);
-        color = mix(color, u_mask3.rgb, texel.b);
-      } else if (u_color_mode > 0.5) {
-        color = mix(u_mask0.rgb, u_mask1.rgb, texel.r);
-        color = mix(color, u_mask2.rgb, texel.g);
-        color = mix(color, u_mask3.rgb, texel.b);
-        if (u_has_pattern > 0.5) {
-          vec2 pattern_uv = sample_uv * u_pattern_scale;
-          if (abs(u_pattern_rotation) > 0.001) {
-            float angle = radians(u_pattern_rotation);
-            float s = sin(angle), c = cos(angle);
-            pattern_uv = vec2(pattern_uv.x * c - pattern_uv.y * s, pattern_uv.x * s + pattern_uv.y * c);
+      vec4 mrs_texel = u_has_tex2 > 0.5 ? texture2D(u_tex2, sample_uv) : vec4(0.0, 0.5, 0.0, 0.0);
+      vec3 color;
+      bool color_linear = false;
+      float alpha;
+      if (u_glass > 0.5) {
+        color = u_base_color.rgb;
+        alpha = u_base_color.a * 0.6;
+      } else {
+        color = u_has_tex > 0.5 ? texel.rgb : u_color;
+        if (u_color_mode > 3.5) {
+          color = mix(u_mask0.rgb, u_mask1.rgb, texel.g);
+          color = mix(color, u_mask2.rgb, texel.b);
+          color = mix(color, u_mask3.rgb, texel.a);
+        } else if (u_color_mode > 2.5) {
+          color = texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb;
+        } else if (u_color_mode > 1.5) {
+          vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+          float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
+          float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
+          final_axis *= final_axis;
+          float mask1 = final_axis * (texel.r * 0.5 + 0.5);
+          float mask2 = (1.0 - final_axis) * texel.g;
+          color = mix(srgb2lin(u_mask0.rgb), srgb2lin(u_mask1.rgb), mask1);
+          color = mix(color, srgb2lin(u_mask2.rgb), mask2);
+          color = mix(color, srgb2lin(u_mask3.rgb), texel.b);
+          color_linear = true;
+        } else if (u_color_mode > 0.5) {
+          if (u_lerp_linear > 0.5) {
+            color = mix(srgb2lin(u_mask0.rgb), srgb2lin(u_mask1.rgb), texel.r);
+            color = mix(color, srgb2lin(u_mask2.rgb), texel.g);
+            color = mix(color, srgb2lin(u_mask3.rgb), texel.b);
+            color_linear = true;
+          } else {
+            color = mix(u_mask0.rgb, u_mask1.rgb, texel.r);
+            color = mix(color, u_mask2.rgb, texel.g);
+            color = mix(color, u_mask3.rgb, texel.b);
           }
-          pattern_uv -= u_pattern_offset;
-          vec4 pattern = texture2D(u_pattern_tex, pattern_uv);
-          float pattern_mask = pattern.a * normal_texel.a * u_pattern_color_key;
-          color = mix(color, u_design.rgb, clamp(pattern_mask, 0.0, 1.0));
+          if (u_has_pattern > 0.5) {
+            vec2 pattern_uv = sample_uv * u_pattern_scale;
+            if (abs(u_pattern_rotation) > 0.001) {
+              float angle = radians(u_pattern_rotation);
+              float s = sin(angle), c = cos(angle);
+              pattern_uv = vec2(pattern_uv.x * c - pattern_uv.y * s, pattern_uv.x * s + pattern_uv.y * c);
+            }
+            pattern_uv -= u_pattern_offset;
+            vec4 pattern = texture2D(u_pattern_tex, pattern_uv);
+            float pattern_mask = pattern.a * normal_texel.a * u_pattern_color_key;
+            vec3 design_col = u_lerp_linear > 0.5 ? srgb2lin(u_design.rgb) : u_design.rgb;
+            color = mix(color, design_col, clamp(pattern_mask, 0.0, 1.0));
+          }
         }
+        color *= u_base_color.rgb * u_tint_value;
+        alpha = u_has_tex > 0.5 ? texel.a : 1.0;
+        if (u_opacity_tex > 1.5) alpha = 1.0;
+        else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
+        alpha *= u_base_color.a;
       }
-      color *= u_base_color.rgb * u_tint_value;
-      float alpha = u_has_tex > 0.5 ? texel.a : 1.0;
-      if (u_opacity_tex > 1.5) alpha = 1.0;
-      else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
-      alpha *= u_base_color.a;
       if (u_sprite > 0.5) {
         color *= u_tint.rgb * 2.0;
         alpha *= u_tint.a * 2.0;
       } else if (u_unlit > 0.5) {
         color *= u_tint.rgb;
         alpha *= u_tint.a;
+      }
+      vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : srgb2lin(color);
+      vec3 emissive = vec3(0.0);
+      if (u_emissive_kind > 0.5 && u_emissive_kind < 1.5) {
+        emissive = srgb2lin(mrs_texel.a * u_emissive_color.rgb * u_intensity.a);
+      } else if (u_emissive_kind > 1.5 && u_emissive_kind < 2.5) {
+        emissive = srgb2lin(mrs_texel.a * u_emissive_color.rgb) * u_intensity.a;
+      } else if (u_emissive_kind > 2.5 && u_emissive_kind < 3.5) {
+        vec4 chain = mix(u_mask0 * u_ei.r, u_mask1 * u_ei.g, texel.r);
+        chain = mix(chain, u_mask2 * u_ei.b, texel.g);
+        chain = mix(chain, u_mask3 * u_ei.a, texel.b);
+        emissive = mrs_texel.a * chain.rgb + u_emissive_color.rgb * u_intensity.a;
+      } else if (u_emissive_kind > 3.5 && u_emissive_kind < 4.5) {
+        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), texel.r);
+        chain = mix(chain, vec3(u_ei.b), texel.g);
+        chain = mix(chain, vec3(u_ei.a), texel.b);
+        emissive = mrs_texel.a * chain + u_emissive_color.rgb * u_intensity.a;
+      } else if (u_emissive_kind > 4.5 && u_emissive_kind < 5.5) {
+        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), texel.r);
+        chain = mix(chain, vec3(u_ei.b), texel.g);
+        chain = mix(chain, vec3(u_ei.a), texel.b);
+        emissive = mrs_texel.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity.a;
+      } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
+        vec3 chain = texel.r * u_mask0.rgb * u_ei.r + texel.g * u_mask1.rgb * u_ei.g + texel.b * u_mask2.rgb * u_ei.b + texel.a * u_mask3.rgb * u_ei.a;
+        emissive = mrs_texel.a * chain + u_emissive_color.rgb * u_intensity.a;
+      } else if (u_emissive_kind > 7.5) {
+        emissive = u_emissive_color.rgb * (mrs_texel.a * u_intensity.a * u_tint_value);
       }
       vec3 normal = normalize(v_normal);
       float light = u_unlit > 0.5 ? 1.0 : v_light;
@@ -5316,7 +5513,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
       }
       if (alpha < u_alpha_ref) discard;
-      gl_FragColor = vec4(color * light, clamp(alpha, 0.0, 1.0));
+      vec3 final_lin = albedo_lin * light + emissive;
+      gl_FragColor = vec4(lin2srgb(final_lin), clamp(alpha, 0.0, 1.0));
     }`);
   if (!program) throw new Error("shader failed");
   gl.useProgram(program);
@@ -5542,6 +5740,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   }
   const uMvp = gl.getUniformLocation(program, "u_mvp");
   const uTex = gl.getUniformLocation(program, "u_tex");
+  const uTex2 = gl.getUniformLocation(program, "u_tex2");
+  const uHasTex2 = gl.getUniformLocation(program, "u_has_tex2");
   const uHasTex = gl.getUniformLocation(program, "u_has_tex");
   const uFlat = gl.getUniformLocation(program, "u_flat");
   const uUnlit = gl.getUniformLocation(program, "u_unlit");
@@ -5584,6 +5784,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uPatternRotation = gl.getUniformLocation(program, "u_pattern_rotation");
   const uPatternColorKey = gl.getUniformLocation(program, "u_pattern_color_key");
   const uOpacityTex = gl.getUniformLocation(program, "u_opacity_tex");
+  const uGlass = gl.getUniformLocation(program, "u_glass");
+  const uLerpLinear = gl.getUniformLocation(program, "u_lerp_linear");
+  const uEmissiveKind = gl.getUniformLocation(program, "u_emissive_kind");
+  const uEmissiveColor = gl.getUniformLocation(program, "u_emissive_color");
+  const uEi = gl.getUniformLocation(program, "u_ei");
   const potImage = (image) => {
     if (isWebGL2) return image;
     const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
@@ -5611,6 +5816,14 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.uniform1i(uNormalTex, 1);
   gl.uniform1i(uBaseNormalTex, 2);
+  gl.uniform1i(uTex2, 4);
+  const mrsTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.uniform1f(uHasBaseNormal, 0);
   gl.uniform1f(uNormalMode, 0);
   gl.uniform1f(uColorMode, 0);
@@ -5649,6 +5862,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1f(uPatternRotation, 0);
   gl.uniform1f(uPatternColorKey, 0);
   gl.uniform1f(uOpacityTex, 0);
+  gl.uniform1f(uGlass, 0);
+  gl.uniform1f(uLerpLinear, 0);
+  gl.uniform1f(uEmissiveKind, 0);
+  gl.uniform4f(uEmissiveColor, 0, 0, 0, 0);
+  gl.uniform4f(uEi, 0, 0, 0, 0);
   if (firstTreeMaterial) {
     const colors = Array.isArray(firstTreeMaterial.colors) ? firstTreeMaterial.colors : [];
     [uMask0, uMask1, uMask2, uMask3].forEach((location, index) => {
@@ -5683,6 +5901,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform1f(uPatternColorKey, Number(firstTreeMaterial.pattern_color_key) || 0);
     gl.uniform1f(uNormalMode, Number.isInteger(firstTreeMaterial.normal_mode) ? firstTreeMaterial.normal_mode : 0);
     gl.uniform1f(uUnlit, firstTreeMaterial.lighting === false ? 1 : 0);
+    gl.uniform1f(uGlass, String(firstTreeMaterial.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+    gl.uniform1f(uLerpLinear, Number(firstTreeMaterial.lerp_linear) || 0);
+    gl.uniform1f(uEmissiveKind, Number(firstTreeMaterial.emissive_kind) || 0);
+    const emissiveColor = Array.isArray(firstTreeMaterial.emissive_color) ? firstTreeMaterial.emissive_color : [0, 0, 0, 0];
+    gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
+    const eiValue = Array.isArray(firstTreeMaterial.emissive_intensity) ? firstTreeMaterial.emissive_intensity : [0, 0, 0, 0];
+    gl.uniform4f(uEi, Number(eiValue[0]) || 0, Number(eiValue[1]) || 0, Number(eiValue[2]) || 0, Number(eiValue[3]) || 0);
   }
   let hasTexture = false;
   if (diffuseUrl) {
@@ -5719,6 +5944,24 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     };
     normalImage.onerror = () => { hasNormal = false; };
     normalImage.src = normalUrl;
+  }
+  let hasTex2 = false;
+  if (mrsUrl) {
+    const mrsImage = new Image();
+    mrsImage.onload = () => {
+      if (token !== viewer.token) return;
+      const source = potImage(mrsImage);
+      gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      hasTex2 = true;
+    };
+    mrsImage.onerror = () => { hasTex2 = false; };
+    mrsImage.src = mrsUrl;
   }
   const materialTextures = [];
   const textureCache = new Map();
@@ -5769,6 +6012,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         data: group,
         diffuse: diffusePath ? cachedGimTexture(apiUrl("/api/image", { path: diffusePath }), false) : null,
         normal: normalPath ? cachedGimTexture(apiUrl("/api/image", { path: normalPath }), true) : null,
+        mrs: group.tex2 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex2 }), false) : null,
         baseNormal: group.base_normal ? cachedGimTexture(apiUrl("/api/image", { path: group.base_normal }), true) : null,
         pattern: group.pattern_tex ? cachedGimTexture(apiUrl("/api/image", { path: group.pattern_tex }), false) : null,
       });
@@ -5883,12 +6127,24 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           } else {
             gl.uniform1f(uHasNormal, 0);
           }
+          if (entry.mrs) {
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, entry.mrs.texture);
+            gl.uniform1f(uHasTex2, entry.mrs.ready ? 1 : 0);
+          } else {
+            gl.uniform1f(uHasTex2, 0);
+          }
         } else {
           gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
           gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
+          gl.uniform1f(uHasTex2, hasTex2 ? 1 : 0);
           if (hasTexture) {
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, texture);
+          }
+          if (hasTex2) {
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
           }
         }
         const mat = materialList[materialIndex] || materialList[0] || {};
@@ -5924,6 +6180,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform1f(uAlphaRef, Number(mat.alpha_ref) || 0);
         gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
         gl.uniform1f(uOpacityTex, mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0));
+        gl.uniform1f(uGlass, String(mat.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+        gl.uniform1f(uLerpLinear, Number(mat.lerp_linear) || 0);
+        gl.uniform1f(uEmissiveKind, Number(mat.emissive_kind) || 0);
+        const emissiveColor = Array.isArray(mat.emissive_color) ? mat.emissive_color : [0, 0, 0, 0];
+        gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
+        const eiValue = Array.isArray(mat.emissive_intensity) ? mat.emissive_intensity : [0, 0, 0, 0];
+        gl.uniform4f(uEi, Number(eiValue[0]) || 0, Number(eiValue[1]) || 0, Number(eiValue[2]) || 0, Number(eiValue[3]) || 0);
         const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
         gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
         gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);
@@ -5970,6 +6233,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
       }
+      if (hasTex2) {
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
+      }
+      gl.uniform1f(uHasTex2, hasTex2 ? 1 : 0);
       if (globalBaseNormal) {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, globalBaseNormal.texture);

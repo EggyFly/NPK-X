@@ -12,6 +12,7 @@ FLAC library.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import io
 import ipaddress
@@ -304,11 +305,11 @@ def material_tree(data: dict, resolve=None) -> list:
         cull_back = True
         textures = []
         tex0 = tex1 = tex2 = tex3 = tex4 = ""
-        colors = [[1.0, 1.0, 1.0, 1.0] for _ in range(5)]
+        colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
         design_color = [1.0, 1.0, 1.0, 1.0]
-        emissive_color = [1.0, 1.0, 1.0, 1.0]
-        emissive_intensity = [1.0, 1.0, 1.0, 1.0]
-        intensity = [1.0, 1.0, 1.0, 1.0]
+        emissive_color = [0.0, 0.0, 0.0, 0.0]
+        emissive_intensity = [0.0, 0.0, 0.0, 0.0]
+        intensity = [1.0, 1.0, 1.0, 0.0]
         base_color = [1.0, 1.0, 1.0, 1.0]
         tint_value = 1.0
         alpha_ref = 0.0
@@ -316,6 +317,7 @@ def material_tree(data: dict, resolve=None) -> list:
         lerp_center = 0.0
         lerp_contrast = 0.5
         pattern_color_key = 0.0
+        pattern_color = [1.0, 1.0, 1.0, 1.0]
         pattern_para = [1.0, 1.0, 0.0, 0.0]
         pattern_intensity = [0.0, 0.0, 0.0, 0.0]
         pattern_uv_key = 0.0
@@ -382,6 +384,8 @@ def material_tree(data: dict, resolve=None) -> list:
                 lerp_contrast = float(value)
             elif node_class == "PatternColorKey" and isinstance(value, (int, float)):
                 pattern_color_key = float(value)
+            elif node_class == "PatternColor" and isinstance(value, list) and len(value) >= 4:
+                pattern_color = [float(x) for x in value[:4]]
             elif node_class == "PatternPara" and isinstance(value, list):
                 pattern_para = [float(x) for x in value[:4]]
             elif node_class == "PatternIntensity" and isinstance(value, list):
@@ -425,18 +429,22 @@ def material_tree(data: dict, resolve=None) -> list:
         surface_lower = surface.lower()
         if "standard_change_color_lerp" in surface_lower:
             color_mode = 2
+        elif "standard_change_color_new_hlod" in surface_lower:
+            color_mode = 0
         elif any(token in surface_lower for token in (
             "standard_change_color_object", "standard_change_color_emissive",
             "standard_change_color_tiling_all", "standard_change_color_mix",
         )):
             color_mode = 3
+        elif "standard_change_color_uvflow" in surface_lower:
+            color_mode = 4
         elif "change_color" in surface_lower:
             color_mode = 1
         else:
             color_mode = 0
         if color_mode == 2:
             opacity_tex = "tex0"
-        elif color_mode == 3:
+        elif color_mode in (3, 4):
             opacity_tex = "tex1"
         elif color_mode == 1 and "change_color_pattern" not in surface_lower:
             opacity_tex = "tex1"
@@ -444,6 +452,34 @@ def material_tree(data: dict, resolve=None) -> list:
             opacity_tex = "tex0"
         if "standard_change_color_tiling_all" in surface_lower:
             opacity_tex = "none"
+        if "standard_change_color_new_hlod" in surface_lower:
+            opacity_tex = "tex1"
+        if color_mode == 2 or "change_color_pattern" in surface_lower:
+            lerp_linear = 1
+        else:
+            lerp_linear = 0
+        if "standard_change_color_new_hlod" in surface_lower:
+            emissive_kind = 0
+        elif any(token in surface_lower for token in (
+            "standard_change_color_object", "standard_change_color_uvflow",
+            "change_color_sparkle", "change_color_shine", "change_color_dissolve",
+            "change_color_maskflow", "change_color_laser",
+        )):
+            emissive_kind = 1
+        elif "standard_change_color_tiling" in surface_lower:
+            emissive_kind = 2
+        elif "standard_change_color_emissive" in surface_lower or "standard_change_color_mix" in surface_lower:
+            emissive_kind = 6
+        elif "change_color_pattern" in surface_lower:
+            emissive_kind = 4
+        elif color_mode == 2:
+            emissive_kind = 5
+        elif "change_color" in surface_lower:
+            emissive_kind = 3
+        elif surface_lower.endswith("standard_common.surf"):
+            emissive_kind = 8
+        else:
+            emissive_kind = 0
         normal_mode = 1 if color_mode == 2 else 0
         materials.append({
             "index": material_index,
@@ -472,6 +508,7 @@ def material_tree(data: dict, resolve=None) -> list:
             "lerp_center": lerp_center,
             "lerp_contrast": lerp_contrast,
             "pattern_color_key": pattern_color_key,
+            "pattern_color": pattern_color,
             "pattern_para": pattern_para,
             "pattern_intensity": pattern_intensity,
             "pattern_uv_key": pattern_uv_key,
@@ -484,6 +521,8 @@ def material_tree(data: dict, resolve=None) -> list:
             "base_normal": base_normal,
             "pattern_tex": pattern_tex,
             "color_mode": color_mode,
+            "lerp_linear": lerp_linear,
+            "emissive_kind": emissive_kind,
         })
     materials.sort(key=lambda item: item["index"])
     return materials
@@ -810,6 +849,8 @@ class BrowserServer(ThreadingHTTPServer):
     _unit_models_lock = threading.Lock()
     _unit_models = None
     _unit_models_mtime = 0.0
+    _map_preload_lock = threading.Lock()
+    _map_preload = {}
     version: str | None = None
     update_state: dict = {}
     update_repo: str = update_check.DEFAULT_REPO
@@ -1922,6 +1963,40 @@ class Handler(BaseHTTPRequestHandler):
                 continue
         return None, None
 
+    def _map_preload_models(self, map_path: str) -> dict:
+        stem = Path(map_path).stem
+        with BrowserServer._map_preload_lock:
+            cached = BrowserServer._map_preload.get(stem)
+        if cached is not None:
+            return cached
+        models = {}
+        connection = db_connect(self.server.db_path)
+        try:
+            row = connection.execute(
+                "SELECT * FROM files WHERE path = ?", ("map_preload_res/" + stem + ".json",)
+            ).fetchone()
+            package = None
+            if row:
+                package = connection.execute(
+                    "SELECT path FROM packages WHERE name = ?", (row["package"],)
+                ).fetchone()
+        finally:
+            connection.close()
+        if row and package:
+            try:
+                payload = json.loads(read_entry_bytes(package["path"], row).decode("utf-8", "replace"))
+                for item in payload.get("model_sfx_res") or []:
+                    if len(item) < 4 or int(item[1]) != 3 or int(item[3]) <= 0:
+                        continue
+                    path = str(item[0]).replace("\\", "/")
+                    if path.lower().endswith((".gim", ".mesh")):
+                        models[path] = int(item[3])
+            except (OSError, ValueError, TypeError):
+                models = {}
+        with BrowserServer._map_preload_lock:
+            BrowserServer._map_preload[stem] = models
+        return models
+
     def _gmp_data(self, row) -> dict:
         models = self._unit_model_map()
         key = (row["path"], row["signature"], row["packed_hash"], BrowserServer._unit_models_mtime)
@@ -1932,14 +2007,34 @@ class Handler(BaseHTTPRequestHandler):
         with BrowserServer._gmp_sem:
             data = gmp_parse.parse(self._entry_payload(row))
         if models:
+            preload = self._map_preload_models(row["path"])
             for unit in data.get("units", []):
                 if unit.get("model"):
                     continue
                 eid = unit.get("eid")
                 model = models.get(str(eid)) if isinstance(eid, int) else None
-                if model:
+                if model and (not preload or model in preload):
                     unit["model"] = model
                     unit["model_from_eid"] = True
+            if preload:
+                missing = collections.Counter(
+                    unit.get("eid") for unit in data.get("units", [])
+                    if not unit.get("model") and isinstance(unit.get("eid"), int)
+                )
+                by_count = collections.defaultdict(list)
+                for path, count in preload.items():
+                    by_count[count].append(path)
+                eids_by_count = collections.defaultdict(list)
+                for eid, count in missing.items():
+                    eids_by_count[count].append(eid)
+                for count, paths in by_count.items():
+                    eids = eids_by_count.get(count) or []
+                    if len(paths) != 1 or len(eids) != 1:
+                        continue
+                    for unit in data.get("units", []):
+                        if unit.get("eid") == eids[0] and not unit.get("model"):
+                            unit["model"] = paths[0]
+                            unit["model_from_eid"] = True
         data["path"] = row["path"]
         if not data.get("map_name"):
             data["map_name"] = Path(row["path"]).stem
