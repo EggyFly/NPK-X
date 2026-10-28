@@ -1424,3 +1424,28 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   white-space: nowrap;
   vertical-align: top;
 }
+
+.map-view-switch { margin-left: 6px; }
+.map-msg-wrap { position: relative; margin-left: 6px; display: inline-flex; }
+.map-msg-btn { position: relative; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--md-outline-variant); background: var(--md-surface-container-high); color: var(--md-on-surface); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.map-msg-btn .icon { width: 16px; height: 16px; }
+.map-msg-btn:hover { background: var(--md-surface-container-highest); }
+.map-msg-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; background: var(--md-error); color: var(--md-on-error); font: 600 9px/15px var(--md-font-sans); text-align: center; pointer-events: none; box-shadow: 0 0 0 2px var(--md-surface-container); }
+.map-msg-badge.hidden { display: none; }
+.map-msg-panel { position: absolute; right: 0; bottom: 42px; width: min(340px, 78vw); max-height: 260px; overflow: auto; padding: 10px 12px; border-radius: var(--md-shape-lg); background: var(--md-overlay-surface); box-shadow: var(--md-elevation-3); backdrop-filter: blur(12px); z-index: 6; }
+.map-msg-panel.hidden { display: none; }
+.map-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; margin-bottom: 6px; }
+.map-msg-head button { border: 0; background: transparent; color: var(--md-primary); font-size: 10px; cursor: pointer; padding: 0; }
+.map-msg-row { display: flex; gap: 8px; padding: 5px 0; border-top: 1px solid var(--md-outline-variant); font-size: 10px; }
+.map-msg-row:first-of-type { border-top: 0; }
+.map-msg-tag { flex: none; height: 16px; padding: 0 6px; border-radius: 999px; font-size: 9px; line-height: 16px; background: var(--md-surface-container-high); color: var(--md-on-surface-variant); }
+.map-msg-row[data-level="error"] .map-msg-tag { background: color-mix(in srgb, var(--md-error) 22%, transparent); color: var(--md-error); }
+.map-msg-row[data-level="warn"] .map-msg-tag { background: color-mix(in srgb, #ffb74d 22%, transparent); color: #ffb74d; }
+.map-msg-text { min-width: 0; color: var(--md-on-surface-variant); word-break: break-word; }
+.map-msg-text b { color: var(--md-on-surface); font-weight: 600; }
+.map-msg-empty { font-size: 10px; color: var(--md-on-surface-variant); padding: 4px 0; }
+.map-gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.map-gl.dragging { cursor: grabbing; }
+.map-gl.hidden, .map-canvas.hidden { display: none; }
+.viewer.map-3d .viewer-map { display: none; }
+.viewer.map-3d .map-2d-only { display: none; }

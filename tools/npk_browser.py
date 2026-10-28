@@ -807,6 +807,9 @@ class BrowserServer(ThreadingHTTPServer):
     _model_names_applied = -1.0
     _model_names_keys = None
     model_names_path = None
+    _unit_models_lock = threading.Lock()
+    _unit_models = None
+    _unit_models_mtime = 0.0
     version: str | None = None
     update_state: dict = {}
     update_repo: str = update_check.DEFAULT_REPO
@@ -1920,13 +1923,23 @@ class Handler(BaseHTTPRequestHandler):
         return None, None
 
     def _gmp_data(self, row) -> dict:
-        key = (row["path"], row["signature"], row["packed_hash"])
+        models = self._unit_model_map()
+        key = (row["path"], row["signature"], row["packed_hash"], BrowserServer._unit_models_mtime)
         with BrowserServer._gmp_cache_lock:
             data = BrowserServer._gmp_cache.get(key)
         if data is not None:
             return data
         with BrowserServer._gmp_sem:
             data = gmp_parse.parse(self._entry_payload(row))
+        if models:
+            for unit in data.get("units", []):
+                if unit.get("model"):
+                    continue
+                eid = unit.get("eid")
+                model = models.get(str(eid)) if isinstance(eid, int) else None
+                if model:
+                    unit["model"] = model
+                    unit["model_from_eid"] = True
         data["path"] = row["path"]
         if not data.get("map_name"):
             data["map_name"] = Path(row["path"]).stem
@@ -2134,6 +2147,25 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._model_names = mapping
                 BrowserServer._model_names_mtime = mtime
             return BrowserServer._model_names
+
+    def _unit_model_map(self) -> dict:
+        path = Path(__file__).resolve().parent.parent / "data" / "unit_models.json"
+        try:
+            mtime = path.stat().st_mtime if path.is_file() else 0.0
+        except OSError:
+            mtime = 0.0
+        with BrowserServer._unit_models_lock:
+            if BrowserServer._unit_models is None or mtime != BrowserServer._unit_models_mtime:
+                mapping = {}
+                try:
+                    payload = json.loads(path.read_text("utf-8"))
+                    raw = payload.get("map", {})
+                    mapping = {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
+                except (OSError, ValueError, TypeError, AttributeError):
+                    mapping = {}
+                BrowserServer._unit_models = mapping
+                BrowserServer._unit_models_mtime = mtime
+            return BrowserServer._unit_models
 
     def _xn_data(self, row, module: str | None = None) -> dict:
         signature = int(row["signature"])

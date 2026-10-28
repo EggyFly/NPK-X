@@ -281,12 +281,22 @@ def profile_seed(profile: dict | None) -> int:
 
 
 HEX_KEY = re.compile(rb"(?<![0-9a-f])[0-9a-f]{16}(?![0-9a-f])")
+_CLIENT_KEY_CACHE: dict = {}
 
 
 def client_key_candidates(executable: str | Path) -> list:
     """Recover reversed 8-byte key halves stored as nearby ASCII strings."""
+    path = Path(executable)
     try:
-        data = Path(executable).read_bytes()
+        stat = path.stat()
+        stamp = (str(path.resolve()), stat.st_mtime, stat.st_size)
+    except OSError:
+        return []
+    cached = _CLIENT_KEY_CACHE.get(stamp)
+    if cached is not None:
+        return cached
+    try:
+        data = path.read_bytes()
     except OSError:
         return []
     matches = [(match.start(), match.group().decode()) for match in HEX_KEY.finditer(data)]
@@ -298,7 +308,11 @@ def client_key_candidates(executable: str | Path) -> list:
                 break
             raw = bytes.fromhex(first + second)
             keys.append(raw[:8][::-1] + raw[8:][::-1])
-    return list(dict.fromkeys(keys))
+    result = list(dict.fromkeys(keys))
+    if len(_CLIENT_KEY_CACHE) > 4:
+        _CLIENT_KEY_CACHE.clear()
+    _CLIENT_KEY_CACHE[stamp] = result
+    return result
 
 
 def discover_package_key(package: str | Path, executable: str | Path) -> bytes | None:

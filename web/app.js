@@ -2118,10 +2118,11 @@ const mapView = {
   dotSize: Math.min(16, Math.max(3, Number(localStorage.getItem("npk-map-dot-size")) || 6)),
   sprites: localStorage.getItem("npk-map-sprites") !== "0",
   is3d: localStorage.getItem("npk-map-3d") === "1",
+  ignoreErrors: localStorage.getItem("npk-map-ignore-errors") !== "0",
   dragging: false, dragX: 0, dragY: 0, dragGrab: null,
   minimap: null, minimapCtx: null, minimapBox: null,
   minimapBase: null,
-  icons: {}, modelIcons: {}, orderUnits: null,
+  icons: {}, modelIcons: {}, modelColors: {}, modelNames: {}, modelNameCount: 0, orderUnits: null,
   frame: 0,
 };
 
@@ -2178,7 +2179,7 @@ function ensureMapIcons() {
 }
 
 function ensureMapModelIcons() {
-  if (!mapView.sprites || !mapView.data) return;
+  if (!mapView.data || (!mapView.sprites && !mapView.is3d)) return;
   const counts = new Map();
   for (const unit of mapView.data.units || []) {
     const model = unit.model;
@@ -2190,7 +2191,7 @@ function ensureMapModelIcons() {
     if (mapView.modelIcons[model] !== undefined) continue;
     mapView.modelIcons[model] = null;
     const url = apiUrl("/api/thumb", { path: model, w: 96, v: 3 });
-    scheduleThumb(url, 0).then((blobUrl) => {
+    scheduleThumb(url, 1).then((blobUrl) => {
       if (!mapView.data) {
         URL.revokeObjectURL(blobUrl);
         return;
@@ -2199,12 +2200,38 @@ function ensureMapModelIcons() {
       img.addEventListener("load", () => {
         URL.revokeObjectURL(blobUrl);
         mapView.modelIcons[model] = img;
+        delete mapView.modelColors[model];
+        map3DRefreshColors(model);
         requestMapDraw();
       }, { once: true });
       img.addEventListener("error", () => URL.revokeObjectURL(blobUrl), { once: true });
       img.src = blobUrl;
     }).catch(() => {});
   }
+}
+
+function ensureMapModelNames() {
+  const data = mapView.data;
+  if (!data) return;
+  const models = [...new Set((data.units || []).map((unit) => unit.model).filter((model) => model && /\.(gim|mesh)$/i.test(model)))];
+  if (models.length === mapView.modelNameCount) return;
+  mapView.modelNameCount = models.length;
+  mapView.modelNames = {};
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < models.length) {
+      const batch = models.slice(cursor, cursor + 64);
+      cursor += 64;
+      try {
+        const query = batch.map((model) => `path=${encodeURIComponent(model)}`).join("&");
+        const payload = await getJson(`/api/names?${query}`);
+        if (mapView.data !== data) return;
+        Object.assign(mapView.modelNames, payload.names || {});
+      } catch (_) {}
+    }
+    if (mapView.data === data) buildMapLegend();
+  };
+  void Promise.all([worker(), worker()]);
 }
 
 function mapColor(eid) {
@@ -2256,6 +2283,9 @@ function openViewer(file) {
 function clearViewerContent() {
   if (mapView.frame) cancelAnimationFrame(mapView.frame);
   mapView.frame = 0;
+  disposeMap3D();
+  const viewerNode = $("viewer");
+  if (viewerNode) viewerNode.classList.remove("map-3d");
   mapView.data = null;
   mapView.file = null;
   mapView.canvas = null;
@@ -2265,7 +2295,10 @@ function clearViewerContent() {
   mapView.minimapBox = null;
   mapView.minimapBase = null;
   mapView.icons = {};
-  mapView.modelIcons = {};
+  if (Object.keys(mapView.modelIcons).length > 800) {
+    mapView.modelIcons = {};
+    mapView.modelColors = {};
+  }
   mapView.orderUnits = null;
   mapView.dragGrab = null;
   mapView.dragging = false;
@@ -2628,8 +2661,11 @@ function mapHeight(unit) {
 }
 
 function unitFootprint(unit) {
+  if (typeof unit._footprint === "number") return unit._footprint;
   const scale = unit.scale || [];
-  return Math.sqrt(Math.abs((Number(scale[0]) || 1) * (Number(scale[2]) || 1))) || 1;
+  const footprint = Math.sqrt(Math.abs((Number(scale[0]) || 1) * (Number(scale[2]) || 1))) || 1;
+  unit._footprint = footprint;
+  return footprint;
 }
 
 const MAP_ISO_COS = Math.cos(Math.PI / 6);
@@ -2709,6 +2745,11 @@ function mapFormat(value, step) {
 async function openMapViewer(file, token) {
   mapView.file = file;
   mapView.data = null;
+  mapView.modelNames = {};
+  mapView.modelNameCount = 0;
+  mapMessages.items = [];
+  mapMessages.unread = 0;
+  mapMessages.open = false;
   const stage = $("viewer-stage");
   $("viewer-foot").innerHTML = "";
   stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
@@ -2720,6 +2761,7 @@ async function openMapViewer(file, token) {
   } catch (error) {
     if (token !== viewer.token) return;
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.mapParse", { message: error.message }))}</div>`;
+    mapMsgAdd("error", tr("map.msg.read"), file.path, String(error.message || error));
   }
 }
 
@@ -2742,7 +2784,26 @@ function renderMapStage(file, data) {
   buildMapLegend();
   ensureMapIcons();
   ensureMapModelIcons();
-  drawMap();
+  ensureMapModelNames();
+  updateMapMsgBadge();
+  if (data.skipped_chunks) {
+    mapMsgAdd("warn", tr("map.msg.decrypt"), tr("map.msg.chunks", { count: data.skipped_chunks }));
+  }
+  if (data.binary_chunks) {
+    mapMsgAdd("warn", tr("map.msg.warning"), tr("map.msg.binary", { count: data.binary_chunks }));
+  }
+  updateMapMode();
+  if (mapView.is3d) {
+    drawMap();
+    void openMap3D(file, data).then((ok) => {
+      if (!ok) {
+        updateMapMode();
+        drawMap();
+      }
+    });
+  } else {
+    drawMap();
+  }
 }
 
 function mapFoot() {
@@ -2751,9 +2812,11 @@ function mapFoot() {
     <label class="viewer-zoom-value"><input id="map-zoom-input" type="number" min="5" max="2000" step="1" value="100"><span>%</span></label>
     <button class="icon-btn" id="map-zoom-in" title="${tr("map.zoomIn")}" aria-label="${tr("map.zoomIn")}">${icon("plus")}</button>
     <button class="mini-btn" id="map-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
-    <label class="map-dot-control">${tr("map.dot")} <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
-    <label class="map-dot-control"><input id="map-sprites" type="checkbox" autocomplete="off" ${mapView.sprites ? "checked" : ""}>${tr("map.sprites")}</label>
-    <button class="mini-btn" id="map-3d-toggle" title="${mapView.is3d ? tr("map.mode2d") : tr("map.mode3d")}">${mapView.is3d ? "2D" : "3D"}</button>
+    <label class="map-dot-control map-2d-only">${tr("map.dot")} <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
+    <label class="map-dot-control map-2d-only"><input id="map-sprites" type="checkbox" autocomplete="off" ${mapView.sprites ? "checked" : ""}>${tr("map.sprites")}</label>
+    <label class="map-dot-control"><input id="map-ignore-errors" type="checkbox" autocomplete="off" ${mapView.ignoreErrors ? "checked" : ""}>${tr("map.ignoreErrors")}</label>
+    <span class="view-switch map-view-switch" role="group" aria-label="2D/3D"><button class="icon-btn ${mapView.is3d ? "" : "active"}" id="map-mode-2d" type="button" aria-pressed="${mapView.is3d ? "false" : "true"}" title="${tr("map.mode2d")}">2D</button><button class="icon-btn ${mapView.is3d ? "active" : ""}" id="map-mode-3d" type="button" aria-pressed="${mapView.is3d ? "true" : "false"}" title="${tr("map.mode3d")}">3D</button></span>
+    <span class="map-msg-wrap"><button class="map-msg-btn" id="map-msg-btn" type="button" title="${tr("map.messages")}" aria-label="${tr("map.messages")}">${icon("bell")}</button><span class="map-msg-badge hidden" id="map-msg-badge">0</span><div class="map-msg-panel hidden" id="map-msg-panel"></div></span>
   </div>
   <div class="viewer-map">
     <canvas id="map-minimap-canvas" class="viewer-map-canvas"></canvas>
@@ -2802,12 +2865,19 @@ function resizeMapCanvas() {
   canvas.style.height = "100%";
   mapView.minimapBase = null;
   if (mapView.ctx) mapView.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (map3d.gl) requestMap3DDraw();
   drawMap();
 }
 
 function updateMapHud() {
   const hud = $("map-hud");
   if (!hud) return;
+  if (mapView.is3d) {
+    const note = updateMap3DNote();
+    const camera = map3d.camera;
+    hud.textContent = note || `X ${camera.target[0].toFixed(1)} · Z ${camera.target[2].toFixed(1)}`;
+    return;
+  }
   const second = mapAxis() === "xz" ? "Z" : "Y";
   hud.textContent = `X ${mapView.centerX.toFixed(1)} · ${second} ${mapView.centerZ.toFixed(1)}`;
 }
@@ -2815,6 +2885,10 @@ function updateMapHud() {
 function updateMapZoomInput() {
   const input = $("map-zoom-input");
   if (!input || document.activeElement === input) return;
+  if (mapView.is3d) {
+    input.value = Math.round(((map3d.camera.fit || 1) / Math.max(0.5, map3d.camera.distance)) * 100);
+    return;
+  }
   input.value = Math.round((mapView.scale / (mapView.fitScale || 1)) * 100);
 }
 
@@ -2936,14 +3010,15 @@ function drawMapUnits(ctx, w, h, scale) {
   }
   let spriteIds = null;
   if (mapView.sprites) {
-    if (visible.length <= MAP_SPRITE_BUDGET) {
+    const budget = Math.round(MAP_SPRITE_BUDGET * Math.min(2.5, Math.max(1, zoomK)));
+    if (visible.length <= budget) {
       spriteIds = null;
     } else {
       spriteIds = new Set(
         visible
           .slice()
           .sort((a, b) => unitFootprint(b[0]) - unitFootprint(a[0]))
-          .slice(0, MAP_SPRITE_BUDGET)
+          .slice(0, budget)
           .map(([unit]) => unit.id),
       );
     }
@@ -3138,17 +3213,41 @@ function drawMapMinimap() {
 function bindMapControls(file) {
   const canvas = mapView.canvas;
   if (!canvas) return;
-  $("map-zoom-in").addEventListener("click", () => setMapScale(mapView.scale * 1.25));
-  $("map-zoom-out").addEventListener("click", () => setMapScale(mapView.scale / 1.25));
+  const zoomBy = (factor) => {
+    if (mapView.is3d && map3d.ready) {
+      map3d.camera.distance = Math.max(0.5, Math.min(map3d.camera.fit * 40, map3d.camera.distance / factor));
+      updateMapZoomInput();
+      updateMapHud();
+      requestMap3DDraw();
+      return;
+    }
+    setMapScale(mapView.scale * factor);
+  };
+  $("map-zoom-in").addEventListener("click", () => zoomBy(1.25));
+  $("map-zoom-out").addEventListener("click", () => zoomBy(1 / 1.25));
   $("map-zoom-fit").addEventListener("click", () => {
+    if (mapView.is3d && map3d.ready) {
+      fitMap3D(mapView.data);
+      return;
+    }
     fitMapView();
     resizeMapCanvas();
   });
   const zoomInput = $("map-zoom-input");
   zoomInput.addEventListener("change", () => {
     const value = Number(zoomInput.value);
-    if (Number.isFinite(value) && value > 0) setMapScale(mapView.fitScale * value / 100);
-    else updateMapZoomInput();
+    if (!(Number.isFinite(value) && value > 0)) {
+      updateMapZoomInput();
+      return;
+    }
+    if (mapView.is3d && map3d.ready) {
+      map3d.camera.distance = (map3d.camera.fit || 1) * 100 / value;
+      updateMapZoomInput();
+      updateMapHud();
+      requestMap3DDraw();
+      return;
+    }
+    setMapScale(mapView.fitScale * value / 100);
   });
   zoomInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -3157,13 +3256,15 @@ function bindMapControls(file) {
     }
   });
   const dot = $("map-dot-size");
-  dot.value = String(mapView.dotSize);
-  dot.addEventListener("input", () => {
-    mapView.dotSize = Math.max(3, Math.min(16, Number(dot.value) || 6));
-    localStorage.setItem("npk-map-dot-size", String(mapView.dotSize));
-    updateMapLegendDots();
-    requestMapDraw();
-  });
+  if (dot) {
+    dot.value = String(mapView.dotSize);
+    dot.addEventListener("input", () => {
+      mapView.dotSize = Math.max(3, Math.min(16, Number(dot.value) || 6));
+      localStorage.setItem("npk-map-dot-size", String(mapView.dotSize));
+      updateMapLegendDots();
+      requestMapDraw();
+    });
+  }
   const sprites = $("map-sprites");
   if (sprites) {
     sprites.addEventListener("change", () => {
@@ -3173,19 +3274,23 @@ function bindMapControls(file) {
       requestMapDraw();
     });
   }
-  const mode = $("map-3d-toggle");
-  if (mode) {
-    mode.addEventListener("click", () => {
-      mapView.is3d = !mapView.is3d;
-      localStorage.setItem("npk-map-3d", mapView.is3d ? "1" : "0");
-      mapView.orderUnits = null;
-      mapView.minimapBase = null;
-      mode.textContent = mapView.is3d ? "2D" : "3D";
-      mode.title = mapView.is3d ? tr("map.mode2d") : tr("map.mode3d");
-      fitMapView();
-      requestMapDraw();
+  const ignore = $("map-ignore-errors");
+  if (ignore) {
+    ignore.addEventListener("change", () => {
+      mapView.ignoreErrors = ignore.checked;
+      localStorage.setItem("npk-map-ignore-errors", mapView.ignoreErrors ? "1" : "0");
+      if (mapView.is3d) {
+        rebuildMapPoints();
+        requestMap3DDraw();
+      }
     });
   }
+  const mode2d = $("map-mode-2d");
+  if (mode2d) mode2d.addEventListener("click", () => void setMapMode(false));
+  const mode3d = $("map-mode-3d");
+  if (mode3d) mode3d.addEventListener("click", () => void setMapMode(true));
+  const messages = $("map-msg-btn");
+  if (messages) messages.addEventListener("click", toggleMapMsgPanel);
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
@@ -3220,6 +3325,1146 @@ function bindMapControls(file) {
   }, { passive: false });
   bindMapMinimap();
 }
+
+const mapMessages = { items: [], unread: 0, open: false };
+
+function updateMapMsgBadge() {
+  const badge = $("map-msg-badge");
+  if (!badge) return;
+  badge.textContent = String(mapMessages.unread);
+  badge.classList.toggle("hidden", mapMessages.unread <= 0);
+}
+
+function renderMapMsgPanel() {
+  const panel = $("map-msg-panel");
+  if (!panel) return;
+  const rows = mapMessages.items.slice().reverse().map((item) => (
+    `<div class="map-msg-row" data-level="${item.level}"><span class="map-msg-tag">${esc(item.tag)}</span><span class="map-msg-text"><b>${esc(item.title)}</b>${item.detail ? `<br>${esc(item.detail)}` : ""}</span></div>`
+  )).join("");
+  panel.innerHTML = `<div class="map-msg-head"><span>${tr("map.messages")}</span><button type="button" id="map-msg-clear">${tr("map.messages.clear")}</button></div>${rows || `<div class="map-msg-empty">${tr("map.messages.empty")}</div>`}`;
+  const clear = panel.querySelector("#map-msg-clear");
+  if (clear) {
+    clear.addEventListener("click", () => {
+      mapMessages.items = [];
+      mapMessages.unread = 0;
+      updateMapMsgBadge();
+      renderMapMsgPanel();
+    });
+  }
+}
+
+function mapMsgAdd(level, tag, title, detail = "") {
+  if (mapMessages.items.some((item) => item.tag === tag && item.title === title && item.detail === detail)) return;
+  mapMessages.items.push({ level, tag, title, detail });
+  if (mapMessages.items.length > 200) mapMessages.items.shift();
+  mapMessages.unread += 1;
+  updateMapMsgBadge();
+  if (mapMessages.open) renderMapMsgPanel();
+}
+
+function toggleMapMsgPanel() {
+  const panel = $("map-msg-panel");
+  if (!panel) return;
+  mapMessages.open = !mapMessages.open;
+  panel.classList.toggle("hidden", !mapMessages.open);
+  if (mapMessages.open) {
+    mapMessages.unread = 0;
+    updateMapMsgBadge();
+    renderMapMsgPanel();
+  }
+}
+
+const MAP_MESH_LIMIT = 240;
+const map3d = {
+  canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null,
+  uViewProj: null, uPointView: null, uPointSize: null, uLineView: null, uLineColor: null,
+  uniforms: {}, textureCache: new Map(), texturePending: new Map(),
+  models: new Map(), units: [], points: null, pointCount: 0, grid: null, gridCount: 0, hiddenModels: new Set(),
+  camera: { yaw: 0.9, pitch: 0.9, distance: 100, fit: 100, target: [0, 0, 0] },
+  dragging: false, panning: false, dragX: 0, dragY: 0,
+  frame: 0, token: 0, loading: 0, total: 0, loadErrors: 0, note: "", ready: false, data: null,
+};
+
+const MAP3D_MESH_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_norm;
+layout(location = 2) in mat4 a_model;
+layout(location = 6) in vec4 a_paint1;
+layout(location = 7) in vec2 a_uv;
+layout(location = 8) in vec4 a_paint2;
+layout(location = 9) in vec4 a_paint3;
+layout(location = 10) in vec4 a_tangent;
+uniform mat4 u_view_proj;
+out vec3 v_norm;
+out vec3 v_local;
+out vec2 v_uv;
+out vec4 v_paint1;
+out vec4 v_paint2;
+out vec4 v_paint3;
+out vec3 v_tangent;
+out vec3 v_bitangent;
+out float v_light;
+void main() {
+  mat3 rot = mat3(a_model);
+  v_norm = normalize(rot * a_norm);
+  vec3 tangent = normalize(rot * a_tangent.xyz);
+  v_tangent = tangent;
+  v_bitangent = cross(v_norm, tangent) * a_tangent.w;
+  v_local = a_pos;
+  v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
+  v_paint1 = a_paint1;
+  v_paint2 = a_paint2;
+  v_paint3 = a_paint3;
+  v_light = 0.42 + 0.58 * abs(dot(v_norm, normalize(vec3(0.45, 0.8, 0.35))));
+  gl_Position = u_view_proj * a_model * vec4(a_pos, 1.0);
+}`;
+
+const MAP3D_MESH_FS = `#version 300 es
+precision highp float;
+in vec3 v_norm;
+in vec3 v_local;
+in vec2 v_uv;
+in vec4 v_paint1;
+in vec4 v_paint2;
+in vec4 v_paint3;
+in vec3 v_tangent;
+in vec3 v_bitangent;
+in float v_light;
+uniform sampler2D u_tex0;
+uniform sampler2D u_tex1;
+uniform sampler2D u_tex2;
+uniform float u_has_tex0;
+uniform float u_has_tex1;
+uniform float u_has_tex2;
+uniform float u_color_mode;
+uniform float u_axis;
+uniform float u_lerp_center;
+uniform float u_lerp_contrast;
+uniform vec4 u_mask0;
+uniform vec4 u_mask1;
+uniform vec4 u_mask2;
+uniform vec4 u_mask3;
+uniform vec4 u_base_color;
+uniform float u_tint_value;
+uniform vec4 u_emissive;
+uniform float u_normal_intensity;
+uniform float u_opacity_tex;
+uniform float u_alpha_ref;
+uniform float u_unlit;
+uniform vec4 u_texture_para;
+uniform float u_rotation_angle;
+uniform float u_tiling;
+uniform float u_repeat_scale;
+uniform vec3 u_bound_min;
+uniform vec3 u_bound_half;
+uniform vec3 u_fallback;
+uniform float u_use_paint;
+out vec4 out_color;
+void main() {
+  vec2 uv = v_uv;
+  uv -= 0.5;
+  uv *= u_texture_para.xy;
+  float texture_angle = radians(u_rotation_angle);
+  if (abs(texture_angle) > 0.0001) {
+    float s = sin(texture_angle), c = cos(texture_angle);
+    uv = vec2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
+  }
+  uv += 0.5;
+  uv += u_texture_para.zw;
+  if (u_tiling > 0.5) {
+    vec3 an = abs(normalize(v_norm));
+    vec3 p = v_local / 2.64 * u_repeat_scale;
+    if (an.x >= an.y && an.x >= an.z) uv = p.yz;
+    else if (an.y >= an.z) uv = p.xz;
+    else uv = p.yx;
+  }
+  vec4 tex0 = u_has_tex0 > 0.5 ? texture(u_tex0, uv) : vec4(1.0);
+  vec4 tex1 = u_has_tex1 > 0.5 ? texture(u_tex1, uv) : vec4(0.5, 0.5, 1.0, 1.0);
+  vec4 tex2 = u_has_tex2 > 0.5 ? texture(u_tex2, uv) : vec4(0.0, 0.5, 0.0, 0.0);
+  vec4 m0 = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? vec4(v_paint1.rgb, 1.0) : u_mask0;
+  vec4 m1 = u_use_paint > 0.5 && v_paint2.r >= 0.0 ? vec4(v_paint2.rgb, 1.0) : u_mask1;
+  vec4 m2 = u_use_paint > 0.5 && v_paint3.r >= 0.0 ? vec4(v_paint3.rgb, 1.0) : u_mask2;
+  vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
+  vec3 color = painted;
+  if (u_color_mode > 2.5) {
+    color = u_has_tex0 > 0.5 ? tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb : painted;
+  } else if (u_color_mode > 1.5) {
+    vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+    float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
+    float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
+    final_axis *= final_axis;
+    color = mix(m0.rgb, m1.rgb, final_axis * (tex0.r * 0.5 + 0.5));
+    color = mix(color, m2.rgb, (1.0 - final_axis) * tex0.g);
+    color = mix(color, u_mask3.rgb, tex0.b);
+  } else if (u_color_mode > 0.5) {
+    color = mix(m0.rgb, m1.rgb, tex0.r);
+    color = mix(color, m2.rgb, tex0.g);
+    color = mix(color, u_mask3.rgb, tex0.b);
+  } else if (u_has_tex0 > 0.5) {
+    color = tex0.rgb;
+  }
+  color *= u_base_color.rgb * u_tint_value;
+  color += tex2.a * u_emissive.rgb;
+  float alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
+  if (u_opacity_tex > 1.5) alpha = 1.0;
+  else if (u_opacity_tex > 0.5) alpha = tex1.a;
+  alpha *= u_base_color.a * v_paint1.a;
+  if (alpha < u_alpha_ref) discard;
+  vec3 normal = normalize(v_norm);
+  float light = u_unlit > 0.5 ? 1.0 : v_light;
+  if (u_has_tex1 > 0.5 && u_unlit < 0.5) {
+    vec3 n = tex1.xyz * 2.0 - 1.0;
+    n.xy *= u_normal_intensity;
+    normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
+    light = 0.42 + 0.58 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
+  }
+  out_color = vec4(color * light, clamp(alpha, 0.0, 1.0));
+}`;
+
+const MAP3D_POINT_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec4 a_color;
+uniform mat4 u_view_proj;
+uniform float u_point_size;
+out vec4 v_color;
+void main() {
+  gl_Position = u_view_proj * vec4(a_pos, 1.0);
+  gl_PointSize = u_point_size;
+  v_color = a_color;
+}`;
+
+const MAP3D_POINT_FS = `#version 300 es
+precision mediump float;
+in vec4 v_color;
+out vec4 out_color;
+void main() {
+  vec2 d = gl_PointCoord - vec2(0.5);
+  if (dot(d, d) > 0.25) discard;
+  out_color = v_color;
+}`;
+
+const MAP3D_LINE_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+uniform mat4 u_view_proj;
+uniform vec4 u_color;
+out vec4 v_color;
+void main() {
+  gl_Position = u_view_proj * vec4(a_pos, 1.0);
+  v_color = u_color;
+}`;
+
+const MAP3D_LINE_FS = `#version 300 es
+precision mediump float;
+in vec4 v_color;
+out vec4 out_color;
+void main() {
+  out_color = v_color;
+}`;
+
+function map3DCompile(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) || "shader compile failed";
+    gl.deleteShader(shader);
+    throw new Error(log);
+  }
+  return shader;
+}
+
+function map3DProgram(gl, vsSource, fsSource) {
+  const vs = map3DCompile(gl, gl.VERTEX_SHADER, vsSource);
+  const fs = map3DCompile(gl, gl.FRAGMENT_SHADER, fsSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program) || "program link failed";
+    gl.deleteProgram(program);
+    throw new Error(log);
+  }
+  return program;
+}
+
+function map3DEulerQuat(rx, ry, rz) {
+  const x = rx * Math.PI / 180;
+  const y = ry * Math.PI / 180;
+  const z = rz * Math.PI / 180;
+  const c1 = Math.cos(x / 2), s1 = Math.sin(x / 2);
+  const c2 = Math.cos(y / 2), s2 = Math.sin(y / 2);
+  const c3 = Math.cos(z / 2), s3 = Math.sin(z / 2);
+  return [
+    s1 * c2 * c3 - c1 * s2 * s3,
+    c1 * s2 * c3 + s1 * c2 * s3,
+    c1 * c2 * s3 - s1 * s2 * c3,
+    c1 * c2 * c3 + s1 * s2 * s3,
+  ];
+}
+
+function map3DUnitMatrix(unit) {
+  const position = unit.position || [0, 0, 0];
+  const scale = unit.scale || [1, 1, 1];
+  const angle = unit.angle || [0, 0, 0];
+  const quat = map3DEulerQuat(Number(angle[0]) || 0, Number(angle[1]) || 0, Number(angle[2]) || 0);
+  return gimTrsMatrix([
+    Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0,
+    quat[0], quat[1], quat[2], quat[3],
+    Number(scale[0]) || 1, Number(scale[1]) || 1, Number(scale[2]) || 1,
+  ]);
+}
+
+function map3DModelColor(model) {
+  if (mapView.modelColors[model]) return mapView.modelColors[model];
+  const image = mapView.modelIcons[model];
+  if (!image) return [0.62, 0.7, 0.74, 1];
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 8;
+    canvas.height = 8;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(image, 0, 0, 8, 8);
+    const data = ctx.getImageData(0, 0, 8, 8).data;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index + 3] < 32) continue;
+      r += data[index];
+      g += data[index + 1];
+      b += data[index + 2];
+      n += 1;
+    }
+    if (n) {
+      mapView.modelColors[model] = [r / n / 255, g / n / 255, b / n / 255, 1];
+      return mapView.modelColors[model];
+    }
+  } catch (_) {}
+  return [0.62, 0.7, 0.74, 1];
+}
+
+function map3DUnitColor(unit) {
+  const color = unit.color;
+  if (Array.isArray(color) && color.length >= 3) {
+    const r = Number(color[0]) || 0;
+    const g = Number(color[1]) || 0;
+    const b = Number(color[2]) || 0;
+    if (r + g + b > 30) return [r / 255, g / 255, b / 255, 1];
+  }
+  const fallback = map3DModelColor(unit.model);
+  return [fallback[0], fallback[1], fallback[2], 0.5];
+}
+
+function map3DUnitPaint(unit) {
+  const raw = unit.alpha === null || unit.alpha === undefined ? NaN : Number(unit.alpha);
+  const alpha = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 1;
+  const paints = Array.isArray(unit.paint) ? unit.paint : [unit.color, null, null];
+  const out = [];
+  for (let index = 0; index < 3; index += 1) {
+    const color = paints[index];
+    const r = Array.isArray(color) ? Number(color[0]) || 0 : 0;
+    const g = Array.isArray(color) ? Number(color[1]) || 0 : 0;
+    const b = Array.isArray(color) ? Number(color[2]) || 0 : 0;
+    out.push(r + g + b > 30 ? [r / 255, g / 255, b / 255, alpha] : [-1, -1, -1, alpha]);
+  }
+  return out;
+}
+
+function map3DViewProj() {
+  const camera = map3d.camera;
+  const eye = [
+    camera.target[0] + camera.distance * Math.cos(camera.pitch) * Math.sin(camera.yaw),
+    camera.target[1] + camera.distance * Math.sin(camera.pitch),
+    camera.target[2] + camera.distance * Math.cos(camera.pitch) * Math.cos(camera.yaw),
+  ];
+  const view = gimLookAt(eye, camera.target, [0, 1, 0]);
+  const proj = gimPerspective(Math.PI / 4, (map3d.canvas.width || 1) / (map3d.canvas.height || 1), Math.max(1, camera.distance * 0.01), camera.distance * 10);
+  return gimMultiply(proj, view);
+}
+
+function resizeMap3D() {
+  const canvas = map3d.canvas;
+  if (!canvas || !mapView.stage) return;
+  const width = Math.max(1, mapView.stage.clientWidth);
+  const height = Math.max(1, mapView.stage.clientHeight);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const scaledWidth = Math.round(width * dpr);
+  const scaledHeight = Math.round(height * dpr);
+  if (canvas.width === scaledWidth && canvas.height === scaledHeight) return;
+  canvas.width = scaledWidth;
+  canvas.height = scaledHeight;
+}
+
+function fitMap3D(data) {
+  const bounds = data?.bounds;
+  const camera = map3d.camera;
+  if (bounds) {
+    const cx = (bounds.min_x + bounds.max_x) / 2;
+    const cz = (bounds.min_y + bounds.max_y) / 2;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const unit of map3d.units) {
+      const position = unit.position || [];
+      const x = Number(position[0]);
+      const y = Number(position[1]);
+      const z = Number(position[2]);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      if (x < bounds.min_x - 4 || x > bounds.max_x + 4 || z < bounds.min_y - 4 || z > bounds.max_y + 4) continue;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      minY = 0;
+      maxY = 0;
+    }
+    const spanXZ = Math.max(1, bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    const spanY = Math.max(1, maxY - minY);
+    const span = Math.max(spanXZ, spanY * 2);
+    camera.target = [cx, (minY + maxY) / 2, cz];
+    camera.distance = span * 1.8;
+  } else {
+    camera.target = [0, 0, 0];
+    camera.distance = 100;
+  }
+  camera.fit = camera.distance;
+  camera.yaw = 0.9;
+  camera.pitch = 0.92;
+  updateMapZoomInput();
+  updateMapHud();
+  requestMap3DDraw();
+}
+
+function map3DBuildModel(model, mesh, units, materials, texturePaths) {
+  const gl = map3d.gl;
+  const vertices = mesh.vertices || [];
+  const faces = mesh.indices || [];
+  if (!vertices.length || !faces.length) throw new Error("empty mesh");
+  const positions = new Float32Array(vertices.length * 3);
+  const normals = new Float32Array(vertices.length * 3);
+  for (let index = 0; index < vertices.length; index += 1) {
+    const vertex = vertices[index] || [0, 0, 0];
+    positions[index * 3] = Number(vertex[0]) || 0;
+    positions[index * 3 + 1] = Number(vertex[1]) || 0;
+    positions[index * 3 + 2] = Number(vertex[2]) || 0;
+    const normal = (mesh.normals && mesh.normals[index]) || [0, 1, 0];
+    normals[index * 3] = Number(normal[0]) || 0;
+    normals[index * 3 + 1] = Number(normal[1]) || 1;
+    normals[index * 3 + 2] = Number(normal[2]) || 0;
+  }
+  const uvSource = mesh.uvs || [];
+  const uvs = new Float32Array(vertices.length * 2);
+  for (let index = 0; index < vertices.length; index += 1) {
+    const uv = uvSource[index] || [0, 0];
+    uvs[index * 2] = Number(uv[0]) || 0;
+    uvs[index * 2 + 1] = Number(uv[1]) || 0;
+  }
+  const tangents = new Float32Array(vertices.length * 4);
+  for (let index = 0; index < vertices.length; index += 1) {
+    tangents[index * 4] = 1;
+    tangents[index * 4 + 3] = 1;
+  }
+  const tangentSum = new Float32Array(vertices.length * 3);
+  const bitangentSum = new Float32Array(vertices.length * 3);
+  for (let index = 0; index + 2 < faces.length; index += 3) {
+    const ia = faces[index], ib = faces[index + 1], ic = faces[index + 2];
+    const pa = vertices[ia], pb = vertices[ib], pc = vertices[ic];
+    if (!pa || !pb || !pc) continue;
+    const ua = uvSource[ia] || [0, 0], ub = uvSource[ib] || [0, 0], uc = uvSource[ic] || [0, 0];
+    const e1x = pb[0] - pa[0], e1y = pb[1] - pa[1], e1z = pb[2] - pa[2];
+    const e2x = pc[0] - pa[0], e2y = pc[1] - pa[1], e2z = pc[2] - pa[2];
+    const du1 = ub[0] - ua[0], dv1 = ub[1] - ua[1];
+    const du2 = uc[0] - ua[0], dv2 = uc[1] - ua[1];
+    const det = du1 * dv2 - du2 * dv1;
+    if (Math.abs(det) < 1e-9) continue;
+    const r = 1 / det;
+    const tx = (e1x * dv2 - e2x * dv1) * r, ty = (e1y * dv2 - e2y * dv1) * r, tz = (e1z * dv2 - e2z * dv1) * r;
+    const bx = (e2x * du1 - e1x * du2) * r, by = (e2y * du1 - e1y * du2) * r, bz = (e2z * du1 - e1z * du2) * r;
+    for (const target of [ia, ib, ic]) {
+      tangentSum[target * 3] += tx; tangentSum[target * 3 + 1] += ty; tangentSum[target * 3 + 2] += tz;
+      bitangentSum[target * 3] += bx; bitangentSum[target * 3 + 1] += by; bitangentSum[target * 3 + 2] += bz;
+    }
+  }
+  for (let index = 0; index < vertices.length; index += 1) {
+    const nx = normals[index * 3], ny = normals[index * 3 + 1], nz = normals[index * 3 + 2];
+    let tx = tangentSum[index * 3], ty = tangentSum[index * 3 + 1], tz = tangentSum[index * 3 + 2];
+    const dot = nx * tx + ny * ty + nz * tz;
+    tx -= nx * dot; ty -= ny * dot; tz -= nz * dot;
+    const length = Math.hypot(tx, ty, tz);
+    if (length > 1e-6) { tx /= length; ty /= length; tz /= length; } else { tx = 1; ty = 0; tz = 0; }
+    const bx = bitangentSum[index * 3], by = bitangentSum[index * 3 + 1], bz = bitangentSum[index * 3 + 2];
+    const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
+    tangents[index * 4] = tx; tangents[index * 4 + 1] = ty; tangents[index * 4 + 2] = tz;
+    tangents[index * 4 + 3] = cx * bx + cy * by + cz * bz < 0 ? -1 : 1;
+  }
+  const use32 = vertices.length > 65535;
+  const indices = use32 ? new Uint32Array(faces) : new Uint16Array(faces);
+  const instances = new Float32Array(units.length * 28);
+  for (let index = 0; index < units.length; index += 1) {
+    const base = index * 28;
+    instances.set(map3DUnitMatrix(units[index]), base);
+    const paint = map3DUnitPaint(units[index]);
+    for (let part = 0; part < 3; part += 1) {
+      instances[base + 16 + part * 4] = paint[part][0];
+      instances[base + 17 + part * 4] = paint[part][1];
+      instances[base + 18 + part * 4] = paint[part][2];
+      instances[base + 19 + part * 4] = paint[part][3];
+    }
+  }
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  const normalBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+  const instanceBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, instances, gl.STATIC_DRAW);
+  for (let part = 0; part < 4; part += 1) {
+    gl.enableVertexAttribArray(2 + part);
+    gl.vertexAttribPointer(2 + part, 4, gl.FLOAT, false, 112, part * 16);
+    gl.vertexAttribDivisor(2 + part, 1);
+  }
+  for (let part = 0; part < 3; part += 1) {
+    const location = part === 0 ? 6 : (part === 1 ? 8 : 9);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 112, 64 + part * 16);
+    gl.vertexAttribDivisor(location, 1);
+  }
+  const uvBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(7);
+  gl.vertexAttribPointer(7, 2, gl.FLOAT, false, 0, 0);
+  const tangentBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, tangentBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, tangents, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(10);
+  gl.vertexAttribPointer(10, 4, gl.FLOAT, false, 0, 0);
+  const indexBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const previous = map3d.models.get(model);
+  if (previous) {
+    gl.deleteVertexArray(previous.vao);
+    gl.deleteBuffer(previous.positionBuffer);
+    gl.deleteBuffer(previous.normalBuffer);
+    gl.deleteBuffer(previous.instanceBuffer);
+    gl.deleteBuffer(previous.indexBuffer);
+    gl.deleteBuffer(previous.uvBuffer);
+    gl.deleteBuffer(previous.tangentBuffer);
+  }
+  const materialList = (Array.isArray(materials) ? materials : []).map((item) => (item && typeof item === "object" ? item : {}));
+  const submeshes = Array.isArray(mesh.submeshes) ? mesh.submeshes : [];
+  const groups = [];
+  for (const sub of submeshes) {
+    const count = Math.max(0, (Number(sub.face_count) || 0) * 3);
+    if (!count) continue;
+    groups.push({
+      material: Math.max(0, Number(sub.material_index) || 0),
+      offset: Math.max(0, (Number(sub.face_offset) || 0) * 3),
+      count,
+    });
+  }
+  if (!groups.length) groups.push({ material: 0, offset: 0, count: indices.length });
+  const bounds = mesh.bounds || {};
+  const min = Array.isArray(bounds.min) ? bounds.min : [0, 0, 0];
+  const max = Array.isArray(bounds.max) ? bounds.max : [0, 0, 0];
+  map3d.models.set(model, {
+    vao,
+    positionBuffer,
+    normalBuffer,
+    instanceBuffer,
+    indexBuffer,
+    uvBuffer,
+    tangentBuffer,
+    units,
+    instances,
+    materials: materialList,
+    groups,
+    textures: [],
+    count: units.length,
+    indexCount: indices.length,
+    indexType: use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
+    fallback: map3DModelColor(model),
+    boundMin: [Number(min[0]) || 0, Number(min[1]) || 0, Number(min[2]) || 0],
+    boundHalf: [
+      Math.max(0.0001, ((Number(max[0]) || 0) - (Number(min[0]) || 0)) / 2),
+      Math.max(0.0001, ((Number(max[1]) || 0) - (Number(min[1]) || 0)) / 2),
+      Math.max(0.0001, ((Number(max[2]) || 0) - (Number(min[2]) || 0)) / 2),
+    ],
+  });
+  map3DLoadMaterialTextures(model, materialList, texturePaths);
+}
+
+function map3DLoadTexture(path, done) {
+  const gl = map3d.gl;
+  if (!gl || !path) {
+    done(null);
+    return;
+  }
+  if (map3d.textureCache.has(path)) {
+    done(map3d.textureCache.get(path));
+    return;
+  }
+  if (map3d.textureCache.size + map3d.texturePending.size >= 300) {
+    done(null);
+    return;
+  }
+  const pending = map3d.texturePending.get(path);
+  if (pending) {
+    pending.push(done);
+    return;
+  }
+  map3d.texturePending.set(path, [done]);
+  const finish = (texture) => {
+    const waiters = map3d.texturePending.get(path) || [];
+    map3d.texturePending.delete(path);
+    if (texture) map3d.textureCache.set(path, texture);
+    for (const waiter of waiters) waiter(texture);
+  };
+  scheduleThumb(apiUrl("/api/image", { path }), 1).then((blobUrl) => {
+    const image = new Image();
+    image.addEventListener("load", () => {
+      URL.revokeObjectURL(blobUrl);
+      if (map3d.gl !== gl) {
+        finish(null);
+        return;
+      }
+      let source = image;
+      const maxSize = 512;
+      if (image.width > maxSize || image.height > maxSize) {
+        const scale = maxSize / Math.max(image.width, image.height);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+        source = canvas;
+      }
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      finish(texture);
+      requestMap3DDraw();
+    }, { once: true });
+    image.addEventListener("error", () => {
+      URL.revokeObjectURL(blobUrl);
+      finish(null);
+    }, { once: true });
+    image.src = blobUrl;
+  }).catch(() => finish(null));
+}
+
+function map3DLoadMaterialTextures(model, materials, texturePaths) {
+  const entry = map3d.models.get(model);
+  if (!entry) return;
+  const fallback = (texturePaths || []).filter((item) => typeof item === "string" && item);
+  const apply = (index, slot, texture) => {
+    const current = map3d.models.get(model);
+    if (!current || current !== entry) return;
+    if (!current.textures[index]) current.textures[index] = [];
+    current.textures[index][slot] = texture;
+    requestMap3DDraw();
+  };
+  materials.forEach((material, index) => {
+    const slots = [material.tex0, material.tex1, material.tex2];
+    if (index === 0 && fallback[0]) slots[0] = slots[0] || fallback[0];
+    slots.forEach((path, slot) => {
+      if (!path) return;
+      map3DLoadTexture(path, (texture) => apply(index, slot, texture));
+    });
+  });
+}
+
+function map3DApplyMaterial(entry, group) {
+  const gl = map3d.gl;
+  const u = map3d.uniforms;
+  const mat = entry.materials[group.material] || {};
+  const colors = Array.isArray(mat.colors) ? mat.colors : [];
+  for (let index = 0; index < 4; index += 1) {
+    const value = Array.isArray(colors[index]) ? colors[index] : [1, 1, 1, 1];
+    gl.uniform4f(u["mask" + index], Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0, Number(value[3]) || 0);
+  }
+  const tex = entry.textures[group.material] || [];
+  for (let index = 0; index < 3; index += 1) {
+    const texture = tex[index] || null;
+    gl.activeTexture(gl.TEXTURE0 + index);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1f(u["hasTex" + index], texture ? 1 : 0);
+  }
+  const surface = String(mat.surface || "").toLowerCase();
+  const changeColor = surface.includes("change_color");
+  const weighted = changeColor && (surface.includes("object") || surface.includes("tiling"));
+  gl.uniform1f(u.colorMode, weighted ? 3 : (Number(mat.color_mode) || 0));
+  gl.uniform1f(u.usePaint, changeColor ? 1 : 0);
+  gl.uniform1f(u.axis, Number(mat.axis) || 0);
+  gl.uniform1f(u.lerpCenter, Number(mat.lerp_center) || 0);
+  const contrast = Number(mat.lerp_contrast);
+  gl.uniform1f(u.lerpContrast, Number.isFinite(contrast) ? contrast : 0.5);
+  const base = Array.isArray(mat.base_color) ? mat.base_color : [1, 1, 1, 1];
+  gl.uniform4f(u.baseColor, Number(base[0]) || 0, Number(base[1]) || 0, Number(base[2]) || 0, Number(base[3]) || 0);
+  const tintValue = Number(mat.tint_value);
+  gl.uniform1f(u.tintValue, Number.isFinite(tintValue) ? tintValue : 1);
+  const intensity = Array.isArray(mat.intensity) ? mat.intensity : [1, 1, 1, 1];
+  const emissive = Array.isArray(mat.emissive_color) ? mat.emissive_color : [0, 0, 0, 0];
+  const emissivePower = Number(intensity[3]) || 0;
+  gl.uniform4f(u.emissive, (Number(emissive[0]) || 0) * emissivePower, (Number(emissive[1]) || 0) * emissivePower, (Number(emissive[2]) || 0) * emissivePower, 0);
+  const normalIntensity = Number(intensity[0]);
+  gl.uniform1f(u.normalIntensity, Number.isFinite(normalIntensity) ? normalIntensity : 1);
+  const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
+  gl.uniform1f(u.opacityTex, surface.includes("tiling") ? 2 : opacityTex);
+  gl.uniform1f(u.alphaRef, Number(mat.alpha_ref) || 0);
+  gl.uniform1f(u.unlit, mat.lighting === false ? 1 : 0);
+  const para = Array.isArray(mat.texture_para) ? mat.texture_para : [1, 1, 0, 0];
+  gl.uniform4f(u.texturePara, Number(para[0]) || 1, Number(para[1]) || 1, Number(para[2]) || 0, Number(para[3]) || 0);
+  gl.uniform1f(u.rotationAngle, Number(mat.rotation_angle) || 0);
+  gl.uniform1f(u.tiling, mat.tiling ? 1 : 0);
+  const repeatScale = Number(mat.repeat_scale);
+  gl.uniform1f(u.repeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
+  gl.uniform3f(u.boundMin, entry.boundMin[0], entry.boundMin[1], entry.boundMin[2]);
+  gl.uniform3f(u.boundHalf, entry.boundHalf[0], entry.boundHalf[1], entry.boundHalf[2]);
+  gl.uniform3f(u.fallback, entry.fallback[0], entry.fallback[1], entry.fallback[2]);
+}
+
+function buildMap3DGrid(data) {
+  const gl = map3d.gl;
+  const bounds = data?.bounds;
+  if (!gl || !bounds) return;
+  const span = Math.max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y, 1);
+  const step = mapNiceStep(span / 24);
+  const x0 = Math.floor(bounds.min_x / step) * step;
+  const x1 = Math.ceil(bounds.max_x / step) * step;
+  const z0 = Math.floor(bounds.min_y / step) * step;
+  const z1 = Math.ceil(bounds.max_y / step) * step;
+  const values = [];
+  for (let x = x0; x <= x1 + step * 0.5; x += step) values.push(x, 0, z0, x, 0, z1);
+  for (let z = z0; z <= z1 + step * 0.5; z += step) values.push(x0, 0, z, x1, 0, z);
+  if (!map3d.grid) map3d.grid = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, map3d.grid);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  map3d.gridCount = values.length / 3;
+}
+
+function map3DRefreshColors(model) {
+  const entry = map3d.models.get(model);
+  const gl = map3d.gl;
+  if (!entry || !gl || !entry.instances || !entry.units) return;
+  for (let index = 0; index < entry.units.length; index += 1) {
+    const base = index * 28;
+    const paint = map3DUnitPaint(entry.units[index]);
+    for (let part = 0; part < 3; part += 1) {
+      entry.instances[base + 16 + part * 4] = paint[part][0];
+      entry.instances[base + 17 + part * 4] = paint[part][1];
+      entry.instances[base + 18 + part * 4] = paint[part][2];
+      entry.instances[base + 19 + part * 4] = paint[part][3];
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, entry.instanceBuffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, entry.instances);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  requestMap3DDraw();
+}
+
+function rebuildMapPoints(forceAll = false) {
+  const gl = map3d.gl;
+  if (!gl) return;
+  const strict = !mapView.ignoreErrors && map3d.loadErrors > 0;
+  const skip = strict || forceAll ? new Set() : map3d.models;
+  const values = [];
+  for (const unit of map3d.units) {
+    if (skip.has(unit.model)) continue;
+    if (map3d.hiddenModels.has(unit.model)) continue;
+    const position = unit.position || [0, 0, 0];
+    const color = map3DUnitColor(unit);
+    values.push(Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0, color[0], color[1], color[2], color[3]);
+  }
+  map3d.pointCount = values.length / 7;
+  if (!map3d.points) map3d.points = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, map3d.points);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+}
+
+function drawMap3D() {
+  const gl = map3d.gl;
+  const canvas = map3d.canvas;
+  if (!gl || !canvas) return;
+  resizeMap3D();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.055, 0.07, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
+  const vp = map3DViewProj();
+  const strict = !mapView.ignoreErrors && map3d.loadErrors > 0;
+  if (map3d.lineProgram && map3d.gridCount) {
+    gl.useProgram(map3d.lineProgram);
+    gl.uniformMatrix4fv(map3d.uLineView, false, vp);
+    gl.uniform4f(map3d.uLineColor, 0.3, 0.36, 0.4, 0.6);
+    gl.bindBuffer(gl.ARRAY_BUFFER, map3d.grid);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, map3d.gridCount);
+  }
+  if (!strict && map3d.models.size) {
+    gl.useProgram(map3d.program);
+    gl.uniformMatrix4fv(map3d.uViewProj, false, vp);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    for (const entry of map3d.models.values()) {
+      gl.bindVertexArray(entry.vao);
+      const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
+      for (const group of entry.groups) {
+        const mat = entry.materials[group.material] || {};
+        map3DApplyMaterial(entry, group);
+        gl.depthMask(!mat.transparent);
+        gl.drawElementsInstanced(gl.TRIANGLES, group.count, entry.indexType, group.offset * bytes, entry.count);
+      }
+    }
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+  if (map3d.pointCount) {
+    gl.useProgram(map3d.pointProgram);
+    gl.uniformMatrix4fv(map3d.uPointView, false, vp);
+    gl.uniform1f(map3d.uPointSize, Math.max(3, Math.min(14, 900 / Math.max(1, map3d.camera.distance))));
+    gl.bindBuffer(gl.ARRAY_BUFFER, map3d.points);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 28, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12);
+    gl.drawArrays(gl.POINTS, 0, map3d.pointCount);
+  }
+}
+
+function requestMap3DDraw() {
+  if (map3d.frame) return;
+  map3d.frame = requestAnimationFrame(() => {
+    map3d.frame = 0;
+    drawMap3D();
+  });
+}
+
+function disposeMap3D() {
+  const gl = map3d.gl;
+  if (gl) {
+    for (const entry of map3d.models.values()) {
+      gl.deleteVertexArray(entry.vao);
+      gl.deleteBuffer(entry.positionBuffer);
+      gl.deleteBuffer(entry.normalBuffer);
+      gl.deleteBuffer(entry.instanceBuffer);
+      gl.deleteBuffer(entry.indexBuffer);
+      gl.deleteBuffer(entry.uvBuffer);
+      gl.deleteBuffer(entry.tangentBuffer);
+    }
+    for (const texture of map3d.textureCache.values()) gl.deleteTexture(texture);
+    if (map3d.points) gl.deleteBuffer(map3d.points);
+    if (map3d.grid) gl.deleteBuffer(map3d.grid);
+    if (map3d.program) gl.deleteProgram(map3d.program);
+    if (map3d.pointProgram) gl.deleteProgram(map3d.pointProgram);
+    if (map3d.lineProgram) gl.deleteProgram(map3d.lineProgram);
+  }
+  if (map3d.frame) cancelAnimationFrame(map3d.frame);
+  map3d.frame = 0;
+  map3d.textureCache.clear();
+  map3d.texturePending.clear();
+  map3d.uniforms = {};
+  map3d.models.clear();
+  map3d.hiddenModels.clear();
+  map3d.points = null;
+  map3d.pointCount = 0;
+  map3d.grid = null;
+  map3d.gridCount = 0;
+  map3d.ready = false;
+  map3d.data = null;
+  map3d.program = null;
+  map3d.pointProgram = null;
+  map3d.lineProgram = null;
+  map3d.gl = null;
+  map3d.token += 1;
+  if (map3d.canvas) {
+    map3d.canvas.remove();
+    map3d.canvas = null;
+  }
+}
+
+async function openMap3D(file, data) {
+  disposeMap3D();
+  const token = map3d.token;
+  const canvas = document.createElement("canvas");
+  canvas.id = "map-gl";
+  canvas.className = "map-gl";
+  mapView.stage.insertBefore(canvas, mapView.canvas);
+  const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
+  if (!gl) {
+    canvas.remove();
+    mapView.is3d = false;
+    localStorage.setItem("npk-map-3d", "0");
+    mapMsgAdd("warn", tr("map.msg.warning"), tr("map.3d.webgl"));
+    return false;
+  }
+  map3d.canvas = canvas;
+  map3d.gl = gl;
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    mapMsgAdd("error", tr("map.msg.render"), "WebGL context lost");
+    mapView.is3d = false;
+    localStorage.setItem("npk-map-3d", "0");
+    updateMapMode();
+    drawMap();
+  });
+  try {
+    map3d.program = map3DProgram(gl, MAP3D_MESH_VS, MAP3D_MESH_FS);
+    map3d.pointProgram = map3DProgram(gl, MAP3D_POINT_VS, MAP3D_POINT_FS);
+    map3d.lineProgram = map3DProgram(gl, MAP3D_LINE_VS, MAP3D_LINE_FS);
+  } catch (error) {
+    mapMsgAdd("error", tr("map.msg.render"), "WebGL", String(error.message || error));
+    disposeMap3D();
+    mapView.is3d = false;
+    localStorage.setItem("npk-map-3d", "0");
+    return false;
+  }
+  map3d.uViewProj = gl.getUniformLocation(map3d.program, "u_view_proj");
+  map3d.uPointView = gl.getUniformLocation(map3d.pointProgram, "u_view_proj");
+  map3d.uPointSize = gl.getUniformLocation(map3d.pointProgram, "u_point_size");
+  map3d.uLineView = gl.getUniformLocation(map3d.lineProgram, "u_view_proj");
+  map3d.uLineColor = gl.getUniformLocation(map3d.lineProgram, "u_color");
+  const uniform = (name) => gl.getUniformLocation(map3d.program, name);
+  map3d.uniforms = {
+    tex0: uniform("u_tex0"), tex1: uniform("u_tex1"), tex2: uniform("u_tex2"),
+    hasTex0: uniform("u_has_tex0"), hasTex1: uniform("u_has_tex1"), hasTex2: uniform("u_has_tex2"),
+    colorMode: uniform("u_color_mode"), axis: uniform("u_axis"),
+    lerpCenter: uniform("u_lerp_center"), lerpContrast: uniform("u_lerp_contrast"),
+    mask0: uniform("u_mask0"), mask1: uniform("u_mask1"), mask2: uniform("u_mask2"), mask3: uniform("u_mask3"),
+    baseColor: uniform("u_base_color"), tintValue: uniform("u_tint_value"),
+    emissive: uniform("u_emissive"), normalIntensity: uniform("u_normal_intensity"),
+    opacityTex: uniform("u_opacity_tex"), alphaRef: uniform("u_alpha_ref"), unlit: uniform("u_unlit"),
+    texturePara: uniform("u_texture_para"), rotationAngle: uniform("u_rotation_angle"),
+    tiling: uniform("u_tiling"), repeatScale: uniform("u_repeat_scale"),
+    boundMin: uniform("u_bound_min"), boundHalf: uniform("u_bound_half"), fallback: uniform("u_fallback"),
+    usePaint: uniform("u_use_paint"),
+  };
+  gl.useProgram(map3d.program);
+  gl.uniform1i(map3d.uniforms.tex0, 0);
+  gl.uniform1i(map3d.uniforms.tex1, 1);
+  gl.uniform1i(map3d.uniforms.tex2, 2);
+  map3d.data = data;
+  map3d.ready = false;
+  map3d.units = (data.units || []).filter((unit) => Array.isArray(unit.position));
+  map3d.loadErrors = 0;
+  map3d.loading = 0;
+  map3d.total = 0;
+  map3d.note = "";
+  fitMap3D(data);
+  buildMap3DGrid(data);
+  rebuildMapPoints(true);
+  map3d.ready = true;
+  bindMap3DControls();
+  requestMap3DDraw();
+  void loadMap3DMeshes(data, token);
+  return true;
+}
+
+async function setMapMode(next) {
+  if (mapView.is3d === next) return;
+  mapView.is3d = next;
+  localStorage.setItem("npk-map-3d", next ? "1" : "0");
+  mapView.orderUnits = null;
+  mapView.minimapBase = null;
+  if (next) {
+    if (map3d.gl && map3d.data === mapView.data) {
+      resizeMap3D();
+      updateMapMode();
+      requestMap3DDraw();
+      return;
+    }
+    const ok = await openMap3D(mapView.file, mapView.data);
+    if (!ok) {
+      mapView.is3d = false;
+      localStorage.setItem("npk-map-3d", "0");
+    }
+  } else if (map3d.frame) {
+    cancelAnimationFrame(map3d.frame);
+    map3d.frame = 0;
+  }
+  updateMapMode();
+  if (mapView.is3d) requestMap3DDraw();
+  else drawMap();
+}
+
+function updateMapMode() {
+  const viewer = $("viewer");
+  const glVisible = mapView.is3d && map3d.ready;
+  if (viewer) viewer.classList.toggle("map-3d", glVisible);
+  if (mapView.canvas) mapView.canvas.classList.toggle("hidden", glVisible);
+  if (map3d.canvas) map3d.canvas.classList.toggle("hidden", !glVisible);
+  const two = $("map-mode-2d");
+  const three = $("map-mode-3d");
+  if (two) {
+    two.classList.toggle("active", !mapView.is3d);
+    two.setAttribute("aria-pressed", mapView.is3d ? "false" : "true");
+  }
+  if (three) {
+    three.classList.toggle("active", mapView.is3d);
+    three.setAttribute("aria-pressed", mapView.is3d ? "true" : "false");
+  }
+  updateMapZoomInput();
+  updateMapHud();
+}
+
+async function loadMap3DMeshes(data, token) {
+  const groups = new Map();
+  let unresolved = 0;
+  let collisions = 0;
+  map3d.hiddenModels.clear();
+  for (const unit of data.units || []) {
+    const model = unit.model;
+    if (!model || !/\.(gim|mesh)$/i.test(model)) {
+      unresolved += 1;
+      continue;
+    }
+    const base = model.split(/[\\/]/).pop();
+    if (/^collision/i.test(base)) {
+      map3d.hiddenModels.add(model);
+      collisions += 1;
+      continue;
+    }
+    if (!groups.has(model)) groups.set(model, []);
+    groups.get(model).push(unit);
+  }
+  if (unresolved) {
+    mapMsgAdd("warn", tr("map.msg.unresolved"), tr("map.msg.unresolvedDetail", { count: unresolved }));
+  }
+  if (collisions) {
+    mapMsgAdd("info", tr("map.msg.info"), tr("map.3d.collision", { count: collisions }));
+  }
+  const queue = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  if (queue.length > MAP_MESH_LIMIT) {
+    mapMsgAdd("warn", tr("map.msg.warning"), tr("map.3d.budget", { count: queue.length - MAP_MESH_LIMIT }));
+  }
+  const work = queue.slice(0, MAP_MESH_LIMIT);
+  map3d.total = work.length;
+  map3d.loading = 0;
+  updateMapHud();
+  let cursor = 0;
+  let sinceRebuild = 0;
+  const worker = async () => {
+    while (cursor < work.length) {
+      const [model, units] = work[cursor];
+      cursor += 1;
+      try {
+        const response = await getJson(apiUrl("/api/neox", { path: model }));
+        if (token !== map3d.token) return;
+        const mesh = response.mesh_data;
+        if (!mesh || !Array.isArray(mesh.vertices) || !mesh.indices || !mesh.vertices.length) {
+          throw new Error(response.mesh_error || "no mesh");
+        }
+        map3DBuildModel(model, mesh, units, response.materials || [], response.texture_images || response.textures || []);
+      } catch (error) {
+        if (token !== map3d.token) return;
+        map3d.loadErrors += 1;
+        mapMsgAdd("error", tr("map.msg.render"), model, `${error.message || error} · ${units.length}`);
+        rebuildMapPoints();
+        requestMap3DDraw();
+      }
+      map3d.loading += 1;
+      sinceRebuild += 1;
+      if (sinceRebuild >= 8) {
+        sinceRebuild = 0;
+        rebuildMapPoints();
+      }
+      updateMapHud();
+      requestMap3DDraw();
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  if (token !== map3d.token) return;
+  rebuildMapPoints();
+  map3d.ready = true;
+  updateMapMode();
+  updateMapHud();
+  requestMap3DDraw();
+}
+
+function bindMap3DControls() {
+  const canvas = map3d.canvas;
+  if (!canvas) return;
+  canvas.addEventListener("pointerdown", (event) => {
+    map3d.dragging = true;
+    map3d.panning = event.button === 2 || event.shiftKey;
+    map3d.dragX = event.clientX;
+    map3d.dragY = event.clientY;
+    canvas.classList.add("dragging");
+    try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!map3d.dragging) return;
+    const dx = event.clientX - map3d.dragX;
+    const dy = event.clientY - map3d.dragY;
+    map3d.dragX = event.clientX;
+    map3d.dragY = event.clientY;
+    const camera = map3d.camera;
+    if (map3d.panning) {
+      const unit = camera.distance * 0.0016;
+      camera.target[0] -= dx * unit;
+      camera.target[2] += dy * unit;
+    } else {
+      camera.yaw -= dx * 0.008;
+      camera.pitch = Math.max(0.08, Math.min(1.45, camera.pitch + dy * 0.008));
+    }
+    updateMapHud();
+    requestMap3DDraw();
+  });
+  const end = (event) => {
+    if (!map3d.dragging) return;
+    map3d.dragging = false;
+    canvas.classList.remove("dragging");
+    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    map3d.camera.distance = Math.max(0.5, Math.min(map3d.camera.fit * 40, map3d.camera.distance * (event.deltaY < 0 ? 0.88 : 1.14)));
+    updateMapZoomInput();
+    updateMapHud();
+    requestMap3DDraw();
+  }, { passive: false });
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+}
+
+function updateMap3DNote() {
+  if (!mapView.is3d) return "";
+  if (map3d.loading < map3d.total) {
+    return tr("map.3d.loading", { done: map3d.loading, total: map3d.total });
+  }
+  return "";
+}
+
 
 function bindMapMinimap() {
   const canvas = mapView.minimap;
@@ -3267,7 +4512,8 @@ function buildMapLegend() {
       tints[eid] = `rgb(${unit.color[0]}, ${unit.color[1]}, ${unit.color[2]})`;
     }
     if (labels[eid]) continue;
-    const base = String(unit.name || "").replace(/\d+$/, "").trim();
+    const modelName = unit.model ? mapView.modelNames[unit.model] : "";
+    const base = String(modelName || unit.name || "").replace(/\d+$/, "").trim();
     if (base) labels[eid] = base;
   }
   const rows = Object.entries(data.eids || {})

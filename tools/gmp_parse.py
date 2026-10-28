@@ -360,8 +360,14 @@ def parse(payload: bytes) -> dict:
                         camp = _key(unit, "camp_id")
                         parent = _key(unit, "parent_unit_id")
                         color = _color(_key(unit, "paint_area1"))
+                        paint = [
+                            color,
+                            _color(_key(unit, "paint_area2")),
+                            _color(_key(unit, "paint_area3")),
+                        ]
                         scale = _vec(_key(unit, "ctx_real_scale", "real_scale", "scale"), 3)
                         angle = _vec(_key(unit, "ctx_model_angle", "model_angle"), 3)
+                        alpha = _number(_key(unit, "model_alpha"))
                         units[unit_id] = {
                             "id": unit_id,
                             "name": name,
@@ -374,6 +380,8 @@ def parse(payload: bytes) -> dict:
                             "parent": parent if isinstance(parent, int) else 0,
                             "position": [round(item, 3) for item in position],
                             "color": color,
+                            "paint": paint,
+                            "alpha": round(alpha, 3) if alpha is not None else None,
                             "scale": scale,
                             "angle": angle,
                         }
