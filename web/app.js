@@ -2116,10 +2116,12 @@ const mapView = {
   width: 1, height: 1, dpr: 1,
   centerX: 0, centerZ: 0, scale: 1, fitScale: 1,
   dotSize: Math.min(16, Math.max(3, Number(localStorage.getItem("npk-map-dot-size")) || 6)),
-  dragging: false, dragX: 0, dragY: 0,
+  sprites: localStorage.getItem("npk-map-sprites") !== "0",
+  is3d: localStorage.getItem("npk-map-3d") === "1",
+  dragging: false, dragX: 0, dragY: 0, dragGrab: null,
   minimap: null, minimapCtx: null, minimapBox: null,
   minimapBase: null,
-  icons: {},
+  icons: {}, modelIcons: {}, orderUnits: null,
   frame: 0,
 };
 
@@ -2167,6 +2169,36 @@ function ensureMapIcons() {
       img.addEventListener("load", () => {
         URL.revokeObjectURL(blobUrl);
         mapView.icons[eid] = img;
+        requestMapDraw();
+      }, { once: true });
+      img.addEventListener("error", () => URL.revokeObjectURL(blobUrl), { once: true });
+      img.src = blobUrl;
+    }).catch(() => {});
+  }
+}
+
+function ensureMapModelIcons() {
+  if (!mapView.sprites || !mapView.data) return;
+  const counts = new Map();
+  for (const unit of mapView.data.units || []) {
+    const model = unit.model;
+    if (!model || !/\.(gim|mesh)$/i.test(model)) continue;
+    counts.set(model, (counts.get(model) || 0) + 1);
+  }
+  const models = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 260).map(([model]) => model);
+  for (const model of models) {
+    if (mapView.modelIcons[model] !== undefined) continue;
+    mapView.modelIcons[model] = null;
+    const url = apiUrl("/api/thumb", { path: model, w: 96, v: 3 });
+    scheduleThumb(url, 0).then((blobUrl) => {
+      if (!mapView.data) {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      const img = new Image();
+      img.addEventListener("load", () => {
+        URL.revokeObjectURL(blobUrl);
+        mapView.modelIcons[model] = img;
         requestMapDraw();
       }, { once: true });
       img.addEventListener("error", () => URL.revokeObjectURL(blobUrl), { once: true });
@@ -2233,6 +2265,9 @@ function clearViewerContent() {
   mapView.minimapBox = null;
   mapView.minimapBase = null;
   mapView.icons = {};
+  mapView.modelIcons = {};
+  mapView.orderUnits = null;
+  mapView.dragGrab = null;
   mapView.dragging = false;
   setViewerTitle(null);
   $("viewer-stage").innerHTML = "";
@@ -2587,6 +2622,63 @@ function mapPoint(unit) {
   return mapAxis() === "xy" ? [pos[0], pos[1]] : [pos[0], pos[2]];
 }
 
+function mapHeight(unit) {
+  const pos = unit.position || [];
+  return Number(mapAxis() === "xy" ? pos[2] : pos[1]) || 0;
+}
+
+function unitFootprint(unit) {
+  const scale = unit.scale || [];
+  return Math.sqrt(Math.abs((Number(scale[0]) || 1) * (Number(scale[2]) || 1))) || 1;
+}
+
+const MAP_ISO_COS = Math.cos(Math.PI / 6);
+const MAP_SPRITE_BUDGET = 1600;
+
+function mapProject(x, z, y = 0) {
+  const scale = mapView.scale || 1;
+  const cx = mapView.centerX;
+  const cz = mapView.centerZ;
+  let px;
+  let py;
+  if (mapView.is3d) {
+    px = ((x - z) - (cx - cz)) * MAP_ISO_COS * scale;
+    py = -(((x + z) - (cx + cz)) * 0.5 - y * 0.55) * scale;
+  } else {
+    px = (x - cx) * scale;
+    py = -(z - cz) * scale;
+  }
+  return [mapView.width / 2 + px, mapView.height / 2 + py];
+}
+
+function mapUnproject(sx, sy) {
+  const scale = mapView.scale || 1;
+  const w = mapView.width;
+  const h = mapView.height;
+  const cx = mapView.centerX;
+  const cz = mapView.centerZ;
+  if (!mapView.is3d) {
+    return [cx + (sx - w / 2) / scale, cz - (sy - h / 2) / scale];
+  }
+  const isoX = (cx - cz) * MAP_ISO_COS + (sx - w / 2) / scale;
+  const isoY = (cx + cz) * 0.5 - (sy - h / 2) / scale;
+  return [(isoX / MAP_ISO_COS + 2 * isoY) / 2, (2 * isoY - isoX / MAP_ISO_COS) / 2];
+}
+
+function focusMapPoint(x, z, sx, sy, scale) {
+  const w = mapView.width;
+  const h = mapView.height;
+  if (!mapView.is3d) {
+    mapView.centerX = x - (sx - w / 2) / scale;
+    mapView.centerZ = z + (sy - h / 2) / scale;
+    return;
+  }
+  const isoX = (x - z) * MAP_ISO_COS - (sx - w / 2) / scale;
+  const isoY = (x + z) * 0.5 - (h / 2 - sy) / scale;
+  mapView.centerX = (isoX / MAP_ISO_COS + 2 * isoY) / 2;
+  mapView.centerZ = (2 * isoY - isoX / MAP_ISO_COS) / 2;
+}
+
 function mapUnits() {
   const data = mapView.data;
   if (!data) return [];
@@ -2649,6 +2741,7 @@ function renderMapStage(file, data) {
   bindMapControls(file);
   buildMapLegend();
   ensureMapIcons();
+  ensureMapModelIcons();
   drawMap();
 }
 
@@ -2659,6 +2752,8 @@ function mapFoot() {
     <button class="icon-btn" id="map-zoom-in" title="${tr("map.zoomIn")}" aria-label="${tr("map.zoomIn")}">${icon("plus")}</button>
     <button class="mini-btn" id="map-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
     <label class="map-dot-control">${tr("map.dot")} <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
+    <label class="map-dot-control"><input id="map-sprites" type="checkbox" autocomplete="off" ${mapView.sprites ? "checked" : ""}>${tr("map.sprites")}</label>
+    <button class="mini-btn" id="map-3d-toggle" title="${mapView.is3d ? tr("map.mode2d") : tr("map.mode3d")}">${mapView.is3d ? "2D" : "3D"}</button>
   </div>
   <div class="viewer-map">
     <canvas id="map-minimap-canvas" class="viewer-map-canvas"></canvas>
@@ -2682,7 +2777,9 @@ function fitMapView() {
     const spanZ = Math.max(1, bounds.max_y - bounds.min_y);
     mapView.centerX = (bounds.min_x + bounds.max_x) / 2;
     mapView.centerZ = (bounds.min_y + bounds.max_y) / 2;
-    mapView.fitScale = Math.max(0.02, Math.min(80, Math.min(Math.max(80, w - 120) / spanX, Math.max(80, h - 120) / spanZ)));
+    const projX = mapView.is3d ? (spanX + spanZ) * MAP_ISO_COS : spanX;
+    const projZ = mapView.is3d ? (spanX + spanZ) * 0.5 : spanZ;
+    mapView.fitScale = Math.max(0.02, Math.min(80, Math.min(Math.max(80, w - 120) / projX, Math.max(80, h - 120) / projZ)));
     mapView.scale = mapView.fitScale;
   }
   updateMapZoomInput();
@@ -2729,12 +2826,10 @@ function setMapScale(next, ax, ay) {
   const h = mapView.height;
   const anchorX = ax === undefined ? w / 2 : ax;
   const anchorY = ay === undefined ? h / 2 : ay;
-  const old = mapView.scale || 1;
-  const worldX = mapView.centerX + (anchorX - w / 2) / old;
-  const worldZ = mapView.centerZ - (anchorY - h / 2) / old;
+  const [worldX, worldZ] = mapUnproject(anchorX, anchorY);
   mapView.scale = scale;
-  mapView.centerX = worldX - (anchorX - w / 2) / scale;
-  mapView.centerZ = worldZ + (anchorY - h / 2) / scale;
+  focusMapPoint(worldX, worldZ, anchorX, anchorY, scale);
+  mapView.minimapBase = null;
   updateMapZoomInput();
   updateMapHud();
   requestMapDraw();
@@ -2761,25 +2856,41 @@ function drawMap() {
   ctx.fillRect(0, 0, w, h);
 
   const step = mapNiceStep(80 / scale);
-  const halfW = w / (2 * scale);
-  const halfH = h / (2 * scale);
-  const minX = mapView.centerX - halfW;
-  const maxX = mapView.centerX + halfW;
-  const minZ = mapView.centerZ - halfH;
-  const maxZ = mapView.centerZ + halfH;
+  let minX;
+  let maxX;
+  let minZ;
+  let maxZ;
+  if (mapView.is3d) {
+    const corners = [[0, 0], [w, 0], [0, h], [w, h]].map(([sx, sy]) => mapUnproject(sx, sy));
+    const xs = corners.map((point) => point[0]);
+    const zs = corners.map((point) => point[1]);
+    minX = Math.min(...xs);
+    maxX = Math.max(...xs);
+    minZ = Math.min(...zs);
+    maxZ = Math.max(...zs);
+  } else {
+    const halfW = w / (2 * scale);
+    const halfH = h / (2 * scale);
+    minX = mapView.centerX - halfW;
+    maxX = mapView.centerX + halfW;
+    minZ = mapView.centerZ - halfH;
+    maxZ = mapView.centerZ + halfH;
+  }
 
   ctx.strokeStyle = pal.grid;
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
-    const sx = w / 2 + (x - mapView.centerX) * scale;
-    ctx.moveTo(sx, 0);
-    ctx.lineTo(sx, h);
+    const [ax, ay] = mapProject(x, minZ);
+    const [bx, by] = mapProject(x, maxZ);
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
   }
   for (let z = Math.ceil(minZ / step) * step; z <= maxZ; z += step) {
-    const sy = h / 2 - (z - mapView.centerZ) * scale;
-    ctx.moveTo(0, sy);
-    ctx.lineTo(w, sy);
+    const [ax, ay] = mapProject(minX, z);
+    const [bx, by] = mapProject(maxX, z);
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
   }
   ctx.stroke();
 
@@ -2794,27 +2905,64 @@ function drawMap() {
   ctx.lineTo(w / 2, h / 2 + 8);
   ctx.stroke();
 
-  drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ);
+  if (!mapView.is3d) {
+    drawMapRulers(ctx, w, h, scale, step, minX, maxX, minZ, maxZ);
+  }
   drawMapMinimap();
 }
 
 function drawMapUnits(ctx, w, h, scale) {
-  const units = mapUnits();
+  let units = mapUnits();
   if (!units.length) return;
+  if (mapView.is3d) {
+    if (!mapView.orderUnits || mapView.orderUnits.length !== units.length) {
+      mapView.orderUnits = units.slice().sort((a, b) => {
+        const [ax, az] = mapPoint(a);
+        const [bx, bz] = mapPoint(b);
+        return (ax + az) - (bx + bz);
+      });
+    }
+    units = mapView.orderUnits;
+  }
   const pal = canvasPalette();
   const radius = Math.max(3, Math.min(16, mapView.dotSize));
+  const zoomK = Math.max(0.7, Math.min(2, scale / (mapView.fitScale || scale)));
+  const visible = [];
+  for (const unit of units) {
+    const [x, z] = mapPoint(unit);
+    const [sx, sy] = mapView.is3d ? mapProject(x, z, mapHeight(unit)) : mapProject(x, z);
+    if (sx < -60 || sx > w + 60 || sy < -60 || sy > h + 60) continue;
+    visible.push([unit, sx, sy]);
+  }
+  let spriteIds = null;
+  if (mapView.sprites) {
+    if (visible.length <= MAP_SPRITE_BUDGET) {
+      spriteIds = null;
+    } else {
+      spriteIds = new Set(
+        visible
+          .slice()
+          .sort((a, b) => unitFootprint(b[0]) - unitFootprint(a[0]))
+          .slice(0, MAP_SPRITE_BUDGET)
+          .map(([unit]) => unit.id),
+      );
+    }
+  }
   const boxes = [];
   let labels = 0;
   ctx.font = canvasFont(11);
   ctx.textBaseline = "middle";
-  for (const unit of units) {
-    const [x, z] = mapPoint(unit);
-    const sx = w / 2 + (x - mapView.centerX) * scale;
-    const sy = h / 2 - (z - mapView.centerZ) * scale;
-    if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) continue;
+  for (const [unit, sx, sy] of visible) {
     const icon = mapView.icons[unit.eid];
     const iconSize = Math.max(18, radius * 2.6);
-    if (icon) {
+    const sprite = mapView.sprites && (!spriteIds || spriteIds.has(unit.id)) ? mapView.modelIcons[unit.model] : null;
+    let marker = radius;
+    if (sprite) {
+      const footprint = unitFootprint(unit);
+      const size = Math.max(10, Math.min(56, radius * 2.6 * Math.max(0.6, Math.min(2.2, footprint)) * Math.sqrt(zoomK)));
+      marker = size / 2;
+      ctx.drawImage(sprite, sx - size / 2, sy - size / 2, size, size);
+    } else if (icon) {
       ctx.beginPath();
       ctx.arc(sx, sy, iconSize / 2 + 1.5, 0, Math.PI * 2);
       ctx.fillStyle = pal.chip;
@@ -2823,18 +2971,23 @@ function drawMapUnits(ctx, w, h, scale) {
       ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
       ctx.stroke();
       ctx.drawImage(icon, sx - iconSize / 2, sy - iconSize / 2, iconSize, iconSize);
+      marker = iconSize / 2;
     } else {
+      const dotRadius = mapView.sprites ? Math.max(2, radius * 0.55) : radius;
       ctx.beginPath();
-      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
       ctx.fillStyle = mapUnitColor(unit);
       ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
-      ctx.stroke();
+      if (!mapView.sprites) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = mapColor(unit.eid ?? unit.type ?? 0);
+        ctx.stroke();
+      }
+      marker = dotRadius;
     }
-    const marker = icon ? iconSize / 2 : radius;
     const name = unit.name || "";
-    if (!name || labels >= 160) continue;
+    if (!name || labels >= 120) continue;
+    if (zoomK < 1.2 && units.length > 800) continue;
     const width = ctx.measureText(name).width;
     const lx = sx + marker + 3;
     const ly = sy;
@@ -3011,27 +3164,49 @@ function bindMapControls(file) {
     updateMapLegendDots();
     requestMapDraw();
   });
+  const sprites = $("map-sprites");
+  if (sprites) {
+    sprites.addEventListener("change", () => {
+      mapView.sprites = sprites.checked;
+      localStorage.setItem("npk-map-sprites", mapView.sprites ? "1" : "0");
+      if (mapView.sprites) ensureMapModelIcons();
+      requestMapDraw();
+    });
+  }
+  const mode = $("map-3d-toggle");
+  if (mode) {
+    mode.addEventListener("click", () => {
+      mapView.is3d = !mapView.is3d;
+      localStorage.setItem("npk-map-3d", mapView.is3d ? "1" : "0");
+      mapView.orderUnits = null;
+      mapView.minimapBase = null;
+      mode.textContent = mapView.is3d ? "2D" : "3D";
+      mode.title = mapView.is3d ? tr("map.mode2d") : tr("map.mode3d");
+      fitMapView();
+      requestMapDraw();
+    });
+  }
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
     mapView.dragging = true;
+    mapView.dragGrab = mapUnproject(event.clientX - rect.left, event.clientY - rect.top);
     mapView.dragX = event.clientX;
     mapView.dragY = event.clientY;
     canvas.classList.add("dragging");
     try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (!mapView.dragging) return;
-    const scale = mapView.scale || 1;
-    mapView.centerX -= (event.clientX - mapView.dragX) / scale;
-    mapView.centerZ += (event.clientY - mapView.dragY) / scale;
-    mapView.dragX = event.clientX;
-    mapView.dragY = event.clientY;
+    if (!mapView.dragging || !mapView.dragGrab) return;
+    const rect = canvas.getBoundingClientRect();
+    focusMapPoint(mapView.dragGrab[0], mapView.dragGrab[1], event.clientX - rect.left, event.clientY - rect.top, mapView.scale || 1);
     updateMapHud();
     requestMapDraw();
   });
   const endDrag = (event) => {
     if (!mapView.dragging) return;
     mapView.dragging = false;
+    mapView.dragGrab = null;
     canvas.classList.remove("dragging");
     try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
   };

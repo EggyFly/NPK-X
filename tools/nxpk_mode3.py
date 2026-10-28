@@ -298,7 +298,7 @@ def client_key_candidates(executable: str | Path) -> list:
                 break
             raw = bytes.fromhex(first + second)
             keys.append(raw[:8][::-1] + raw[8:][::-1])
-    return keys
+    return list(dict.fromkeys(keys))
 
 
 def discover_package_key(package: str | Path, executable: str | Path) -> bytes | None:
@@ -309,29 +309,44 @@ def discover_package_key(package: str | Path, executable: str | Path) -> bytes |
             header = read_header(handle.read(HEADER_SIZE))
             if not header.entry_count:
                 return None
-            sample = min(header.entry_count, 64)
-            handle.seek(header.index_offset)
-            table = handle.read(sample * ENTRY_SIZE)
+            samples = []
+            middle = (header.entry_count // 2) // 4 * 4
+            for start_index in sorted({0, middle}):
+                count = min(64, header.entry_count - start_index)
+                if count <= 0:
+                    continue
+                handle.seek(header.index_offset + start_index * ENTRY_SIZE)
+                chunk = handle.read(count * ENTRY_SIZE)
+                if len(chunk) == count * ENTRY_SIZE:
+                    samples.append((chunk, count))
     except (OSError, ValueError, struct.error):
         return None
-    if len(table) != sample * ENTRY_SIZE:
+    if not samples:
         return None
     for key in client_key_candidates(executable):
-        try:
-            index = decrypt_index(table, key) if header.index_mode == 3 else table
-            entries = parse_entries(index, sample)
-        except (ValueError, struct.error):
-            continue
-        signatures = [entry.signature for entry in entries]
-        if any(signatures[i] > signatures[i + 1] for i in range(len(signatures) - 1)):
-            continue
-        if any(entry.offset < HEADER_SIZE or entry.offset + entry.packed_size > header.index_offset for entry in entries):
-            continue
-        if any(entry.compression not in (COMPRESSION_STORED, COMPRESSION_ZSTD) for entry in entries):
-            continue
-        if any(entry.compression == COMPRESSION_STORED and entry.packed_size != entry.unpacked_size for entry in entries):
-            continue
-        return key
+        matched = True
+        for chunk, count in samples:
+            try:
+                index = decrypt_index(chunk, key) if header.index_mode == 3 else chunk
+                entries = parse_entries(index, count)
+            except (ValueError, struct.error):
+                matched = False
+                break
+            signatures = [entry.signature for entry in entries]
+            if any(signatures[i] > signatures[i + 1] for i in range(len(signatures) - 1)):
+                matched = False
+                break
+            if any(entry.offset < HEADER_SIZE or entry.offset + entry.packed_size > header.index_offset for entry in entries):
+                matched = False
+                break
+            if any(entry.compression not in (COMPRESSION_STORED, COMPRESSION_ZSTD) for entry in entries):
+                matched = False
+                break
+            if any(entry.compression == COMPRESSION_STORED and entry.packed_size != entry.unpacked_size for entry in entries):
+                matched = False
+                break
+        if matched:
+            return key
     return None
 
 

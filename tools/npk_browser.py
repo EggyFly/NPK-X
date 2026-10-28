@@ -3240,8 +3240,26 @@ def main() -> int:
     try:
         meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog)
     except (N.Mode3FormatError, ValueError, OSError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 5
+        discovered = None
+        if not args.key_hex and packages:
+            discovered = N.discover_package_key(packages[0], game_root / "bin" / "client.exe")
+        if discovered and discovered != key:
+            key = discovered
+            profile["key_hex"] = key.hex()
+            print(f"refreshed mode-3 key from client.exe: {key.hex()}")
+            if profile_path is not None:
+                try:
+                    Path(profile_path).write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+            try:
+                meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog)
+            except (N.Mode3FormatError, ValueError, OSError) as retry_exc:
+                print(f"ERROR: {retry_exc}", file=sys.stderr)
+                return 5
+        else:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 5
     data_seed = E.PACKAGE_ROOT / "data" / "xn_names.json"
     if not data_seed.is_file():
         data_seed = E.PACKAGE_ROOT / "dataa" / "xn_names.json"

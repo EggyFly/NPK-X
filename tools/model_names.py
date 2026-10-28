@@ -88,16 +88,42 @@ def discover_shard_key(game_root: Path):
     ]
     if not shards:
         return None
-    shard = max(shards, key=lambda candidate: candidate.stat().st_size)
+    order = shard_manifest_order(game_root)
+
+    def rank(candidate: Path):
+        try:
+            return (order.get(candidate.name, -1), candidate.stat().st_mtime, candidate.stat().st_size)
+        except OSError:
+            return (order.get(candidate.name, -1), 0.0, 0)
+
+    shard = max(shards, key=rank)
     for key in N.client_key_candidates(game_root / "bin" / "client.exe"):
         if key_matches_shard(shard, key):
             return key
     return None
 
 
+def shard_manifest_order(game_root: Path) -> dict:
+    ppk = game_root / "ppk"
+    rank = {}
+    try:
+        raw = (ppk / "assets.ppk").read_bytes()
+    except OSError:
+        return rank
+    names = {candidate.name for candidate in ppk.glob("*") if candidate.is_file()}
+    position = 0
+    for offset in range(0, len(raw) - 3, 4):
+        name = raw[offset:offset + 4].hex()
+        if name in names:
+            rank[name] = position
+            position += 1
+    return rank
+
+
 def load_shard_entry(game_root: Path, path: str, keys: list) -> bytes | None:
     signature = N.path_hash(path)
     ppk = game_root / "ppk"
+    order = shard_manifest_order(game_root)
 
     def mtime(candidate: Path) -> float:
         try:
@@ -109,7 +135,7 @@ def load_shard_entry(game_root: Path, path: str, keys: list) -> bytes | None:
         candidate for candidate in ppk.glob("*")
         if candidate.is_file() and candidate.name not in {"assets.ppk", "assets.ppkn"}
     ]
-    shards.sort(key=mtime, reverse=True)
+    shards.sort(key=lambda candidate: (order.get(candidate.name, -1), mtime(candidate)), reverse=True)
     best = None
     best_rank = None
     for shard in shards:
@@ -140,7 +166,7 @@ def load_shard_entry(game_root: Path, path: str, keys: list) -> bytes | None:
                         body = zstandard.ZstdDecompressor().decompress(body, max_output_size=unpacked)
                     if len(body) < 12:
                         continue
-                    rank = (mtime(shard), struct.unpack_from("<I", body, 0)[0])
+                    rank = (order.get(shard.name, -1), mtime(shard), struct.unpack_from("<I", body, 0)[0])
                     if best_rank is None or rank > best_rank:
                         best, best_rank = body, rank
                     break
