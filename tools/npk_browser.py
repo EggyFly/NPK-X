@@ -1630,7 +1630,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _gim_thumb(self, row, width: int, wait: bool = True) -> bytes:
         width = min(max(32, width), 512)
-        cache = self.server.artifact(row, f"_gim_w{width}_v1.png", "thumb")
+        cache = self.server.artifact(row, f"_gim_w{width}_v2.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb

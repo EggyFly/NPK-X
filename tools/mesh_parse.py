@@ -71,65 +71,26 @@ def _decode_position(packed: int) -> list:
     return values
 
 
-def _field(value: int, start: int, end: int) -> int:
-    return (value >> start) & ((1 << (end - start)) - 1)
-
-
-_LAYOUTS_115 = (
-    ((8, 19), (20, 24), (48, 59), (60, 64), 0),
-    ((8, 19), (20, 27), (48, 59), (60, 64), 3),
-    ((8, 19), (20, 28), (48, 59), (60, 64), 4),
-    ((8, 18), (21, 28), (47, 59), (60, 64), 5),
-)
-
-
-def _decode_position_115(packed: int, layout) -> list:
-    xl, xh, zl, zh, wrap = layout
-    x = _field(packed, *xl) + (_field(packed, *xh) << (xl[1] - xl[0]))
-    y = _field(packed, 27, 39) + (_field(packed, 40, 47) << 12)
-    z = _field(packed, *zl) + (_field(packed, *zh) << (zl[1] - zl[0]))
-    if wrap:
-        z += _field(packed, 0, wrap) << 15
-    return [x, y, z]
-
-
-def _edge_score(vertices: list, indices: list) -> float:
-    total = 0.0
-    count = 0
-    for index in range(0, len(indices) - 2, 3):
-        a, b, c = indices[index], indices[index + 1], indices[index + 2]
-        for left, right in ((a, b), (b, c), (c, a)):
-            p, q = vertices[left], vertices[right]
-            total += math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2])
-            count += 1
-    return total / count if count else 0.0
+def _comp20(packed: int, base: int) -> float:
+    fraction = (packed >> base) & 0xFFF
+    integer = (packed >> (base + 12)) & 0x7F
+    sign = -1.0 if (packed >> (base + 19)) & 1 else 1.0
+    return sign * (integer + fraction / 2048.0)
 
 
 def _choose_115_positions(data: bytes, start: int, vcount: int, indices: list) -> list:
-    best = None
-    for layout in _LAYOUTS_115:
-        vertices = []
-        for index in range(vcount):
-            packed = struct.unpack_from("<Q", data, start + index * 8)[0]
-            x, y, z = _decode_position_115(packed, layout)
-            vertices.append([x, y, z])
-        spans = []
-        for axis in range(3):
-            spans.append(max(vertex[axis] for vertex in vertices) - min(vertex[axis] for vertex in vertices))
-        low = min(spans)
-        if low <= 0 or max(spans) / low > 20:
-            continue
-        score = _edge_score(vertices, indices) / max(spans)
-        if best is None or score < best[0]:
-            best = (score, vertices)
-    if best is None:
-        vertices = []
-        for index in range(vcount):
-            packed = struct.unpack_from("<Q", data, start + index * 8)[0]
-            x, y, z = _decode_position_115(packed, _LAYOUTS_115[0])
-            vertices.append([x, y, z])
-        return vertices
-    return best[1]
+    words = struct.unpack_from(f"<{vcount + 1}Q", data, start)
+    vertices = []
+    for index in range(vcount):
+        packed = words[index]
+        tail = words[index + 1]
+        x = _comp20(packed, 8)
+        y = _comp20(packed, 28)
+        z_int = ((packed >> 60) & 0xF) | ((tail & 0x7) << 4)
+        z_sign = -1.0 if (tail >> 3) & 1 else 1.0
+        z = z_sign * (z_int + ((packed >> 48) & 0xFFF) / 2048.0)
+        vertices.append([round(x, 4), round(y, 4), round(z, 4)])
+    return vertices
 
 
 def _read_normals(data: bytes, start: int, count: int, stride: int = 3) -> list | None:
@@ -520,14 +481,6 @@ def parse(data: bytes) -> dict:
         if face_start - data_start == geometry:
             variant = "v4-115"
             vertices = _choose_115_positions(data, data_start, total_vcount, indices)
-            xs = [vertex[0] for vertex in vertices]
-            zs = [vertex[2] for vertex in vertices]
-            center_x = (min(xs) + max(xs)) * 0.5
-            center_z = (min(zs) + max(zs)) * 0.5
-            for vertex in vertices:
-                vertex[0] = (vertex[0] - center_x) / 1024.0
-                vertex[1] = vertex[1] / 4096.0
-                vertex[2] = (vertex[2] - center_z) / 1024.0
             normals = _compute_normals(vertices, indices)
         else:
             vertex_flag = data[data_start]
