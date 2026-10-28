@@ -52,6 +52,7 @@ from __future__ import annotations
 import gzip
 import json
 import mmap
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -277,6 +278,61 @@ def profile_seed(profile: dict | None) -> int:
         return PATH_HASH_SEED
     value = profile.get("path_hash_seed", PATH_HASH_SEED)
     return int(value, 0) if isinstance(value, str) else int(value)
+
+
+HEX_KEY = re.compile(rb"(?<![0-9a-f])[0-9a-f]{16}(?![0-9a-f])")
+
+
+def client_key_candidates(executable: str | Path) -> list:
+    """Recover reversed 8-byte key halves stored as nearby ASCII strings."""
+    try:
+        data = Path(executable).read_bytes()
+    except OSError:
+        return []
+    matches = [(match.start(), match.group().decode()) for match in HEX_KEY.finditer(data)]
+    keys = []
+    for index, (start, first) in enumerate(matches):
+        for next_index in range(index + 1, min(index + 5, len(matches))):
+            next_start, second = matches[next_index]
+            if next_start - start > 96:
+                break
+            raw = bytes.fromhex(first + second)
+            keys.append(raw[:8][::-1] + raw[8:][::-1])
+    return keys
+
+
+def discover_package_key(package: str | Path, executable: str | Path) -> bytes | None:
+    """Find the index key by validating client.exe candidates against a package."""
+    path = Path(package)
+    try:
+        with open(path, "rb") as handle:
+            header = read_header(handle.read(HEADER_SIZE))
+            if not header.entry_count:
+                return None
+            sample = min(header.entry_count, 64)
+            handle.seek(header.index_offset)
+            table = handle.read(sample * ENTRY_SIZE)
+    except (OSError, ValueError, struct.error):
+        return None
+    if len(table) != sample * ENTRY_SIZE:
+        return None
+    for key in client_key_candidates(executable):
+        try:
+            index = decrypt_index(table, key) if header.index_mode == 3 else table
+            entries = parse_entries(index, sample)
+        except (ValueError, struct.error):
+            continue
+        signatures = [entry.signature for entry in entries]
+        if any(signatures[i] > signatures[i + 1] for i in range(len(signatures) - 1)):
+            continue
+        if any(entry.offset < HEADER_SIZE or entry.offset + entry.packed_size > header.index_offset for entry in entries):
+            continue
+        if any(entry.compression not in (COMPRESSION_STORED, COMPRESSION_ZSTD) for entry in entries):
+            continue
+        if any(entry.compression == COMPRESSION_STORED and entry.packed_size != entry.unpacked_size for entry in entries):
+            continue
+        return key
+    return None
 
 
 def install_tables(filename: str | Path) -> None:

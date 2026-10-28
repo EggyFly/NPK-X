@@ -801,6 +801,12 @@ class BrowserServer(ThreadingHTTPServer):
     _xn_names_mtime = 0.0
     xn_names_path = None
     xn_opmap_path = None
+    _model_names_lock = threading.Lock()
+    _model_names = None
+    _model_names_mtime = 0.0
+    _model_names_applied = -1.0
+    _model_names_keys = None
+    model_names_path = None
     version: str | None = None
     update_state: dict = {}
     update_repo: str = update_check.DEFAULT_REPO
@@ -1934,11 +1940,26 @@ class Handler(BaseHTTPRequestHandler):
         raw = json.dumps(self.server.fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
+    def _merge_model_names(self, items: dict, force: bool = False) -> None:
+        mapping = self._model_name_map()
+        version = BrowserServer._model_names_mtime
+        if not force and BrowserServer._model_names_applied == version:
+            return
+        stale = (BrowserServer._model_names_keys or set()) - set(mapping)
+        for name in stale:
+            items.pop(name, None)
+        for name, value in mapping.items():
+            items[name] = value
+        BrowserServer._model_names_keys = set(mapping)
+        BrowserServer._model_names_applied = version
+
     def _name_store(self) -> dict:
         key = self._name_key()
         with BrowserServer._names_lock:
             if BrowserServer._names is not None and BrowserServer._names_key == key:
-                return BrowserServer._names
+                items = BrowserServer._names
+                self._merge_model_names(items)
+                return items
             items = {}
             path = self.server.cache_root / "names.json"
             try:
@@ -1947,13 +1968,15 @@ class Handler(BaseHTTPRequestHandler):
                     items = {str(name): str(value) for name, value in payload["items"].items()}
             except (OSError, ValueError, TypeError):
                 items = {}
+            self._merge_model_names(items, force=True)
             BrowserServer._names = items
             BrowserServer._names_key = key
             return items
 
     def _save_names(self, store: dict) -> None:
         with BrowserServer._names_lock:
-            snapshot = dict(store)
+            model_names = self._model_name_map()
+            snapshot = {name: value for name, value in store.items() if name not in model_names}
             key = BrowserServer._names_key or self._name_key()
             path = self.server.cache_root / "names.json"
             tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
@@ -2092,6 +2115,25 @@ class Handler(BaseHTTPRequestHandler):
                 BrowserServer._xn_names = mapping
                 BrowserServer._xn_names_mtime = mtime
             return BrowserServer._xn_names
+
+    def _model_name_map(self) -> dict:
+        path = Path(self.server.model_names_path) if self.server.model_names_path else None
+        try:
+            mtime = path.stat().st_mtime if path and path.is_file() else 0.0
+        except OSError:
+            mtime = 0.0
+        with BrowserServer._model_names_lock:
+            if BrowserServer._model_names is None or mtime != BrowserServer._model_names_mtime:
+                mapping = {}
+                try:
+                    payload = json.loads(path.read_text("utf-8"))
+                    raw = payload.get("map", {})
+                    mapping = {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
+                except (OSError, ValueError, TypeError, AttributeError):
+                    mapping = {}
+                BrowserServer._model_names = mapping
+                BrowserServer._model_names_mtime = mtime
+            return BrowserServer._model_names
 
     def _xn_data(self, row, module: str | None = None) -> dict:
         signature = int(row["signature"])
@@ -3203,6 +3245,9 @@ def main() -> int:
     data_seed = E.PACKAGE_ROOT / "data" / "xn_names.json"
     if not data_seed.is_file():
         data_seed = E.PACKAGE_ROOT / "dataa" / "xn_names.json"
+    model_seed = E.PACKAGE_ROOT / "data" / "model_names.json"
+    if not model_seed.is_file():
+        print("hint: run tools/model_names.py to add .gim/.mesh display names", file=sys.stderr)
     opmap_path, names_path = xn_bootstrap.ensure(
         db_path,
         cache_root,
@@ -3235,6 +3280,7 @@ def main() -> int:
             "profile": profile,
             "xn_names_path": str(names_path),
             "xn_opmap_path": str(opmap_path),
+            "model_names_path": str(model_seed) if model_seed.is_file() else None,
             "version": current_version,
             "update_state": update_state,
             "update_repo": update_repo,

@@ -208,7 +208,8 @@ def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> d
     name, tested, version = detect_client_version(game_root)
     profile = N.load_profile(None)
     known = {}
-    for package in sorted(Path(game_root).glob("*.npk")):
+    packages = sorted(Path(game_root).glob("*.npk"))
+    for package in packages:
         try:
             with open(package, "rb") as handle:
                 header = N.read_header(handle.read(N.HEADER_SIZE))
@@ -219,6 +220,10 @@ def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> d
             }
         except Exception:
             continue
+    if packages:
+        discovered = N.discover_package_key(packages[0], Path(game_root) / "bin" / "client.exe")
+        if discovered:
+            profile["key_hex"] = discovered.hex()
     profile.update(
         {
             "name": name,
@@ -227,7 +232,7 @@ def build_profile(game_root: Path, path_dict_name: str = "pathdict.txt.gz") -> d
             "path_dict": path_dict_name,
             "known_packages": known,
             "version": version,
-            "notes": "Generated from the local client. The mode-3 key is build-bound; refresh it if index validation fails.",
+            "notes": "Generated from the local client. The mode-3 key is recovered from client.exe key halves; refresh the profile with --force after a client update.",
         }
     )
     return profile
