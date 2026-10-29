@@ -3469,6 +3469,7 @@ uniform vec4 u_emissive_color;
 uniform vec4 u_ei;
 uniform float u_intensity_a;
 uniform float u_glass;
+uniform float u_glass_opacity;
 out vec4 out_color;
 vec3 mapSrgb2Lin(vec3 c) {
   return pow(max(c, vec3(0.0)), vec3(2.2));
@@ -3497,6 +3498,7 @@ void main() {
   vec4 tex0 = u_has_tex0 > 0.5 ? texture(u_tex0, uv) : vec4(1.0);
   vec4 tex1 = u_has_tex1 > 0.5 ? texture(u_tex1, uv) : vec4(0.5, 0.5, 1.0, 1.0);
   vec4 tex2 = u_has_tex2 > 0.5 ? texture(u_tex2, uv) : vec4(0.0, 0.5, 0.0, 0.0);
+  vec4 tex3s = u_has_tex3 > 0.5 ? texture(u_tex3, uv) : vec4(0.0);
   vec4 m0 = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? vec4(v_paint1.rgb, 1.0) : u_mask0;
   vec4 m1 = u_use_paint > 0.5 && v_paint2.r >= 0.0 ? vec4(v_paint2.rgb, 1.0) : u_mask1;
   vec4 m2 = u_use_paint > 0.5 && v_paint3.r >= 0.0 ? vec4(v_paint3.rgb, 1.0) : u_mask2;
@@ -3505,7 +3507,7 @@ void main() {
   float alpha;
   if (u_glass > 0.5) {
     color = u_base_color.rgb * u_tint_value;
-    alpha = u_base_color.a * v_paint1.a * 0.6;
+    alpha = u_base_color.a * v_paint1.a * u_glass_opacity;
   } else {
     vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
     color = painted;
@@ -3580,14 +3582,19 @@ void main() {
   } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
     vec3 chain = tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g + tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a;
     emissive = tex2.a * chain + u_emissive_color.rgb * u_intensity_a;
-  } else if (u_emissive_kind > 7.5) {
+  } else if (u_emissive_kind > 7.5 && u_emissive_kind < 8.5) {
     emissive = u_emissive_color.rgb * (tex2.a * u_intensity_a * u_tint_value);
+  } else if (u_emissive_kind > 8.5 && u_emissive_kind < 9.5) {
+    vec3 e = mapSrgb2Lin(tex3s.rgb * tex3s.a * u_intensity_a);
+    emissive = e;
+    albedo_lin += e;
   }
   if (alpha < u_alpha_ref) discard;
   vec3 normal = normalize(v_norm);
   float light = u_unlit > 0.5 ? 1.0 : v_light;
   if (u_has_tex1 > 0.5 && u_unlit < 0.5) {
     vec3 n = tex1.xyz * 2.0 - 1.0;
+    if (dot(n, n) < 0.001) n = vec3(0.0, 0.0, 1.0);
     n.xy *= u_normal_intensity;
     normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
     light = 0.55 + 0.5 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
@@ -4134,6 +4141,8 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform1f(u.intensityA, Number(intensity[3]) || 0);
   gl.uniform1f(u.emissiveKind, Number(mat.emissive_kind) || 0);
   gl.uniform1f(u.lerpLinear, Number(mat.lerp_linear) || 0);
+  const glassOpacity = Number(mat.glass_opacity);
+  gl.uniform1f(u.glassOpacity, Number.isFinite(glassOpacity) && glassOpacity > 0 ? glassOpacity : 0.6);
   gl.uniform1f(u.glass, surface.includes("glass") ? 1 : 0);
   gl.uniform1f(u.patternMode, surface.includes("tiling") ? 1 : 0);
   const patternColor = Array.isArray(mat.pattern_color) ? mat.pattern_color : [1, 1, 1, 1];
@@ -4260,7 +4269,13 @@ function drawMap3D() {
       gl.bindVertexArray(entry.vao);
       const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
       map3DApplyMaterial(entry, draw.group);
-      gl.depthMask(!draw.transparent);
+      if (draw.transparent) {
+        gl.enable(gl.BLEND);
+        gl.depthMask(false);
+      } else {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
+      }
       gl.drawElementsInstanced(gl.TRIANGLES, draw.group.count, entry.indexType, draw.group.offset * bytes, entry.count);
     }
     gl.depthMask(true);
@@ -4397,6 +4412,7 @@ async function openMap3D(file, data) {
     usePaint: uniform("u_use_paint"), emissiveKind: uniform("u_emissive_kind"),
     ei: uniform("u_ei"), intensityA: uniform("u_intensity_a"),
     lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
+    glassOpacity: uniform("u_glass_opacity"),
   };
   gl.useProgram(map3d.program);
   gl.uniform1i(map3d.uniforms.tex0, 0);
@@ -5235,6 +5251,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const mrsUrl = firstTreeMaterial && firstTreeMaterial.tex2
     ? apiUrl("/api/image", { path: firstTreeMaterial.tex2 })
     : "";
+  const tex3Url = firstTreeMaterial && firstTreeMaterial.tex3
+    ? apiUrl("/api/image", { path: firstTreeMaterial.tex3 })
+    : "";
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (const vertex of verts) {
@@ -5366,10 +5385,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform float u_pattern_color_key;
     uniform float u_opacity_tex;
     uniform float u_glass;
+    uniform float u_glass_opacity;
     uniform float u_lerp_linear;
     uniform float u_emissive_kind;
     uniform vec4 u_emissive_color;
     uniform vec4 u_ei;
+    uniform sampler2D u_tex3;
+    uniform float u_has_tex3;
     vec3 srgb2lin(vec3 c) {
       return pow(max(c, vec3(0.0)), vec3(2.2));
     }
@@ -5402,14 +5424,15 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
       vec4 normal_texel = u_has_normal > 0.5 ? texture2D(u_normal_tex, sample_uv) : vec4(0.5, 0.5, 1.0, 1.0);
       vec4 mrs_texel = u_has_tex2 > 0.5 ? texture2D(u_tex2, sample_uv) : vec4(0.0, 0.5, 0.0, 0.0);
+      vec4 tex3s = u_has_tex3 > 0.5 ? texture2D(u_tex3, sample_uv) : vec4(0.0);
       vec3 color;
       bool color_linear = false;
       float alpha;
       if (u_glass > 0.5) {
         color = u_base_color.rgb;
-        alpha = u_base_color.a * 0.6;
+        alpha = u_base_color.a * u_glass_opacity;
       } else {
-        color = u_has_tex > 0.5 ? texel.rgb : u_color;
+        color = u_has_tex > 0.5 ? texel.rgb : u_base_color.rgb;
         if (u_color_mode > 3.5) {
           color = mix(u_mask0.rgb, u_mask1.rgb, texel.g);
           color = mix(color, u_mask2.rgb, texel.b);
@@ -5457,6 +5480,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         if (u_opacity_tex > 1.5) alpha = 1.0;
         else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
         alpha *= u_base_color.a;
+        if (u_emissive_kind > 8.5 && u_has_tex < 0.5) alpha = 0.0;
       }
       if (u_sprite > 0.5) {
         color *= u_tint.rgb * 2.0;
@@ -5489,8 +5513,12 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
         vec3 chain = texel.r * u_mask0.rgb * u_ei.r + texel.g * u_mask1.rgb * u_ei.g + texel.b * u_mask2.rgb * u_ei.b + texel.a * u_mask3.rgb * u_ei.a;
         emissive = mrs_texel.a * chain + u_emissive_color.rgb * u_intensity.a;
-      } else if (u_emissive_kind > 7.5) {
+      } else if (u_emissive_kind > 7.5 && u_emissive_kind < 8.5) {
         emissive = u_emissive_color.rgb * (mrs_texel.a * u_intensity.a * u_tint_value);
+      } else if (u_emissive_kind > 8.5 && u_emissive_kind < 9.5) {
+        vec3 e = srgb2lin(tex3s.rgb * tex3s.a * u_intensity.a);
+        emissive = e;
+        albedo_lin += e;
       }
       vec3 normal = normalize(v_normal);
       float light = u_unlit > 0.5 ? 1.0 : v_light;
@@ -5508,6 +5536,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         } else {
           n = tex_normal * 2.0 - 1.0;
         }
+        if (dot(n, n) < 0.001) n = vec3(0.0, 0.0, 1.0);
         n.xy *= u_intensity.r;
         normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
         light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
@@ -5785,10 +5814,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uPatternColorKey = gl.getUniformLocation(program, "u_pattern_color_key");
   const uOpacityTex = gl.getUniformLocation(program, "u_opacity_tex");
   const uGlass = gl.getUniformLocation(program, "u_glass");
+  const uGlassOpacity = gl.getUniformLocation(program, "u_glass_opacity");
   const uLerpLinear = gl.getUniformLocation(program, "u_lerp_linear");
   const uEmissiveKind = gl.getUniformLocation(program, "u_emissive_kind");
   const uEmissiveColor = gl.getUniformLocation(program, "u_emissive_color");
   const uEi = gl.getUniformLocation(program, "u_ei");
+  const uTex3 = gl.getUniformLocation(program, "u_tex3");
+  const uHasTex3 = gl.getUniformLocation(program, "u_has_tex3");
   const potImage = (image) => {
     if (isWebGL2) return image;
     const next = (value) => 1 << Math.ceil(Math.log2(Math.max(1, value)));
@@ -5817,8 +5849,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1i(uNormalTex, 1);
   gl.uniform1i(uBaseNormalTex, 2);
   gl.uniform1i(uTex2, 4);
+  gl.uniform1i(uTex3, 5);
   const mrsTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const tex3Texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex3Texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
@@ -5863,6 +5903,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1f(uPatternColorKey, 0);
   gl.uniform1f(uOpacityTex, 0);
   gl.uniform1f(uGlass, 0);
+  gl.uniform1f(uGlassOpacity, 0.6);
+  gl.uniform1f(uHasTex3, 0);
   gl.uniform1f(uLerpLinear, 0);
   gl.uniform1f(uEmissiveKind, 0);
   gl.uniform4f(uEmissiveColor, 0, 0, 0, 0);
@@ -5902,6 +5944,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform1f(uNormalMode, Number.isInteger(firstTreeMaterial.normal_mode) ? firstTreeMaterial.normal_mode : 0);
     gl.uniform1f(uUnlit, firstTreeMaterial.lighting === false ? 1 : 0);
     gl.uniform1f(uGlass, String(firstTreeMaterial.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+    const glassOpacityValue = Number(firstTreeMaterial.glass_opacity);
+    gl.uniform1f(uGlassOpacity, Number.isFinite(glassOpacityValue) && glassOpacityValue > 0 ? glassOpacityValue : 0.6);
     gl.uniform1f(uLerpLinear, Number(firstTreeMaterial.lerp_linear) || 0);
     gl.uniform1f(uEmissiveKind, Number(firstTreeMaterial.emissive_kind) || 0);
     const emissiveColor = Array.isArray(firstTreeMaterial.emissive_color) ? firstTreeMaterial.emissive_color : [0, 0, 0, 0];
@@ -5963,6 +6007,24 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     mrsImage.onerror = () => { hasTex2 = false; };
     mrsImage.src = mrsUrl;
   }
+  let hasTex3 = false;
+  if (tex3Url) {
+    const tex3Image = new Image();
+    tex3Image.onload = () => {
+      if (token !== viewer.token) return;
+      const source = potImage(tex3Image);
+      gl.bindTexture(gl.TEXTURE_2D, tex3Texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      hasTex3 = true;
+    };
+    tex3Image.onerror = () => { hasTex3 = false; };
+    tex3Image.src = tex3Url;
+  }
   const materialTextures = [];
   const textureCache = new Map();
   const initGimTexture = (tex, pixel) => {
@@ -6013,6 +6075,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         diffuse: diffusePath ? cachedGimTexture(apiUrl("/api/image", { path: diffusePath }), false) : null,
         normal: normalPath ? cachedGimTexture(apiUrl("/api/image", { path: normalPath }), true) : null,
         mrs: group.tex2 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex2 }), false) : null,
+        tex3: group.tex3 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex3 }), false) : null,
         baseNormal: group.base_normal ? cachedGimTexture(apiUrl("/api/image", { path: group.base_normal }), true) : null,
         pattern: group.pattern_tex ? cachedGimTexture(apiUrl("/api/image", { path: group.pattern_tex }), false) : null,
       });
@@ -6134,6 +6197,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           } else {
             gl.uniform1f(uHasTex2, 0);
           }
+          if (entry.tex3) {
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, entry.tex3.texture);
+            gl.uniform1f(uHasTex3, entry.tex3.ready ? 1 : 0);
+          } else {
+            gl.uniform1f(uHasTex3, 0);
+          }
         } else {
           gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
           gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
@@ -6146,6 +6216,11 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
             gl.activeTexture(gl.TEXTURE4);
             gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
           }
+          if (hasTex3) {
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, tex3Texture);
+          }
+          gl.uniform1f(uHasTex3, hasTex3 ? 1 : 0);
         }
         const mat = materialList[materialIndex] || materialList[0] || {};
         const colors = Array.isArray(mat.colors) ? mat.colors : [];
@@ -6181,6 +6256,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
         gl.uniform1f(uOpacityTex, mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0));
         gl.uniform1f(uGlass, String(mat.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+        const glassOpacity = Number(mat.glass_opacity);
+        gl.uniform1f(uGlassOpacity, Number.isFinite(glassOpacity) && glassOpacity > 0 ? glassOpacity : 0.6);
         gl.uniform1f(uLerpLinear, Number(mat.lerp_linear) || 0);
         gl.uniform1f(uEmissiveKind, Number(mat.emissive_kind) || 0);
         const emissiveColor = Array.isArray(mat.emissive_color) ? mat.emissive_color : [0, 0, 0, 0];

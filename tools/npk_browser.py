@@ -311,8 +311,13 @@ def material_tree(data: dict, resolve=None) -> list:
         emissive_intensity = [0.0, 0.0, 0.0, 0.0]
         intensity = [1.0, 1.0, 1.0, 0.0]
         base_color = [1.0, 1.0, 1.0, 1.0]
+        base_color_found = False
+        fallback_value = None
         tint_value = 1.0
         alpha_ref = 0.0
+        alpha_val = None
+        extra_op = None
+        pattern_op = None
         axis = 0.0
         lerp_center = 0.0
         lerp_contrast = 0.5
@@ -335,6 +340,8 @@ def material_tree(data: dict, resolve=None) -> list:
                 continue
             node_class = class_name(item)
             value = obj.get("Value")
+            if fallback_value is None and isinstance(value, list) and len(value) == 4 and all(isinstance(v, (int, float)) for v in value):
+                fallback_value = [float(v) for v in value]
             if not name and isinstance(obj.get("Name"), str):
                 name = obj["Name"]
             if not surface and isinstance(obj.get("Surface"), str):
@@ -369,11 +376,27 @@ def material_tree(data: dict, resolve=None) -> list:
                 intensity = [float(x) for x in value[:4]]
             elif node_class == "BaseColor" and isinstance(value, list) and len(value) >= 4:
                 base_color = [float(x) for x in value[:4]]
+                base_color_found = True
             elif node_class == "TintValue" and isinstance(value, (int, float)):
                 tint_value = float(value)
             elif "AlphaRef" in obj:
                 try:
                     alpha_ref = float(obj["AlphaRef"])
+                except (TypeError, ValueError):
+                    pass
+                if "AlphaVal" in obj:
+                    try:
+                        alpha_val = float(obj["AlphaVal"]) / 255.0
+                    except (TypeError, ValueError):
+                        pass
+            elif "Extra_Op" in obj:
+                try:
+                    extra_op = float(obj["Extra_Op"])
+                except (TypeError, ValueError):
+                    pass
+            elif "Pattern_Op" in obj:
+                try:
+                    pattern_op = float(obj["Pattern_Op"])
                 except (TypeError, ValueError):
                     pass
             elif node_class == "Axis" and isinstance(value, (int, float)):
@@ -478,8 +501,13 @@ def material_tree(data: dict, resolve=None) -> list:
             emissive_kind = 3
         elif surface_lower.endswith("standard_common.surf"):
             emissive_kind = 8
+        elif "add_emissive" in surface_lower:
+            emissive_kind = 9
         else:
             emissive_kind = 0
+        if not base_color_found and not surface and fallback_value:
+            base_color = fallback_value
+        glass_opacity = extra_op if extra_op is not None else (alpha_val if alpha_val is not None else 0.6)
         normal_mode = 1 if color_mode == 2 else 0
         materials.append({
             "index": material_index,
@@ -523,6 +551,10 @@ def material_tree(data: dict, resolve=None) -> list:
             "color_mode": color_mode,
             "lerp_linear": lerp_linear,
             "emissive_kind": emissive_kind,
+            "alpha_val": alpha_val,
+            "extra_op": extra_op,
+            "pattern_op": pattern_op,
+            "glass_opacity": glass_opacity,
         })
     materials.sort(key=lambda item: item["index"])
     return materials
