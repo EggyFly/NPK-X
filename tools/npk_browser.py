@@ -340,6 +340,9 @@ def material_tree(data: dict, resolve=None) -> list:
         noise_scale = 1.0
         color0 = [1.0, 1.0, 1.0, 1.0]
         color1 = [1.0, 1.0, 1.0, 1.0]
+        border_color = [0.0, 0.0, 0.0, 0.0]
+        border_scale = 0.0
+        border_intensity = 0.0
         base_normal = ""
         pattern_tex = ""
         for item in nodes:
@@ -449,6 +452,12 @@ def material_tree(data: dict, resolve=None) -> list:
                 color0 = [float(x) for x in value[:4]]
             elif node_class == "Color1" and isinstance(value, list) and len(value) >= 4:
                 color1 = [float(x) for x in value[:4]]
+            elif node_class == "BorderColor" and isinstance(value, list) and len(value) >= 4:
+                border_color = [float(x) for x in value[:4]]
+            elif node_class == "BorderScale" and isinstance(value, (int, float)):
+                border_scale = float(value)
+            elif node_class == "BorderIntensity" and isinstance(value, (int, float)):
+                border_intensity = float(value)
             elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
                 slot = resolve(value) if resolve else value
                 if node_class == "Tex0":
@@ -573,6 +582,9 @@ def material_tree(data: dict, resolve=None) -> list:
             "noise_scale": noise_scale,
             "color0": color0,
             "color1": color1,
+            "border_color": border_color,
+            "border_scale": border_scale,
+            "border_intensity": border_intensity,
             "alpha_ref": alpha_ref,
             "axis": axis,
             "lerp_center": lerp_center,

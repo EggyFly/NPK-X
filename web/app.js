@@ -2920,6 +2920,10 @@ function requestMapDraw() {
 function drawMap() {
   const ctx = mapView.ctx;
   if (!ctx || !mapView.canvas) return;
+  if (mapView.is3d) {
+    drawMapMinimap();
+    return;
+  }
   const w = mapView.width;
   const h = mapView.height;
   const scale = mapView.scale || 1;
@@ -3199,10 +3203,13 @@ function drawMapMinimap() {
   const pal = canvasPalette();
   const box = base.box;
   mapView.minimapBox = box;
-  const viewW = mapView.width / (mapView.scale || 1);
-  const viewH = mapView.height / (mapView.scale || 1);
-  const vx = box.left + (mapView.centerX - viewW / 2 - box.minX) * box.ms;
-  const vy = box.top + (box.maxZ - (mapView.centerZ + viewH / 2)) * box.ms;
+  const view3d = mapView.is3d && map3d.gl && map3d.ready;
+  const viewCenterX = view3d ? map3d.camera.target[0] : mapView.centerX;
+  const viewCenterZ = view3d ? map3d.camera.target[2] : mapView.centerZ;
+  const viewW = view3d ? map3d.camera.distance * 1.2 : mapView.width / (mapView.scale || 1);
+  const viewH = view3d ? map3d.camera.distance * 0.9 : mapView.height / (mapView.scale || 1);
+  const vx = box.left + (viewCenterX - viewW / 2 - box.minX) * box.ms;
+  const vy = box.top + (box.maxZ - (viewCenterZ + viewH / 2)) * box.ms;
   ctx.fillStyle = pal.accentFill;
   ctx.strokeStyle = pal.accent;
   ctx.lineWidth = 1;
@@ -3436,6 +3443,9 @@ uniform vec3 u_camera;
 uniform vec4 u_illum;
 uniform vec3 u_weather;
 uniform vec3 u_intensity_rgb;
+uniform vec4 u_border_color;
+uniform vec2 u_border;
+uniform float u_lightness;
 uniform sampler2D u_tex0;
 uniform sampler2D u_tex1;
 uniform sampler2D u_tex2;
@@ -3648,9 +3658,12 @@ void main() {
     n.xy *= u_normal_intensity;
     normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
   }
+  vec3 view_dir = normalize(u_camera - v_world);
+  float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+  emissive += border_f * u_border_color.rgb * u_border.y;
   vec3 final_lin;
   if (u_unlit > 0.5) {
-    final_lin = albedo_lin + emissive;
+    final_lin = albedo_lin * u_lightness + emissive;
   } else {
     float roughness = u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0) : 0.5;
     float metalness = u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : 0.0;
@@ -3825,6 +3838,29 @@ function map3DViewProj() {
   const view = gimLookAt(eye, camera.target, [0, 1, 0]);
   const proj = gimPerspective(Math.PI / 4, (map3d.canvas.width || 1) / (map3d.canvas.height || 1), Math.max(0.5, camera.distance * 0.02), camera.distance * 8);
   return gimMultiply(proj, view);
+}
+
+function map3DFrustum(vp) {
+  const planes = [];
+  const push = (a, b, c, d) => {
+    const length = Math.hypot(a, b, c) || 1;
+    planes.push(a / length, b / length, c / length, d / length);
+  };
+  push(vp[3] + vp[0], vp[7] + vp[4], vp[11] + vp[8], vp[15] + vp[12]);
+  push(vp[3] - vp[0], vp[7] - vp[4], vp[11] - vp[8], vp[15] - vp[12]);
+  push(vp[3] + vp[1], vp[7] + vp[5], vp[11] + vp[9], vp[15] + vp[13]);
+  push(vp[3] - vp[1], vp[7] - vp[5], vp[11] - vp[9], vp[15] - vp[13]);
+  push(vp[3] + vp[2], vp[7] + vp[6], vp[11] + vp[10], vp[15] + vp[14]);
+  push(vp[3] - vp[2], vp[7] - vp[6], vp[11] - vp[10], vp[15] - vp[14]);
+  return planes;
+}
+
+function map3DSphereInFrustum(planes, center, radius) {
+  for (let index = 0; index < planes.length; index += 4) {
+    const distance = planes[index] * center[0] + planes[index + 1] * center[1] + planes[index + 2] * center[2] + planes[index + 3];
+    if (distance < -radius) return false;
+  }
+  return true;
 }
 
 function resizeMap3D() {
@@ -4032,6 +4068,23 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
   center[0] /= unitTotal;
   center[1] /= unitTotal;
   center[2] /= unitTotal;
+  const localRadius = Math.max(1, Math.hypot(
+    Math.max(Math.abs(Number(min[0]) || 0), Math.abs(Number(max[0]) || 0)),
+    Math.max(Math.abs(Number(min[1]) || 0), Math.abs(Number(max[1]) || 0)),
+    Math.max(Math.abs(Number(min[2]) || 0), Math.abs(Number(max[2]) || 0)),
+  ));
+  let cullRadius = 0;
+  for (const unit of units) {
+    const position = unit.position || [0, 0, 0];
+    const scale = unit.scale || [1, 1, 1];
+    const unitScale = Math.max(Math.abs(Number(scale[0]) || 1), Math.abs(Number(scale[1]) || 1), Math.abs(Number(scale[2]) || 1));
+    const reach = Math.hypot(
+      (Number(position[0]) || 0) - center[0],
+      (Number(position[1]) || 0) - center[1],
+      (Number(position[2]) || 0) - center[2],
+    ) + localRadius * unitScale;
+    if (reach > cullRadius) cullRadius = reach;
+  }
   map3d.models.set(model, {
     vao,
     positionBuffer,
@@ -4050,6 +4103,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     indexType: use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
     fallback: map3DModelColor(model),
     sfxBound: (Array.isArray(objects) ? objects : []).some((item) => typeof item.Name === "string" && item.Name.toLowerCase().endsWith(".sfx")),
+    cullRadius,
     center,
     boundMin: [Number(min[0]) || 0, Number(min[1]) || 0, Number(min[2]) || 0],
     boundHalf: [
@@ -4097,7 +4151,7 @@ function map3DLoadTexture(path, done) {
         return;
       }
       let source = image;
-      const maxSize = 1024;
+      const maxSize = 512;
       if (image.width > maxSize || image.height > maxSize) {
         const scale = maxSize / Math.max(image.width, image.height);
         const canvas = document.createElement("canvas");
@@ -4215,6 +4269,10 @@ function map3DApplyMaterial(entry, group) {
   const normalIntensity = Number(intensity[0]);
   gl.uniform1f(u.normalIntensity, Number.isFinite(normalIntensity) ? normalIntensity : 1);
   gl.uniform3f(u.intensityRGB, Number(intensity[0]) || 0, Number(intensity[1]) || 0, Number(intensity[2]) || 0);
+  const border = Array.isArray(mat.border_color) ? mat.border_color : [0, 0, 0, 0];
+  gl.uniform4f(u.borderColor, Number(border[0]) || 0, Number(border[1]) || 0, Number(border[2]) || 0, Number(border[3]) || 0);
+  gl.uniform2f(u.border, Number(mat.border_scale) || 0, Number(mat.border_intensity) || 0);
+  gl.uniform1f(u.lightness, Number.isFinite(Number(mat.lightness)) ? Number(mat.lightness) : 1);
   const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
   gl.uniform1f(u.opacityTex, surface.includes("tiling") ? 2 : opacityTex);
   gl.uniform1f(u.alphaRef, Number(mat.alpha_ref) || 0);
@@ -4312,6 +4370,7 @@ function drawMap3D() {
     gl.drawArrays(gl.LINES, 0, map3d.gridCount);
   }
   if (!strict && map3d.models.size) {
+    const frustum = map3DFrustum(vp);
     gl.useProgram(map3d.program);
     gl.uniformMatrix4fv(map3d.uViewProj, false, vp);
     gl.enable(gl.BLEND);
@@ -4323,6 +4382,7 @@ function drawMap3D() {
     const draws = [];
     for (const entry of map3d.models.values()) {
       const center = entry.center || [0, 0, 0];
+      if (!map3DSphereInFrustum(frustum, center, entry.cullRadius || 0)) continue;
       const dist = (center[0] - eye[0]) ** 2 + (center[1] - eye[1]) ** 2 + (center[2] - eye[2]) ** 2;
       for (const group of entry.groups) {
         const mat = entry.materials[group.material] || {};
@@ -4371,6 +4431,7 @@ function drawMap3D() {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12);
     gl.drawArrays(gl.POINTS, 0, map3d.pointCount);
   }
+  drawMapMinimap();
 }
 
 function requestMap3DDraw() {
@@ -4484,6 +4545,8 @@ async function openMap3D(file, data) {
     lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
     glassOpacity: uniform("u_glass_opacity"),
     camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
+    borderColor: uniform("u_border_color"), border: uniform("u_border"),
+    lightness: uniform("u_lightness"),
     illum: uniform("u_illum"), weather: uniform("u_weather"),
   };
   gl.useProgram(map3d.program);
@@ -4698,6 +4761,11 @@ function bindMapMinimap() {
     const my = event.clientY - rect.top;
     mapView.centerX = box.minX + (mx - box.left) / box.ms;
     mapView.centerZ = box.maxZ - (my - box.top) / box.ms;
+    if (mapView.is3d && map3d.gl && map3d.ready) {
+      map3d.camera.target[0] = mapView.centerX;
+      map3d.camera.target[2] = mapView.centerZ;
+      requestMap3DDraw();
+    }
     updateMapHud();
     requestMapDraw();
   };
@@ -5460,6 +5528,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform float u_pattern_color_key;
     uniform float u_opacity_tex;
     uniform float u_glass;
+    uniform vec4 u_border_color;
+    uniform vec2 u_border;
+    uniform float u_lightness;
     uniform float u_glass_opacity;
     uniform float u_lerp_linear;
     uniform float u_emissive_kind;
@@ -5661,9 +5732,12 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
       }
       if (alpha < u_alpha_ref) discard;
+      vec3 view_dir = normalize(u_eye - v_local);
+      float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+      emissive += border_f * u_border_color.rgb * u_border.y;
       vec3 final_lin;
       if (u_unlit > 0.5) {
-        final_lin = albedo_lin + emissive;
+        final_lin = albedo_lin * u_lightness + emissive;
       } else {
         float roughness = u_has_tex2 > 0.5 ? clamp(mrs_texel.g * u_intensity.g, 0.08, 1.0) : 0.5;
         float metalness = u_has_tex2 > 0.5 ? clamp(mrs_texel.b * u_intensity.b, 0.0, 1.0) : 0.0;
@@ -5937,6 +6011,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     return surface.includes("change_color") && !surface.includes("change_color_object");
   };
   const uPatternTex = gl.getUniformLocation(program, "u_pattern_tex");
+  const uBorderColor = gl.getUniformLocation(program, "u_border_color");
+  const uBorder = gl.getUniformLocation(program, "u_border");
+  const uLightness = gl.getUniformLocation(program, "u_lightness");
   const uHasPattern = gl.getUniformLocation(program, "u_has_pattern");
   const uPatternScale = gl.getUniformLocation(program, "u_pattern_scale");
   const uPatternOffset = gl.getUniformLocation(program, "u_pattern_offset");
@@ -6034,6 +6111,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1f(uOpacityTex, 0);
   gl.uniform1f(uGlass, 0);
   gl.uniform1f(uGlassOpacity, 0.6);
+  gl.uniform4f(uBorderColor, 0, 0, 0, 0);
+  gl.uniform2f(uBorder, 0, 0);
+  gl.uniform1f(uLightness, 1);
   gl.uniform1f(uHasTex3, 0);
   gl.uniform1f(uLerpLinear, 0);
   gl.uniform1f(uEmissiveKind, 0);
@@ -6078,6 +6158,10 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform1f(uGlassOpacity, Number.isFinite(glassOpacityValue) && glassOpacityValue > 0 ? glassOpacityValue : 0.6);
     gl.uniform1f(uLerpLinear, Number(firstTreeMaterial.lerp_linear) || 0);
     gl.uniform1f(uEmissiveKind, Number(firstTreeMaterial.emissive_kind) || 0);
+    const borderColor = Array.isArray(firstTreeMaterial.border_color) ? firstTreeMaterial.border_color : [0, 0, 0, 0];
+    gl.uniform4f(uBorderColor, Number(borderColor[0]) || 0, Number(borderColor[1]) || 0, Number(borderColor[2]) || 0, Number(borderColor[3]) || 0);
+    gl.uniform2f(uBorder, Number(firstTreeMaterial.border_scale) || 0, Number(firstTreeMaterial.border_intensity) || 0);
+    gl.uniform1f(uLightness, Number.isFinite(Number(firstTreeMaterial.lightness)) ? Number(firstTreeMaterial.lightness) : 1);
     const emissiveColor = Array.isArray(firstTreeMaterial.emissive_color) ? firstTreeMaterial.emissive_color : [0, 0, 0, 0];
     gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
     const eiValue = Array.isArray(firstTreeMaterial.emissive_intensity) ? firstTreeMaterial.emissive_intensity : [0, 0, 0, 0];
@@ -6397,6 +6481,10 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
         const eiValue = Array.isArray(mat.emissive_intensity) ? mat.emissive_intensity : [0, 0, 0, 0];
         gl.uniform4f(uEi, Number(eiValue[0]) || 0, Number(eiValue[1]) || 0, Number(eiValue[2]) || 0, Number(eiValue[3]) || 0);
+        const borderColor = Array.isArray(mat.border_color) ? mat.border_color : [0, 0, 0, 0];
+        gl.uniform4f(uBorderColor, Number(borderColor[0]) || 0, Number(borderColor[1]) || 0, Number(borderColor[2]) || 0, Number(borderColor[3]) || 0);
+        gl.uniform2f(uBorder, Number(mat.border_scale) || 0, Number(mat.border_intensity) || 0);
+        gl.uniform1f(uLightness, Number.isFinite(Number(mat.lightness)) ? Number(mat.lightness) : 1);
         const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
         gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
         gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);

@@ -99,17 +99,21 @@ def find_vgmstream() -> str | None:
 
 
 def find_game_root(explicit: str | Path | None) -> Path:
-    candidates = [Path(explicit)] if explicit else []
+    explicit_path = Path(explicit) if explicit else None
+    candidates = [explicit_path] if explicit_path else []
     env = os.environ.get("EGGY_GAME_ROOT")
     if env:
         candidates.insert(0, Path(env))
     candidates.extend(DEFAULT_GAME_ROOTS)
     for candidate in candidates:
         try:
-            if candidate.is_dir() and any(candidate.glob("*.npk")):
-                return candidate.resolve()
+            ok = candidate.is_dir() and any(candidate.glob("*.npk"))
         except OSError:
-            continue
+            ok = False
+        if ok:
+            return candidate.resolve()
+        if candidate == explicit_path:
+            print(f"warning: game root not found or contains no *.npk: {candidate}", file=sys.stderr)
     raise SystemExit("game directory not found; pass --game-root <dir containing *.npk>")
 
 

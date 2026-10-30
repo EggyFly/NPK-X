@@ -6,6 +6,7 @@ set "PY=%PKG%bin\python\python.exe"
 if not exist "%PY%" (echo [ERROR] bundled Python not found: "%PY%" & pause & exit /b 1)
 set "GAME_ROOT=%~1"
 if "%GAME_ROOT%"=="" set /p "GAME_ROOT=Game folder containing char.npk: "
+if "%GAME_ROOT:~-1%"=="\" set "GAME_ROOT=%GAME_ROOT:~0,-1%"
 set "OUT=%~2"
 if "%OUT%"=="" set "OUT=%CD%\export_mode3"
 set "EXTRA="
