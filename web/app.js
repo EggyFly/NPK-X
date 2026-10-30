@@ -3397,6 +3397,7 @@ layout(location = 10) in vec4 a_tangent;
 uniform mat4 u_view_proj;
 out vec3 v_norm;
 out vec3 v_local;
+out vec3 v_world;
 out vec2 v_uv;
 out vec4 v_paint1;
 out vec4 v_paint2;
@@ -3412,6 +3413,7 @@ void main() {
   v_tangent = tangent;
   v_bitangent = cross(v_norm, tangent) * a_tangent.w;
   v_local = a_pos;
+  v_world = (a_model * vec4(a_pos, 1.0)).xyz;
   v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
   v_paint1 = a_paint1;
   v_paint2 = a_paint2;
@@ -3424,6 +3426,7 @@ const MAP3D_MESH_FS = `#version 300 es
 precision highp float;
 in vec3 v_norm;
 in vec3 v_local;
+in vec3 v_world;
 in vec2 v_uv;
 in vec4 v_paint1;
 in vec4 v_paint2;
@@ -3431,6 +3434,8 @@ in vec4 v_paint3;
 in vec3 v_tangent;
 in vec3 v_bitangent;
 in float v_light;
+uniform vec3 u_camera;
+uniform vec3 u_intensity_rgb;
 uniform sampler2D u_tex0;
 uniform sampler2D u_tex1;
 uniform sampler2D u_tex2;
@@ -3476,6 +3481,52 @@ vec3 mapSrgb2Lin(vec3 c) {
 }
 vec3 mapLin2Srgb(vec3 c) {
   return pow(max(c, vec3(0.0)), vec3(0.4545));
+}
+const vec3 MAP_SUN_COLOR = vec3(2.4, 2.25, 2.05);
+const vec3 MAP_SUN_DIR = vec3(0.458, 0.814, 0.356);
+vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
+  vec3 L = MAP_SUN_DIR;
+  vec3 H = normalize(L + V);
+  float n_dot_l = max(dot(N, L), 0.0);
+  float n_dot_v = max(abs(dot(N, V)), 0.001);
+  float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
+  float v_dot_h = clamp(dot(V, H), 0.0, 1.0);
+  vec3 diff_col = albedo;
+  vec3 spec_col = mix(vec3(0.04), albedo, metalness);
+  float r2 = max(0.08, roughness);
+  r2 *= r2;
+  float vis = 0.5 / max(n_dot_l * (n_dot_v * (1.0 - r2) + r2) + n_dot_v * (n_dot_l * (1.0 - r2) + r2), 0.0001);
+  float a2 = r2 * r2;
+  float nh = min(0.9999, n_dot_h);
+  float dd = (nh * a2 - nh) * nh + 1.0;
+  float ggx = a2 / max(3.14159265 * dd * dd, 0.0001);
+  float fc = pow(1.0 - v_dot_h, 5.0);
+  vec3 fres = clamp(50.0 * spec_col.g, 0.0, 1.0) * fc + (1.0 - fc) * spec_col;
+  vec3 direct = (diff_col * n_dot_l / 3.14159265 + vis * ggx * n_dot_l * fres) * MAP_SUN_COLOR;
+  vec3 sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
+  vec3 env_diff = sky * diff_col;
+  vec3 R = reflect(-V, N);
+  vec3 env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
+  env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
+  float nv = clamp(abs(dot(N, V)), 0.0, 1.0);
+  vec4 cc0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  vec4 cc1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 rr = roughness * cc0 + cc1;
+  float a004 = min(rr.x * rr.x, exp2(-9.28 * nv)) * rr.x + rr.y;
+  vec2 ab = vec2(-1.04, 1.04) * a004 + rr.zw;
+  vec3 env_spec = (spec_col * ab.x + ab.y) * env_col;
+  return direct + (env_diff + env_spec) * ao;
+}
+vec3 mapTonemap(vec3 x) {
+  const float tm2_a = 2.51;
+  const float tm2_b = 0.03;
+  const float tm2_c = 2.43;
+  const float tm2_d = 0.59;
+  const float tm2_e = 0.14;
+  x = max(x, vec3(0.0));
+  vec3 r = (x * (tm2_a * x + tm2_b)) / (x * (tm2_c * x + tm2_d) + tm2_e);
+  float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
+  return r * 1.2 - lum;
 }
 void main() {
   vec2 uv = v_uv;
@@ -3591,16 +3642,22 @@ void main() {
   }
   if (alpha < u_alpha_ref) discard;
   vec3 normal = normalize(v_norm);
-  float light = u_unlit > 0.5 ? 1.0 : v_light;
   if (u_has_tex1 > 0.5 && u_unlit < 0.5) {
     vec3 n = tex1.xyz * 2.0 - 1.0;
     if (dot(n, n) < 0.001) n = vec3(0.0, 0.0, 1.0);
     n.xy *= u_normal_intensity;
     normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
-    light = 0.55 + 0.5 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
   }
-  vec3 final_lin = albedo_lin * light + emissive;
-  out_color = vec4(mapLin2Srgb(final_lin), clamp(alpha, 0.0, 1.0));
+  vec3 final_lin;
+  if (u_unlit > 0.5) {
+    final_lin = albedo_lin + emissive;
+  } else {
+    float roughness = u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0) : 0.5;
+    float metalness = u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : 0.0;
+    float ao = u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+    final_lin = mapPbrShade(normal, normalize(u_camera - v_world), albedo_lin, roughness, metalness, ao) + emissive;
+  }
+  out_color = vec4(mapLin2Srgb(mapTonemap(final_lin)), clamp(alpha, 0.0, 1.0));
 }`;
 
 const MAP3D_POINT_VS = `#version 300 es
@@ -4149,6 +4206,7 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform4f(u.patternColor, Number(patternColor[0]) || 0, Number(patternColor[1]) || 0, Number(patternColor[2]) || 0, Number(patternColor[3]) || 0);
   const normalIntensity = Number(intensity[0]);
   gl.uniform1f(u.normalIntensity, Number.isFinite(normalIntensity) ? normalIntensity : 1);
+  gl.uniform3f(u.intensityRGB, Number(intensity[0]) || 0, Number(intensity[1]) || 0, Number(intensity[2]) || 0);
   const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
   gl.uniform1f(u.opacityTex, surface.includes("tiling") ? 2 : opacityTex);
   gl.uniform1f(u.alphaRef, Number(mat.alpha_ref) || 0);
@@ -4251,6 +4309,7 @@ function drawMap3D() {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const eye = map3DCameraEye();
+    gl.uniform3f(map3d.uniforms.camera, eye[0], eye[1], eye[2]);
     const draws = [];
     for (const entry of map3d.models.values()) {
       const center = entry.center || [0, 0, 0];
@@ -4413,6 +4472,7 @@ async function openMap3D(file, data) {
     ei: uniform("u_ei"), intensityA: uniform("u_intensity_a"),
     lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
     glassOpacity: uniform("u_glass_opacity"),
+    camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
   };
   gl.useProgram(map3d.program);
   gl.uniform1i(map3d.uniforms.tex0, 0);
@@ -5315,7 +5375,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     attribute vec2 a_uv;
     attribute vec4 a_tangent;
     uniform mat4 u_mvp;
-    uniform mediump float u_flat;
+    uniform float u_flat;
     varying vec2 v_uv;
     varying vec3 v_local;
     varying float v_light;
@@ -5336,13 +5396,14 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       gl_Position = u_mvp * vec4(a_pos, 1.0);
       gl_PointSize = u_flat > 0.5 ? 2.0 : 1.0;
     }`, `
-    precision mediump float;
+    precision highp float;
     varying vec2 v_uv;
     varying vec3 v_local;
     varying float v_light;
     varying vec3 v_normal;
     varying vec3 v_tangent;
     varying vec3 v_bitangent;
+    uniform vec3 u_eye;
     uniform sampler2D u_tex;
     uniform sampler2D u_normal_tex;
     uniform sampler2D u_base_normal_tex;
@@ -5397,6 +5458,52 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     }
     vec3 lin2srgb(vec3 c) {
       return pow(max(c, vec3(0.0)), vec3(0.4545));
+    }
+    const vec3 SUN_COLOR = vec3(2.4, 2.25, 2.05);
+    const vec3 SUN_DIR = vec3(0.458, 0.814, 0.356);
+    vec3 pbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
+      vec3 L = SUN_DIR;
+      vec3 H = normalize(L + V);
+      float n_dot_l = max(dot(N, L), 0.0);
+      float n_dot_v = max(abs(dot(N, V)), 0.001);
+      float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
+      float v_dot_h = clamp(dot(V, H), 0.0, 1.0);
+      vec3 diff_col = albedo;
+      vec3 spec_col = mix(vec3(0.04), albedo, metalness);
+      float r2 = max(0.08, roughness);
+      r2 *= r2;
+      float vis = 0.5 / max(n_dot_l * (n_dot_v * (1.0 - r2) + r2) + n_dot_v * (n_dot_l * (1.0 - r2) + r2), 0.0001);
+      float a2 = r2 * r2;
+      float nh = min(0.9999, n_dot_h);
+      float dd = (nh * a2 - nh) * nh + 1.0;
+      float ggx = a2 / max(3.14159265 * dd * dd, 0.0001);
+      float fc = pow(1.0 - v_dot_h, 5.0);
+      vec3 fres = clamp(50.0 * spec_col.g, 0.0, 1.0) * fc + (1.0 - fc) * spec_col;
+      vec3 direct = (diff_col * n_dot_l / 3.14159265 + vis * ggx * n_dot_l * fres) * SUN_COLOR;
+      vec3 sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
+      vec3 env_diff = sky * diff_col;
+      vec3 R = reflect(-V, N);
+      vec3 env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
+      env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
+      float nv = clamp(abs(dot(N, V)), 0.0, 1.0);
+      vec4 cc0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+      vec4 cc1 = vec4(1.0, 0.0425, 1.04, -0.04);
+      vec4 rr = roughness * cc0 + cc1;
+      float a004 = min(rr.x * rr.x, exp2(-9.28 * nv)) * rr.x + rr.y;
+      vec2 ab = vec2(-1.04, 1.04) * a004 + rr.zw;
+      vec3 env_spec = (spec_col * ab.x + ab.y) * env_col;
+      return direct + (env_diff + env_spec) * ao;
+    }
+    vec3 tonemap(vec3 x) {
+      const float tm_a = 2.51;
+      const float tm_b = 0.03;
+      const float tm_c = 2.43;
+      const float tm_d = 0.59;
+      const float tm_e = 0.14;
+      x = max(x, vec3(0.0));
+      vec3 r = (x * (tm_a * x + tm_b)) / (x * (tm_c * x + tm_d) + tm_e);
+      float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
+      return r * 1.2 - lum;
     }
     void main() {
       if (u_flat > 0.5) {
@@ -5521,7 +5628,6 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         albedo_lin += e;
       }
       vec3 normal = normalize(v_normal);
-      float light = u_unlit > 0.5 ? 1.0 : v_light;
       if (u_has_normal > 0.5 && u_unlit < 0.5) {
         vec3 tex_normal = normal_texel.xyz;
         vec3 n;
@@ -5539,11 +5645,18 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         if (dot(n, n) < 0.001) n = vec3(0.0, 0.0, 1.0);
         n.xy *= u_intensity.r;
         normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
-        light = 0.35 + 0.65 * abs(dot(normal, normalize(vec3(0.45, 0.8, 0.35))));
       }
       if (alpha < u_alpha_ref) discard;
-      vec3 final_lin = albedo_lin * light + emissive;
-      gl_FragColor = vec4(lin2srgb(final_lin), clamp(alpha, 0.0, 1.0));
+      vec3 final_lin;
+      if (u_unlit > 0.5) {
+        final_lin = albedo_lin + emissive;
+      } else {
+        float roughness = u_has_tex2 > 0.5 ? clamp(mrs_texel.g * u_intensity.g, 0.08, 1.0) : 0.5;
+        float metalness = u_has_tex2 > 0.5 ? clamp(mrs_texel.b * u_intensity.b, 0.0, 1.0) : 0.0;
+        float ao = u_has_tex2 > 0.5 ? clamp(mrs_texel.r, 0.0, 1.0) : 1.0;
+        final_lin = pbrShade(normal, normalize(u_eye - v_local), albedo_lin, roughness, metalness, ao) + emissive;
+      }
+      gl_FragColor = vec4(lin2srgb(tonemap(final_lin)), clamp(alpha, 0.0, 1.0));
     }`);
   if (!program) throw new Error("shader failed");
   gl.useProgram(program);
@@ -5768,6 +5881,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     animState.applyFrame(0);
   }
   const uMvp = gl.getUniformLocation(program, "u_mvp");
+  const uEye = gl.getUniformLocation(program, "u_eye");
   const uTex = gl.getUniformLocation(program, "u_tex");
   const uTex2 = gl.getUniformLocation(program, "u_tex2");
   const uHasTex2 = gl.getUniformLocation(program, "u_has_tex2");
@@ -6144,6 +6258,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     const mvp = gimMultiply(projection, viewMatrix);
     gl.useProgram(program);
     gl.uniformMatrix4fv(uMvp, false, mvp);
+    gl.uniform3f(uEye, eye[0], eye[1], eye[2]);
     gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
     gl.uniform1f(uFlat, 0);
     gl.uniform3f(uColor, 0.35, 0.78, 0.72);
