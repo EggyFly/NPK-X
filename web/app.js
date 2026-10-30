@@ -3206,8 +3206,13 @@ function drawMapMinimap() {
   const view3d = mapView.is3d && map3d.gl && map3d.ready;
   const viewCenterX = view3d ? map3d.camera.target[0] : mapView.centerX;
   const viewCenterZ = view3d ? map3d.camera.target[2] : mapView.centerZ;
-  const viewW = view3d ? map3d.camera.distance * 1.2 : mapView.width / (mapView.scale || 1);
-  const viewH = view3d ? map3d.camera.distance * 0.9 : mapView.height / (mapView.scale || 1);
+  let viewW = mapView.width / (mapView.scale || 1);
+  let viewH = mapView.height / (mapView.scale || 1);
+  if (view3d) {
+    const aspect = (map3d.canvas.width || 1) / (map3d.canvas.height || 1);
+    viewH = 2 * map3d.camera.distance * Math.tan(Math.PI / 8);
+    viewW = viewH * aspect;
+  }
   const vx = box.left + (viewCenterX - viewW / 2 - box.minX) * box.ms;
   const vy = box.top + (box.maxZ - (viewCenterZ + viewH / 2)) * box.ms;
   ctx.fillStyle = pal.accentFill;
@@ -3406,6 +3411,7 @@ uniform mat4 u_view_proj;
 out vec3 v_norm;
 out vec3 v_local;
 out vec3 v_world;
+out vec3 v_tiling;
 out vec2 v_uv;
 out vec4 v_paint1;
 out vec4 v_paint2;
@@ -3421,6 +3427,7 @@ void main() {
   v_bitangent = cross(v_norm, tangent) * a_tangent.w;
   v_local = a_pos;
   v_world = (a_model * vec4(a_pos, 1.0)).xyz;
+  v_tiling = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz)) * ((a_pos / 2.64) * 0.5 + 0.5);
   v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
   v_paint1 = a_paint1;
   v_paint2 = a_paint2;
@@ -3433,6 +3440,7 @@ precision highp float;
 in vec3 v_norm;
 in vec3 v_local;
 in vec3 v_world;
+in vec3 v_tiling;
 in vec2 v_uv;
 in vec4 v_paint1;
 in vec4 v_paint2;
@@ -3446,6 +3454,13 @@ uniform vec3 u_intensity_rgb;
 uniform vec4 u_border_color;
 uniform vec2 u_border;
 uniform float u_lightness;
+uniform float u_reflection;
+uniform vec4 u_rim_color;
+uniform vec2 u_fresnel;
+uniform float u_alpha_mtl;
+uniform float u_simple_light;
+uniform vec4 u_down_color;
+uniform vec4 u_up_color;
 uniform sampler2D u_tex0;
 uniform sampler2D u_tex1;
 uniform sampler2D u_tex2;
@@ -3551,10 +3566,11 @@ void main() {
   uv += u_texture_para.zw;
   if (u_tiling > 0.5) {
     vec3 an = abs(normalize(v_norm));
-    vec3 p = v_local / 2.64 * u_repeat_scale;
-    if (an.x >= an.y && an.x >= an.z) uv = p.yz;
-    else if (an.y >= an.z) uv = p.xz;
-    else uv = p.yx;
+    vec2 t = v_tiling.yz;
+    if (an.x >= an.y && an.x >= an.z) t = v_tiling.yz;
+    else if (an.y >= an.z) t = v_tiling.xz;
+    else t = v_tiling.yx;
+    uv = t * u_repeat_scale;
   }
   vec4 tex0 = u_has_tex0 > 0.5 ? texture(u_tex0, uv) : vec4(1.0);
   vec4 tex1 = u_has_tex1 > 0.5 ? texture(u_tex1, uv) : vec4(0.5, 0.5, 1.0, 1.0);
@@ -3572,7 +3588,27 @@ void main() {
   } else {
     vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
     color = painted;
-    if (u_color_mode > 3.5) {
+    if (u_color_mode > 6.5) {
+      vec3 an = abs(normalize(v_norm));
+      vec3 np = (v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001));
+      vec2 vig_uv = an.x >= an.y && an.x >= an.z ? np.zy : (an.y >= an.z ? np.xz : np.xy);
+      vec4 vig = u_has_tex0 > 0.5 ? texture(u_tex0, vig_uv) : vec4(0.0);
+      color = mix(u_down_color.rgb, u_up_color.rgb, 0.5) + mapSrgb2Lin(vig.rgb) * u_intensity_a;
+      color_linear = true;
+    } else if (u_color_mode > 5.5) {
+      vec3 eye_dir = normalize(u_camera - v_world);
+      vec3 cap_t = normalize(cross(eye_dir, vec3(0.0, 1.0, 0.0)));
+      vec3 cap_b = cross(eye_dir, cap_t);
+      vec3 geo_n = normalize(v_norm);
+      vec2 cap_uv = vec2(dot(geo_n, cap_t), dot(geo_n, cap_b)) * 0.5 + 0.5;
+      vec4 cap = u_has_tex0 > 0.5 ? texture(u_tex0, cap_uv) : vec4(1.0);
+      vec3 below = mapSrgb2Lin(mix(m0.rgb, m1.rgb, cap.b));
+      vec3 highlight = mapSrgb2Lin(vec3(cap.a));
+      vec3 reflection = mapSrgb2Lin(vec3(cap.g));
+      float fres = clamp(u_fresnel.x + (1.0 - u_fresnel.x) * pow(1.0 - clamp(abs(dot(geo_n, eye_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+      color = below + highlight * u_lightness + reflection * u_reflection + u_rim_color.rgb * (u_fresnel.y * 8.0 * fres * 0.5);
+      color_linear = true;
+    } else if (u_color_mode > 3.5) {
       color = u_has_tex0 > 0.5 ? mix(m0.rgb, m1.rgb, tex0.g) : painted;
       color = mix(color, m2.rgb, tex0.b);
       color = mix(color, u_mask3.rgb, tex0.a);
@@ -3605,6 +3641,7 @@ void main() {
     alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
     if (u_opacity_tex > 1.5) alpha = 1.0;
     else if (u_opacity_tex > 0.5) alpha = tex1.a;
+    if (u_color_mode > 5.5) alpha = u_alpha_mtl;
     alpha *= u_base_color.a * v_paint1.a;
   }
   vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : mapSrgb2Lin(color);
@@ -3661,9 +3698,19 @@ void main() {
   vec3 view_dir = normalize(u_camera - v_world);
   float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
   emissive += border_f * u_border_color.rgb * u_border.y;
+  if (u_color_mode > 6.5) {
+    vec3 sun_dir = -MAP_SUN_DIR;
+    vec3 glint_rz = vec3(cos(3.14) * sun_dir.x + sin(3.14) * sun_dir.z, sun_dir.y, -sin(3.14) * sun_dir.x + cos(3.14) * sun_dir.z);
+    vec3 glint_ry = vec3(cos(-0.3) * glint_rz.x - sin(-0.3) * glint_rz.y, sin(-0.3) * glint_rz.x + cos(-0.3) * glint_rz.y, glint_rz.z);
+    vec3 glint_h = normalize(-glint_ry + view_dir);
+    emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), 1220.0) * 0.2 * MAP_SUN_COLOR;
+  }
   vec3 final_lin;
   if (u_unlit > 0.5) {
-    final_lin = albedo_lin * u_lightness + emissive;
+    final_lin = albedo_lin * (u_color_mode > 5.5 ? 1.0 : u_lightness) + emissive;
+  } else if (u_simple_light > 0.5) {
+    vec3 simple_sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, normal.y));
+    final_lin = albedo_lin * max(dot(normal, MAP_SUN_DIR), 0.0) / 3.14159265 * MAP_SUN_COLOR + simple_sky * albedo_lin + emissive;
   } else {
     float roughness = u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0) : 0.5;
     float metalness = u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : 0.0;
@@ -4068,21 +4115,27 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
   center[0] /= unitTotal;
   center[1] /= unitTotal;
   center[2] /= unitTotal;
-  const localRadius = Math.max(1, Math.hypot(
-    Math.max(Math.abs(Number(min[0]) || 0), Math.abs(Number(max[0]) || 0)),
-    Math.max(Math.abs(Number(min[1]) || 0), Math.abs(Number(max[1]) || 0)),
-    Math.max(Math.abs(Number(min[2]) || 0), Math.abs(Number(max[2]) || 0)),
-  ));
+  const bboxCenter = [
+    (Number(min[0]) + Number(max[0])) / 2 || 0,
+    (Number(min[1]) + Number(max[1])) / 2 || 0,
+    (Number(min[2]) + Number(max[2])) / 2 || 0,
+  ];
+  const halfDiag = Math.hypot(
+    ((Number(max[0]) || 0) - (Number(min[0]) || 0)) / 2,
+    ((Number(max[1]) || 0) - (Number(min[1]) || 0)) / 2,
+    ((Number(max[2]) || 0) - (Number(min[2]) || 0)) / 2,
+  );
+  const localRadius = Math.max(1, Math.hypot(bboxCenter[0], bboxCenter[1], bboxCenter[2]) + halfDiag);
   let cullRadius = 0;
   for (const unit of units) {
     const position = unit.position || [0, 0, 0];
     const scale = unit.scale || [1, 1, 1];
     const unitScale = Math.max(Math.abs(Number(scale[0]) || 1), Math.abs(Number(scale[1]) || 1), Math.abs(Number(scale[2]) || 1));
-    const reach = Math.hypot(
+    const reach = (Math.hypot(
       (Number(position[0]) || 0) - center[0],
       (Number(position[1]) || 0) - center[1],
       (Number(position[2]) || 0) - center[2],
-    ) + localRadius * unitScale;
+    ) + localRadius * unitScale) * 1.05;
     if (reach > cullRadius) cullRadius = reach;
   }
   map3d.models.set(model, {
@@ -4273,6 +4326,16 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform4f(u.borderColor, Number(border[0]) || 0, Number(border[1]) || 0, Number(border[2]) || 0, Number(border[3]) || 0);
   gl.uniform2f(u.border, Number(mat.border_scale) || 0, Number(mat.border_intensity) || 0);
   gl.uniform1f(u.lightness, Number.isFinite(Number(mat.lightness)) ? Number(mat.lightness) : 1);
+  gl.uniform1f(u.reflection, Number(mat.reflection) || 0);
+  const rim = Array.isArray(mat.rim_color) ? mat.rim_color : [0, 0, 0, 0];
+  gl.uniform4f(u.rimColor, Number(rim[0]) || 0, Number(rim[1]) || 0, Number(rim[2]) || 0, Number(rim[3]) || 0);
+  gl.uniform2f(u.fresnel, Number(mat.fresnel_scale) || 0, Number(mat.fresnel_open) || 0);
+  gl.uniform1f(u.alphaMtl, Number.isFinite(Number(mat.alpha_val)) ? Number(mat.alpha_val) : 1);
+  const downColor = Array.isArray(mat.down_color) ? mat.down_color : [1, 1, 1, 1];
+  gl.uniform4f(u.downColor, Number(downColor[0]) || 0, Number(downColor[1]) || 0, Number(downColor[2]) || 0, Number(downColor[3]) || 0);
+  const upColor = Array.isArray(mat.up_color) ? mat.up_color : [1, 1, 1, 1];
+  gl.uniform4f(u.upColor, Number(upColor[0]) || 0, Number(upColor[1]) || 0, Number(upColor[2]) || 0, Number(upColor[3]) || 0);
+  gl.uniform1f(u.simpleLight, mat.simple_light ? 1 : 0);
   const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
   gl.uniform1f(u.opacityTex, surface.includes("tiling") ? 2 : opacityTex);
   gl.uniform1f(u.alphaRef, Number(mat.alpha_ref) || 0);
@@ -4547,6 +4610,10 @@ async function openMap3D(file, data) {
     camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
     borderColor: uniform("u_border_color"), border: uniform("u_border"),
     lightness: uniform("u_lightness"),
+    reflection: uniform("u_reflection"), rimColor: uniform("u_rim_color"), fresnel: uniform("u_fresnel"),
+    alphaMtl: uniform("u_alpha_mtl"),
+    downColor: uniform("u_down_color"), upColor: uniform("u_up_color"),
+    simpleLight: uniform("u_simple_light"),
     illum: uniform("u_illum"), weather: uniform("u_weather"),
   };
   gl.useProgram(map3d.program);
@@ -5531,6 +5598,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform vec4 u_border_color;
     uniform vec2 u_border;
     uniform float u_lightness;
+    uniform float u_reflection;
+    uniform vec4 u_rim_color;
+    uniform vec2 u_fresnel;
+    uniform float u_alpha_mtl;
+    uniform float u_simple_light;
+    uniform vec4 u_down_color;
+    uniform vec4 u_up_color;
     uniform float u_glass_opacity;
     uniform float u_lerp_linear;
     uniform float u_emissive_kind;
@@ -5608,10 +5682,10 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       if (u_repeat_always > 0.5) sample_uv *= u_repeat_scale;
       if (u_tiling > 0.5) {
         vec3 an = abs(normalize(v_normal));
-        vec3 p = v_local / 2.64 * u_repeat_scale;
-        if (an.x >= an.y && an.x >= an.z) sample_uv = p.yz;
-        else if (an.y >= an.z) sample_uv = p.xz;
-        else sample_uv = p.yx;
+        vec3 p = (v_local / 2.64) * 0.5 + 0.5;
+        if (an.x >= an.y && an.x >= an.z) sample_uv = p.yz * u_repeat_scale;
+        else if (an.y >= an.z) sample_uv = p.xz * u_repeat_scale;
+        else sample_uv = p.yx * u_repeat_scale;
       }
       vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
       vec4 normal_texel = u_has_normal > 0.5 ? texture2D(u_normal_tex, sample_uv) : vec4(0.5, 0.5, 1.0, 1.0);
@@ -5625,7 +5699,27 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         alpha = u_base_color.a * u_glass_opacity;
       } else {
         color = u_has_tex > 0.5 ? texel.rgb : u_base_color.rgb;
-        if (u_color_mode > 3.5) {
+        if (u_color_mode > 6.5) {
+          vec3 an = abs(normalize(v_normal));
+          vec3 np = (v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001));
+          vec2 vig_uv = an.x >= an.y && an.x >= an.z ? np.zy : (an.y >= an.z ? np.xz : np.xy);
+          vec4 vig = u_has_tex > 0.5 ? texture2D(u_tex, vig_uv) : vec4(0.0);
+          color = mix(u_down_color.rgb, u_up_color.rgb, 0.5) + srgb2lin(vig.rgb) * u_intensity.a;
+          color_linear = true;
+        } else if (u_color_mode > 5.5) {
+          vec3 eye_dir = normalize(u_eye - v_local);
+          vec3 cap_t = normalize(cross(eye_dir, vec3(0.0, 1.0, 0.0)));
+          vec3 cap_b = cross(eye_dir, cap_t);
+          vec3 geo_n = normalize(v_normal);
+          vec2 cap_uv = vec2(dot(geo_n, cap_t), dot(geo_n, cap_b)) * 0.5 + 0.5;
+          vec4 cap = u_has_tex > 0.5 ? texture2D(u_tex, cap_uv) : vec4(1.0);
+          vec3 below = srgb2lin(mix(u_mask0.rgb, u_mask1.rgb, cap.b));
+          vec3 highlight = srgb2lin(vec3(cap.a));
+          vec3 reflection = srgb2lin(vec3(cap.g));
+          float fres = clamp(u_fresnel.x + (1.0 - u_fresnel.x) * pow(1.0 - clamp(abs(dot(geo_n, eye_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+          color = below + highlight * u_lightness + reflection * u_reflection + u_rim_color.rgb * (u_fresnel.y * 8.0 * fres * 0.5);
+          color_linear = true;
+        } else if (u_color_mode > 3.5) {
           color = mix(u_mask0.rgb, u_mask1.rgb, texel.g);
           color = mix(color, u_mask2.rgb, texel.b);
           color = mix(color, u_mask3.rgb, texel.a);
@@ -5671,6 +5765,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         alpha = u_has_tex > 0.5 ? texel.a : 1.0;
         if (u_opacity_tex > 1.5) alpha = 1.0;
         else if (u_opacity_tex > 0.5) alpha = normal_texel.a;
+        if (u_color_mode > 5.5) alpha = u_alpha_mtl;
         alpha *= u_base_color.a;
         if (u_emissive_kind > 8.5 && u_has_tex < 0.5) alpha = 0.0;
       }
@@ -5735,9 +5830,19 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       vec3 view_dir = normalize(u_eye - v_local);
       float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
       emissive += border_f * u_border_color.rgb * u_border.y;
+      if (u_color_mode > 6.5) {
+        vec3 sun_dir = -SUN_DIR;
+        vec3 glint_rz = vec3(cos(3.14) * sun_dir.x + sin(3.14) * sun_dir.z, sun_dir.y, -sin(3.14) * sun_dir.x + cos(3.14) * sun_dir.z);
+        vec3 glint_ry = vec3(cos(-0.3) * glint_rz.x - sin(-0.3) * glint_rz.y, sin(-0.3) * glint_rz.x + cos(-0.3) * glint_rz.y, glint_rz.z);
+        vec3 glint_h = normalize(-glint_ry + view_dir);
+        emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), 1220.0) * 0.2 * SUN_COLOR;
+      }
       vec3 final_lin;
       if (u_unlit > 0.5) {
-        final_lin = albedo_lin * u_lightness + emissive;
+        final_lin = albedo_lin * (u_color_mode > 5.5 ? 1.0 : u_lightness) + emissive;
+      } else if (u_simple_light > 0.5) {
+        vec3 simple_sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, normal.y));
+        final_lin = albedo_lin * max(dot(normal, SUN_DIR), 0.0) / 3.14159265 * SUN_COLOR + simple_sky * albedo_lin + emissive;
       } else {
         float roughness = u_has_tex2 > 0.5 ? clamp(mrs_texel.g * u_intensity.g, 0.08, 1.0) : 0.5;
         float metalness = u_has_tex2 > 0.5 ? clamp(mrs_texel.b * u_intensity.b, 0.0, 1.0) : 0.0;
@@ -6014,6 +6119,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uBorderColor = gl.getUniformLocation(program, "u_border_color");
   const uBorder = gl.getUniformLocation(program, "u_border");
   const uLightness = gl.getUniformLocation(program, "u_lightness");
+  const uReflection = gl.getUniformLocation(program, "u_reflection");
+  const uRimColor = gl.getUniformLocation(program, "u_rim_color");
+  const uFresnel = gl.getUniformLocation(program, "u_fresnel");
+  const uAlphaMtl = gl.getUniformLocation(program, "u_alpha_mtl");
+  const uDownColor = gl.getUniformLocation(program, "u_down_color");
+  const uUpColor = gl.getUniformLocation(program, "u_up_color");
+  const uSimpleLight = gl.getUniformLocation(program, "u_simple_light");
   const uHasPattern = gl.getUniformLocation(program, "u_has_pattern");
   const uPatternScale = gl.getUniformLocation(program, "u_pattern_scale");
   const uPatternOffset = gl.getUniformLocation(program, "u_pattern_offset");
@@ -6114,6 +6226,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform4f(uBorderColor, 0, 0, 0, 0);
   gl.uniform2f(uBorder, 0, 0);
   gl.uniform1f(uLightness, 1);
+  gl.uniform1f(uReflection, 0);
+  gl.uniform4f(uRimColor, 0, 0, 0, 0);
+  gl.uniform2f(uFresnel, 0, 0);
+  gl.uniform1f(uAlphaMtl, 1);
+  gl.uniform4f(uDownColor, 1, 1, 1, 1);
+  gl.uniform4f(uUpColor, 1, 1, 1, 1);
+  gl.uniform1f(uSimpleLight, 0);
   gl.uniform1f(uHasTex3, 0);
   gl.uniform1f(uLerpLinear, 0);
   gl.uniform1f(uEmissiveKind, 0);
@@ -6162,6 +6281,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform4f(uBorderColor, Number(borderColor[0]) || 0, Number(borderColor[1]) || 0, Number(borderColor[2]) || 0, Number(borderColor[3]) || 0);
     gl.uniform2f(uBorder, Number(firstTreeMaterial.border_scale) || 0, Number(firstTreeMaterial.border_intensity) || 0);
     gl.uniform1f(uLightness, Number.isFinite(Number(firstTreeMaterial.lightness)) ? Number(firstTreeMaterial.lightness) : 1);
+    gl.uniform1f(uReflection, Number(firstTreeMaterial.reflection) || 0);
+    const firstRim = Array.isArray(firstTreeMaterial.rim_color) ? firstTreeMaterial.rim_color : [0, 0, 0, 0];
+    gl.uniform4f(uRimColor, Number(firstRim[0]) || 0, Number(firstRim[1]) || 0, Number(firstRim[2]) || 0, Number(firstRim[3]) || 0);
+    gl.uniform2f(uFresnel, Number(firstTreeMaterial.fresnel_scale) || 0, Number(firstTreeMaterial.fresnel_open) || 0);
+    gl.uniform1f(uAlphaMtl, Number.isFinite(Number(firstTreeMaterial.alpha_val)) ? Number(firstTreeMaterial.alpha_val) : 1);
+    const firstDown = Array.isArray(firstTreeMaterial.down_color) ? firstTreeMaterial.down_color : [1, 1, 1, 1];
+    gl.uniform4f(uDownColor, Number(firstDown[0]) || 0, Number(firstDown[1]) || 0, Number(firstDown[2]) || 0, Number(firstDown[3]) || 0);
+    const firstUp = Array.isArray(firstTreeMaterial.up_color) ? firstTreeMaterial.up_color : [1, 1, 1, 1];
+    gl.uniform4f(uUpColor, Number(firstUp[0]) || 0, Number(firstUp[1]) || 0, Number(firstUp[2]) || 0, Number(firstUp[3]) || 0);
+    gl.uniform1f(uSimpleLight, firstTreeMaterial.simple_light ? 1 : 0);
     const emissiveColor = Array.isArray(firstTreeMaterial.emissive_color) ? firstTreeMaterial.emissive_color : [0, 0, 0, 0];
     gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
     const eiValue = Array.isArray(firstTreeMaterial.emissive_intensity) ? firstTreeMaterial.emissive_intensity : [0, 0, 0, 0];
@@ -6485,6 +6614,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform4f(uBorderColor, Number(borderColor[0]) || 0, Number(borderColor[1]) || 0, Number(borderColor[2]) || 0, Number(borderColor[3]) || 0);
         gl.uniform2f(uBorder, Number(mat.border_scale) || 0, Number(mat.border_intensity) || 0);
         gl.uniform1f(uLightness, Number.isFinite(Number(mat.lightness)) ? Number(mat.lightness) : 1);
+        gl.uniform1f(uReflection, Number(mat.reflection) || 0);
+        const matRim = Array.isArray(mat.rim_color) ? mat.rim_color : [0, 0, 0, 0];
+        gl.uniform4f(uRimColor, Number(matRim[0]) || 0, Number(matRim[1]) || 0, Number(matRim[2]) || 0, Number(matRim[3]) || 0);
+        gl.uniform2f(uFresnel, Number(mat.fresnel_scale) || 0, Number(mat.fresnel_open) || 0);
+        gl.uniform1f(uAlphaMtl, Number.isFinite(Number(mat.alpha_val)) ? Number(mat.alpha_val) : 1);
+        const matDown = Array.isArray(mat.down_color) ? mat.down_color : [1, 1, 1, 1];
+        gl.uniform4f(uDownColor, Number(matDown[0]) || 0, Number(matDown[1]) || 0, Number(matDown[2]) || 0, Number(matDown[3]) || 0);
+        const matUp = Array.isArray(mat.up_color) ? mat.up_color : [1, 1, 1, 1];
+        gl.uniform4f(uUpColor, Number(matUp[0]) || 0, Number(matUp[1]) || 0, Number(matUp[2]) || 0, Number(matUp[3]) || 0);
+        gl.uniform1f(uSimpleLight, mat.simple_light ? 1 : 0);
         const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
         gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
         gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);

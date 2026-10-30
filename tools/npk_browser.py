@@ -343,6 +343,13 @@ def material_tree(data: dict, resolve=None) -> list:
         border_color = [0.0, 0.0, 0.0, 0.0]
         border_scale = 0.0
         border_intensity = 0.0
+        reflection = 0.0
+        rim_color = [0.0, 0.0, 0.0, 0.0]
+        fresnel_scale = 0.0
+        fresnel_open = 0.0
+        down_color = [1.0, 1.0, 1.0, 1.0]
+        up_color = [1.0, 1.0, 1.0, 1.0]
+        simple_light = False
         base_normal = ""
         pattern_tex = ""
         for item in nodes:
@@ -458,6 +465,18 @@ def material_tree(data: dict, resolve=None) -> list:
                 border_scale = float(value)
             elif node_class == "BorderIntensity" and isinstance(value, (int, float)):
                 border_intensity = float(value)
+            elif node_class == "Reflection" and isinstance(value, (int, float)):
+                reflection = float(value)
+            elif node_class == "RimColor" and isinstance(value, list) and len(value) >= 4:
+                rim_color = [float(x) for x in value[:4]]
+            elif node_class == "FresnelScale" and isinstance(value, (int, float)):
+                fresnel_scale = float(value)
+            elif node_class == "FresnelOpen" and isinstance(value, (int, float)):
+                fresnel_open = float(value)
+            elif node_class == "DownColor" and isinstance(value, list) and len(value) >= 4:
+                down_color = [float(x) for x in value[:4]]
+            elif node_class == "UpColor" and isinstance(value, list) and len(value) >= 4:
+                up_color = [float(x) for x in value[:4]]
             elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
                 slot = resolve(value) if resolve else value
                 if node_class == "Tex0":
@@ -493,7 +512,13 @@ def material_tree(data: dict, resolve=None) -> list:
             transparent = True
             base_color = colors[0]
             base_color_found = True
-        if "standard_change_color_lerp" in surface_lower:
+        if "_simple" in surface_lower:
+            simple_light = True
+        if "unlit_jelly" in surface_lower:
+            color_mode = 6
+        elif "icefloor" in surface_lower:
+            color_mode = 7
+        elif "standard_change_color_lerp" in surface_lower:
             color_mode = 2
         elif "standard_change_color_new_hlod" in surface_lower:
             color_mode = 0
@@ -585,6 +610,13 @@ def material_tree(data: dict, resolve=None) -> list:
             "border_color": border_color,
             "border_scale": border_scale,
             "border_intensity": border_intensity,
+            "reflection": reflection,
+            "rim_color": rim_color,
+            "fresnel_scale": fresnel_scale,
+            "fresnel_open": fresnel_open,
+            "down_color": down_color,
+            "up_color": up_color,
+            "simple_light": simple_light,
             "alpha_ref": alpha_ref,
             "axis": axis,
             "lerp_center": lerp_center,
