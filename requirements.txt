@@ -1,0 +1,14 @@
+cffi==2.1.1
+click==8.5.0
+mmh3==5.3.1
+numpy==2.5.4
+pillow==13.0.0
+pycparser==3.12
+six==1.17.0
+soundfile==0.14.0
+spark-parser==1.9.0
+texture2ddecoder==1.0.6
+typing-extensions==4.16.0
+uncompyle6==3.9.3
+xdis==6.1.8
+zstandard==0.25.0
