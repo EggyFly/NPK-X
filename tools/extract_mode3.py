@@ -58,16 +58,18 @@ DEFAULT_GAME_ROOTS = [
 ]
 DEFAULT_OUT = Path.cwd() / "export_mode3"
 WORK = Path(tempfile.gettempdir()) / "eggy_party_npk_toolkit"
+_IS_WIN = os.name == "nt"
+VGMSTREAM_NAME = "vgmstream-cli.exe" if _IS_WIN else "vgmstream-cli"
+FFMPEG_NAME = "ffmpeg.exe" if _IS_WIN else "ffmpeg"
 VGMSTREAM_CANDIDATES = [
-    PACKAGE_ROOT / "bin" / "vgmstream" / "vgmstream-cli.exe",
-    TOOLKIT_ROOT / "_tools" / "vgmstream" / "vgmstream-cli.exe",
-    Path("vgmstream-cli.exe"),
+    PACKAGE_ROOT / "bin" / "vgmstream" / VGMSTREAM_NAME,
+    TOOLKIT_ROOT / "_tools" / "vgmstream" / VGMSTREAM_NAME,
+    Path(VGMSTREAM_NAME),
 ]
-FFMPEG_CANDIDATES = [
-    PACKAGE_ROOT / "bin" / "ffmpeg" / "ffmpeg.exe",
-    Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
-    Path("ffmpeg.exe"),
-]
+FFMPEG_CANDIDATES = [PACKAGE_ROOT / "bin" / "ffmpeg" / FFMPEG_NAME]
+if _IS_WIN:
+    FFMPEG_CANDIDATES.append(Path(r"C:\ffmpeg\bin\ffmpeg.exe"))
+FFMPEG_CANDIDATES.append(Path(FFMPEG_NAME))
 try:
     import soundfile as _soundfile
 except Exception:  # optional; ffmpeg is used when unavailable

@@ -18,8 +18,11 @@ CACHE_DIRS = ("artifacts", "open", "tmp")
 
 
 def default_cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "EggyNpkBrowser"
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+        return Path(base) / "EggyNpkBrowser"
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "npk-x"
 
 
 def clear_cache(cache_root: Path, game_root: Path | None = None, log=print) -> list[str]:

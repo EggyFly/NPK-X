@@ -9,6 +9,7 @@ import collections
 import csv
 import gzip
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -76,7 +77,7 @@ def main() -> int:
             info = sf.info(str(path))
             flac_samples.append((str(path), info.format == "FLAC", info.samplerate))
     except Exception as exc:
-        ffmpeg = r"C:\ffmpeg\bin\ffmpeg.exe"
+        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
         for path in flacs[:5]:
             try:
                 result = subprocess.run(

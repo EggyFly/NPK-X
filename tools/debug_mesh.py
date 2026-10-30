@@ -15,7 +15,7 @@ import mesh_parse
 import npk_browser
 
 
-DEFAULT_DB = Path.home() / "AppData" / "Local" / "EggyNpkBrowser" / "catalog.sqlite"
+DEFAULT_DB = npk_browser.default_cache_dir() / "catalog.sqlite"
 
 
 def u16(data, offset):

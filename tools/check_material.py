@@ -14,7 +14,7 @@ import npk_browser
 import scan_materials
 
 
-DEFAULT_DB = Path.home() / "AppData" / "Local" / "EggyNpkBrowser" / "catalog.sqlite"
+DEFAULT_DB = npk_browser.default_cache_dir() / "catalog.sqlite"
 
 
 def main() -> int:

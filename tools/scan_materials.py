@@ -17,7 +17,7 @@ import neox_object
 import npk_browser
 
 
-DEFAULT_DB = Path.home() / "AppData" / "Local" / "EggyNpkBrowser" / "catalog.sqlite"
+DEFAULT_DB = npk_browser.default_cache_dir() / "catalog.sqlite"
 TEXTURE_SUFFIX = (".tga", ".dds", ".kta", ".png")
 
 

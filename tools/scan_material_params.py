@@ -15,7 +15,7 @@ import neox_object
 import npk_browser
 
 
-DEFAULT_DB = Path.home() / "AppData" / "Local" / "EggyNpkBrowser" / "catalog.sqlite"
+DEFAULT_DB = npk_browser.default_cache_dir() / "catalog.sqlite"
 WATCH = {
     "TexturePara": [1.0, 1.0, 0.0, 0.0],
     "RotationAngle": 0.0,

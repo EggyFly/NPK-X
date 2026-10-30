@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -58,14 +60,17 @@ def main() -> int:
         failures.append(f"import uncompyle6: {exc}")
         print("[FAIL] import uncompyle6 (XN source view unavailable)")
 
+    vgm_name = "vgmstream-cli.exe" if os.name == "nt" else "vgmstream-cli"
     vgm = None
     for candidate in (
-        ROOT / "bin" / "vgmstream" / "vgmstream-cli.exe",
-        ROOT / "_tools" / "vgmstream" / "vgmstream-cli.exe",
+        ROOT / "bin" / "vgmstream" / vgm_name,
+        ROOT / "_tools" / "vgmstream" / vgm_name,
     ):
         if candidate.is_file():
             vgm = candidate
             break
+    if vgm is None:
+        vgm = shutil.which(vgm_name)
     if vgm:
         print(f"[PASS] vgmstream: {vgm}")
     else:

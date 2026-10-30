@@ -618,7 +618,8 @@ def default_cache_dir() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
         return Path(base) / "EggyNpkBrowser"
-    return Path.home() / ".cache" / "eggy_npk_browser"
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "npk-x"
 
 
 def sha256_file(path: Path) -> str:
@@ -2435,12 +2436,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _uncompyle_exe(self) -> str | None:
         candidates = [shutil.which("uncompyle6")]
-        for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
-            if not base:
-                continue
-            candidates.extend(glob.glob(str(Path(base) / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
-            candidates.extend(glob.glob(str(Path(base) / "Programs" / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
-        candidates.append(r"C:\Python314\Scripts\uncompyle6.exe")
+        if os.name == "nt":
+            for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
+                if not base:
+                    continue
+                candidates.extend(glob.glob(str(Path(base) / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
+                candidates.extend(glob.glob(str(Path(base) / "Programs" / "Python" / "Python*" / "Scripts" / "uncompyle6.exe")))
+            candidates.append(r"C:\Python314\Scripts\uncompyle6.exe")
         for candidate in candidates:
             if candidate and Path(candidate).is_file():
                 return candidate
@@ -2998,8 +3000,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 mesh_payload, parsed, skeleton,
                                                 self._entry_payload(raw_row),
                                                 self.server.cache_root / "anim_frames",
-                                                Path(__file__).parent / "acl_decode.exe",
-                                                decoder_v10=Path(__file__).parent / "acl_decode_v10.exe",
+                                                Path(__file__).parent / ("acl_decode.exe" if os.name == "nt" else "acl_decode"),
+                                                decoder_v10=Path(__file__).parent / ("acl_decode_v10.exe" if os.name == "nt" else "acl_decode_v10"),
                                                 cached_animation=self._entry_payload(anim_row),
                                             )
                                             if not animation:
