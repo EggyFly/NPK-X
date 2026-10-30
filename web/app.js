@@ -3375,6 +3375,7 @@ function toggleMapMsgPanel() {
 }
 
 const MAP_MESH_LIMIT = 240;
+const MAP_TEXTURE_LIMIT = 1200;
 const map3d = {
   canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null,
   uViewProj: null, uPointView: null, uPointSize: null, uLineView: null, uLineColor: null,
@@ -3404,7 +3405,6 @@ out vec4 v_paint2;
 out vec4 v_paint3;
 out vec3 v_tangent;
 out vec3 v_bitangent;
-out float v_light;
 void main() {
   mat3 rot = mat3(a_model);
   mat3 nmat = transpose(inverse(rot));
@@ -3418,7 +3418,6 @@ void main() {
   v_paint1 = a_paint1;
   v_paint2 = a_paint2;
   v_paint3 = a_paint3;
-  v_light = 0.55 + 0.5 * abs(dot(v_norm, normalize(vec3(0.45, 0.8, 0.35))));
   gl_Position = u_view_proj * a_model * vec4(a_pos, 1.0);
 }`;
 
@@ -3433,8 +3432,9 @@ in vec4 v_paint2;
 in vec4 v_paint3;
 in vec3 v_tangent;
 in vec3 v_bitangent;
-in float v_light;
 uniform vec3 u_camera;
+uniform vec4 u_illum;
+uniform vec3 u_weather;
 uniform vec3 u_intensity_rgb;
 uniform sampler2D u_tex0;
 uniform sampler2D u_tex1;
@@ -3520,13 +3520,13 @@ vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, 
 vec3 mapTonemap(vec3 x) {
   const float tm2_a = 2.51;
   const float tm2_b = 0.03;
-  const float tm2_c = 2.43;
+  float tm2_c = 2.43 - u_illum.w;
   const float tm2_d = 0.59;
   const float tm2_e = 0.14;
-  x = max(x, vec3(0.0));
+  x = max(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.0));
   vec3 r = (x * (tm2_a * x + tm2_b)) / (x * (tm2_c * x + tm2_d) + tm2_e);
   float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
-  return r * 1.2 - lum;
+  return (r * 1.2 - lum) * u_weather;
 }
 void main() {
   vec2 uv = v_uv;
@@ -3879,7 +3879,7 @@ function fitMap3D(data) {
   requestMap3DDraw();
 }
 
-function map3DBuildModel(model, mesh, units, materials, texturePaths) {
+function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
   const gl = map3d.gl;
   const vertices = mesh.vertices || [];
   const faces = mesh.indices || [];
@@ -4049,6 +4049,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths) {
     indexCount: indices.length,
     indexType: use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
     fallback: map3DModelColor(model),
+    sfxBound: (Array.isArray(objects) ? objects : []).some((item) => typeof item.Name === "string" && item.Name.toLowerCase().endsWith(".sfx")),
     center,
     boundMin: [Number(min[0]) || 0, Number(min[1]) || 0, Number(min[2]) || 0],
     boundHalf: [
@@ -4070,8 +4071,8 @@ function map3DLoadTexture(path, done) {
     done(map3d.textureCache.get(path));
     return;
   }
-  if (map3d.textureCache.size + map3d.texturePending.size >= 300) {
-    mapMsgAdd("info", tr("map.msg.info"), tr("map.3d.textureLimit", { count: 300 }));
+  if (map3d.textureCache.size + map3d.texturePending.size >= MAP_TEXTURE_LIMIT) {
+    mapMsgAdd("info", tr("map.msg.info"), tr("map.3d.textureLimit", { count: MAP_TEXTURE_LIMIT }));
     done(null);
     return;
   }
@@ -4161,6 +4162,13 @@ function map3DLoadMaterialTextures(model, materials, texturePaths) {
   });
 }
 
+function map3DSkipMaterial(mat, sfxBound) {
+  if (!sfxBound) return false;
+  if (!String(mat.surface || "")) return true;
+  const textures = Array.isArray(mat.textures) ? mat.textures : [];
+  return !textures.some((item) => typeof item === "string" && item);
+}
+
 function map3DApplyMaterial(entry, group) {
   const gl = map3d.gl;
   const u = map3d.uniforms;
@@ -4200,7 +4208,7 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform1f(u.lerpLinear, Number(mat.lerp_linear) || 0);
   const glassOpacity = Number(mat.glass_opacity);
   gl.uniform1f(u.glassOpacity, Number.isFinite(glassOpacity) && glassOpacity > 0 ? glassOpacity : 0.6);
-  gl.uniform1f(u.glass, surface.includes("glass") ? 1 : 0);
+  gl.uniform1f(u.glass, surface.includes("glass") || surface.includes("water") ? 1 : 0);
   gl.uniform1f(u.patternMode, surface.includes("tiling") ? 1 : 0);
   const patternColor = Array.isArray(mat.pattern_color) ? mat.pattern_color : [1, 1, 1, 1];
   gl.uniform4f(u.patternColor, Number(patternColor[0]) || 0, Number(patternColor[1]) || 0, Number(patternColor[2]) || 0, Number(patternColor[3]) || 0);
@@ -4310,12 +4318,15 @@ function drawMap3D() {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const eye = map3DCameraEye();
     gl.uniform3f(map3d.uniforms.camera, eye[0], eye[1], eye[2]);
+    gl.uniform4f(map3d.uniforms.illum, 1, 1, 1, 0);
+    gl.uniform3f(map3d.uniforms.weather, 1, 1, 1);
     const draws = [];
     for (const entry of map3d.models.values()) {
       const center = entry.center || [0, 0, 0];
       const dist = (center[0] - eye[0]) ** 2 + (center[1] - eye[1]) ** 2 + (center[2] - eye[2]) ** 2;
       for (const group of entry.groups) {
         const mat = entry.materials[group.material] || {};
+        if (map3DSkipMaterial(mat, entry.sfxBound)) continue;
         draws.push({ entry, group, mat, dist, transparent: mat.transparent === true });
       }
     }
@@ -4473,6 +4484,7 @@ async function openMap3D(file, data) {
     lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
     glassOpacity: uniform("u_glass_opacity"),
     camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
+    illum: uniform("u_illum"), weather: uniform("u_weather"),
   };
   gl.useProgram(map3d.program);
   gl.uniform1i(map3d.uniforms.tex0, 0);
@@ -4590,7 +4602,7 @@ async function loadMap3DMeshes(data, token) {
         if (!mesh || !Array.isArray(mesh.vertices) || !mesh.indices || !mesh.vertices.length) {
           throw new Error(response.mesh_error || "no mesh");
         }
-        map3DBuildModel(model, mesh, units, response.materials || [], response.texture_images || response.textures || []);
+        map3DBuildModel(model, mesh, units, response.materials || [], response.texture_images || response.textures || [], response.objects || []);
       } catch (error) {
         if (token !== map3d.token) return;
         map3d.loadErrors += 1;
@@ -5404,6 +5416,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     varying vec3 v_tangent;
     varying vec3 v_bitangent;
     uniform vec3 u_eye;
+    uniform vec4 u_illum;
+    uniform vec3 u_weather;
     uniform sampler2D u_tex;
     uniform sampler2D u_normal_tex;
     uniform sampler2D u_base_normal_tex;
@@ -5497,13 +5511,13 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     vec3 tonemap(vec3 x) {
       const float tm_a = 2.51;
       const float tm_b = 0.03;
-      const float tm_c = 2.43;
+      float tm_c = 2.43 - u_illum.w;
       const float tm_d = 0.59;
       const float tm_e = 0.14;
-      x = max(x, vec3(0.0));
+      x = max(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.0));
       vec3 r = (x * (tm_a * x + tm_b)) / (x * (tm_c * x + tm_d) + tm_e);
       float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
-      return r * 1.2 - lum;
+      return (r * 1.2 - lum) * u_weather;
     }
     void main() {
       if (u_flat > 0.5) {
@@ -5882,6 +5896,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   }
   const uMvp = gl.getUniformLocation(program, "u_mvp");
   const uEye = gl.getUniformLocation(program, "u_eye");
+  const uIllum = gl.getUniformLocation(program, "u_illum");
+  const uWeather = gl.getUniformLocation(program, "u_weather");
   const uTex = gl.getUniformLocation(program, "u_tex");
   const uTex2 = gl.getUniformLocation(program, "u_tex2");
   const uHasTex2 = gl.getUniformLocation(program, "u_has_tex2");
@@ -6057,7 +6073,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.uniform1f(uPatternColorKey, Number(firstTreeMaterial.pattern_color_key) || 0);
     gl.uniform1f(uNormalMode, Number.isInteger(firstTreeMaterial.normal_mode) ? firstTreeMaterial.normal_mode : 0);
     gl.uniform1f(uUnlit, firstTreeMaterial.lighting === false ? 1 : 0);
-    gl.uniform1f(uGlass, String(firstTreeMaterial.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+    gl.uniform1f(uGlass, /standard_glass|water/.test(String(firstTreeMaterial.surface || "").toLowerCase()) ? 1 : 0);
     const glassOpacityValue = Number(firstTreeMaterial.glass_opacity);
     gl.uniform1f(uGlassOpacity, Number.isFinite(glassOpacityValue) && glassOpacityValue > 0 ? glassOpacityValue : 0.6);
     gl.uniform1f(uLerpLinear, Number(firstTreeMaterial.lerp_linear) || 0);
@@ -6259,6 +6275,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.useProgram(program);
     gl.uniformMatrix4fv(uMvp, false, mvp);
     gl.uniform3f(uEye, eye[0], eye[1], eye[2]);
+    gl.uniform4f(uIllum, 1, 1, 1, 0);
+    gl.uniform3f(uWeather, 1, 1, 1);
     gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
     gl.uniform1f(uFlat, 0);
     gl.uniform3f(uColor, 0.35, 0.78, 0.72);
@@ -6370,7 +6388,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         gl.uniform1f(uAlphaRef, Number(mat.alpha_ref) || 0);
         gl.uniform1f(uUnlit, mat.lighting === false ? 1 : 0);
         gl.uniform1f(uOpacityTex, mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0));
-        gl.uniform1f(uGlass, String(mat.surface || "").toLowerCase().includes("standard_glass") ? 1 : 0);
+        gl.uniform1f(uGlass, /standard_glass|water/.test(String(mat.surface || "").toLowerCase()) ? 1 : 0);
         const glassOpacity = Number(mat.glass_opacity);
         gl.uniform1f(uGlassOpacity, Number.isFinite(glassOpacity) && glassOpacity > 0 ? glassOpacity : 0.6);
         gl.uniform1f(uLerpLinear, Number(mat.lerp_linear) || 0);

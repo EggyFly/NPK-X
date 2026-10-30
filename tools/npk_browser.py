@@ -332,6 +332,14 @@ def material_tree(data: dict, resolve=None) -> list:
         texture_para = [1.0, 1.0, 0.0, 0.0]
         rotation_angle = 0.0
         tiling = False
+        lightness = 1.0
+        shadow_enable = 0.0
+        opacity_max = 0.0
+        depth_scale = 1.0
+        streamer_lightness = 1.0
+        noise_scale = 1.0
+        color0 = [1.0, 1.0, 1.0, 1.0]
+        color1 = [1.0, 1.0, 1.0, 1.0]
         base_normal = ""
         pattern_tex = ""
         for item in nodes:
@@ -425,6 +433,22 @@ def material_tree(data: dict, resolve=None) -> list:
                 texture_para = [float(x) for x in value[:4]]
             elif node_class == "RotationAngle" and isinstance(value, (int, float)):
                 rotation_angle = float(value)
+            elif node_class == "Lightness" and isinstance(value, (int, float)):
+                lightness = float(value)
+            elif node_class == "ShadowEnable" and isinstance(value, (int, float)):
+                shadow_enable = float(value)
+            elif node_class == "OpacityMax" and isinstance(value, (int, float)):
+                opacity_max = float(value)
+            elif node_class == "DepthScale" and isinstance(value, (int, float)):
+                depth_scale = float(value)
+            elif node_class == "StreamerLightness" and isinstance(value, (int, float)):
+                streamer_lightness = float(value)
+            elif node_class == "NoiseScale" and isinstance(value, (int, float)):
+                noise_scale = float(value)
+            elif node_class == "Color0" and isinstance(value, list) and len(value) >= 4:
+                color0 = [float(x) for x in value[:4]]
+            elif node_class == "Color1" and isinstance(value, list) and len(value) >= 4:
+                color1 = [float(x) for x in value[:4]]
             elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
                 slot = resolve(value) if resolve else value
                 if node_class == "Tex0":
@@ -449,7 +473,17 @@ def material_tree(data: dict, resolve=None) -> list:
             for value2 in obj.values():
                 if isinstance(value2, str) and value2.lower().endswith((".tga", ".dds", ".kta", ".png")):
                     textures.append(resolve(value2) if resolve else value2)
+        if not any((tex0, tex1, tex2, tex3, tex4)) and len({item for item in textures if item}) == 1:
+            tex0 = next(item for item in textures if item)
         surface_lower = surface.lower()
+        if "unlit" in surface_lower:
+            lighting = False
+        if "water" in surface_lower and tex0 and "normal" in tex0.lower():
+            tex0 = ""
+            tex1 = ""
+            transparent = True
+            base_color = colors[0]
+            base_color_found = True
         if "standard_change_color_lerp" in surface_lower:
             color_mode = 2
         elif "standard_change_color_new_hlod" in surface_lower:
@@ -531,6 +565,14 @@ def material_tree(data: dict, resolve=None) -> list:
             "intensity": intensity,
             "base_color": base_color,
             "tint_value": tint_value,
+            "lightness": lightness,
+            "shadow_enable": shadow_enable,
+            "opacity_max": opacity_max,
+            "depth_scale": depth_scale,
+            "streamer_lightness": streamer_lightness,
+            "noise_scale": noise_scale,
+            "color0": color0,
+            "color1": color1,
             "alpha_ref": alpha_ref,
             "axis": axis,
             "lerp_center": lerp_center,
