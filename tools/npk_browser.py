@@ -3530,6 +3530,8 @@ def main() -> int:
     if server is None:
         print("no free port", file=sys.stderr)
         return 6
+    if server.server_port != args.port:
+        print(f"port {args.port} busy, using {server.server_port}", file=sys.stderr)
     url = f"http://{args.host}:{server.server_port}/"
     print(f"NPK Browser: {url}")
     print("Press Ctrl+C to stop.")
