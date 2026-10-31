@@ -503,6 +503,10 @@ function esc(value) {
   }[c]));
 }
 
+function fieldIconLabel(kind, text, aliases = []) {
+  return window.FieldIcons ? window.FieldIcons.label(kind, text, aliases) : esc(text);
+}
+
 function formatBytes(n) {
   n = Number(n || 0);
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -1765,7 +1769,7 @@ function renderInspect(info, container) {
   const header = info.header || {};
   const headerChips = Object.entries(header)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
-    .map(([key, value]) => `<span class="bank-chip">${esc(key)} <b>${esc(value)}</b></span>`)
+    .map(([key, value]) => `<span class="bank-chip">${fieldIconLabel("field", key)} <b>${esc(value)}</b></span>`)
     .join("");
   const references = info.references || [];
   const strings = info.strings || [];
@@ -1777,7 +1781,7 @@ function renderInspect(info, container) {
     <div class="inspect-summary">${esc(summaryText)}</div>
     ${headerChips ? `<div class="bank-chips">${headerChips}</div>` : ""}
     ${references.length ? `<div class="section-title">${tr("inspect.references")}</div><div class="inspect-refs">${references.map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("")}</div>` : ""}
-    ${strings.length ? `<div class="section-title">${tr("inspect.fields")}</div><pre class="inspect-strings">${esc(strings.join(NL))}${info.strings_truncated ? NL + "…" : ""}</pre>` : ""}
+    ${strings.length ? `<div class="section-title">${tr("inspect.fields")}</div><pre class="inspect-strings">${strings.map((text) => fieldIconLabel("field", text)).join(NL)}${info.strings_truncated ? NL + "…" : ""}</pre>` : ""}
     <details class="inspect-hex">
       <summary>${tr("inspect.hex")}</summary>
       <pre>${esc((info.hex_lines || []).join(NL))}${info.hex_truncated ? NL + "…" : ""}</pre>
@@ -1804,7 +1808,7 @@ function renderGmpPreview(data, container) {
     const position = (unit.position || []).map((value) => Number(value).toFixed(1)).join(", ");
     const label = unit.name || `${tr("common.unit")} ${unit.id}`;
     return `<div class="gmp-unit" title="${esc(label)}">
-      <span class="gmp-unit-name">${esc(label)}</span>
+      <span class="gmp-unit-name">${fieldIconLabel("component", label, [unit.eid, unit.id, unit.model])}</span>
       <span class="gmp-unit-meta">${esc(String(unit.eid ?? unit.type ?? "—"))} · ${esc(position)}</span>
     </div>`;
   }).join("");
@@ -1829,9 +1833,9 @@ function renderGmpPreview(data, container) {
       if (file) openViewer(file);
     });
   }
-  $("preview-note").textContent = units.length
-    ? tr("gmp.note", { count: Number(data.unit_count || 0).toLocaleString() })
-    : tr("gmp.noteNoUnits");
+  $("preview-note").textContent = data.unit_data_unsupported
+    ? tr("map.msg.unsupportedUnits")
+    : units.length ? tr("gmp.note", { count: Number(data.unit_count || 0).toLocaleString() }) : tr("gmp.noteNoUnits");
 }
 
 function xnPreviewText(data) {
@@ -2059,7 +2063,7 @@ function metadataRows(info) {
     [tr("drawer.meta.compressedHash"), info.packed_hash],
     [tr("drawer.meta.originalHash"), info.unpacked_hash],
   ];
-  return rows.map(([key, value]) => `<div class="k">${esc(key)}</div><div class="v">${esc(value)}</div>`).join("");
+  return rows.map(([key, value]) => `<div class="k">${fieldIconLabel("field", key)}</div><div class="v">${esc(value)}</div>`).join("");
 }
 
 function quickOpenActions() {
@@ -2720,6 +2724,7 @@ function mapUnits() {
   if (!data) return [];
   const axis = mapAxis();
   return (data.units || []).filter((unit) => {
+    if (unit.visible === false) return false;
     const pos = unit.position;
     if (!Array.isArray(pos) || pos.length < 3) return false;
     const x = pos[0];
@@ -2770,7 +2775,7 @@ function renderMapStage(file, data) {
   stage.innerHTML = `<canvas id="map-canvas" class="map-canvas" aria-label="${tr("map.canvas")}"></canvas>
     <div class="map-hud" id="map-hud"></div>
     <div class="map-legend" id="map-legend"></div>
-    ${!data.unit_count || !data.bounds ? `<div class="map-empty">${tr("gmp.empty")}</div>` : ""}`;
+    ${!data.unit_count || !data.bounds ? `<div class="map-empty">${tr(data.unit_data_unsupported ? "map.msg.unsupportedUnits" : "gmp.empty")}</div>` : ""}`;
   $("viewer-foot").innerHTML = mapFoot();
   mapView.stage = stage;
   mapView.canvas = $("map-canvas");
@@ -2791,6 +2796,9 @@ function renderMapStage(file, data) {
   }
   if (data.binary_chunks) {
     mapMsgAdd("warn", tr("map.msg.warning"), tr("map.msg.binary", { count: data.binary_chunks }));
+  }
+  if (data.unit_data_unsupported) {
+    mapMsgAdd("warn", tr("map.msg.warning"), tr("map.msg.unsupportedUnits"));
   }
   updateMapMode();
   if (mapView.is3d) {
@@ -3392,6 +3400,7 @@ const map3d = {
   canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null,
   uViewProj: null, uPointView: null, uPointSize: null, uLineView: null, uLineColor: null,
   uniforms: {}, textureCache: new Map(), texturePending: new Map(),
+  scene: null, sceneReady: false, animationStart: 0, animated: false,
   models: new Map(), units: [], points: null, pointCount: 0, grid: null, gridCount: 0, hiddenModels: new Set(),
   camera: { yaw: 0.9, pitch: 0.9, distance: 100, fit: 100, target: [0, 0, 0] },
   dragging: false, panning: false, dragX: 0, dragY: 0,
@@ -3412,6 +3421,7 @@ out vec3 v_norm;
 out vec3 v_local;
 out vec3 v_world;
 out vec3 v_tiling;
+out vec3 v_scale;
 out vec2 v_uv;
 out vec4 v_paint1;
 out vec4 v_paint2;
@@ -3422,12 +3432,15 @@ void main() {
   mat3 rot = mat3(a_model);
   mat3 nmat = transpose(inverse(rot));
   v_norm = normalize(nmat * a_norm);
-  vec3 tangent = normalize(nmat * a_tangent.xyz);
+  vec3 tangent = rot * a_tangent.xyz;
+  tangent = normalize(tangent - v_norm * dot(v_norm, tangent));
   v_tangent = tangent;
-  v_bitangent = cross(v_norm, tangent) * a_tangent.w;
+  float mirror = determinant(rot) < 0.0 ? -1.0 : 1.0;
+  v_bitangent = cross(v_norm, tangent) * a_tangent.w * mirror;
   v_local = a_pos;
   v_world = (a_model * vec4(a_pos, 1.0)).xyz;
   v_tiling = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz)) * ((a_pos / 2.64) * 0.5 + 0.5);
+  v_scale = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz));
   v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
   v_paint1 = a_paint1;
   v_paint2 = a_paint2;
@@ -3441,6 +3454,7 @@ in vec3 v_norm;
 in vec3 v_local;
 in vec3 v_world;
 in vec3 v_tiling;
+in vec3 v_scale;
 in vec2 v_uv;
 in vec4 v_paint1;
 in vec4 v_paint2;
@@ -3500,6 +3514,39 @@ uniform vec4 u_ei;
 uniform float u_intensity_a;
 uniform float u_glass;
 uniform float u_glass_opacity;
+uniform float u_water_kind;
+uniform float u_time;
+uniform float u_roughness;
+uniform float u_metalness;
+uniform float u_mix_map;
+uniform float u_normal_slot;
+uniform float u_glass_pattern;
+uniform float u_pattern_opacity;
+uniform float u_pattern_color_key;
+uniform vec4 u_design_color;
+uniform vec4 u_glass_pattern_para;
+uniform float u_glass_pattern_rotation;
+uniform vec4 u_water_variable;
+uniform vec4 u_water_speed;
+uniform vec4 u_water_parameter;
+uniform vec4 u_water_uv;
+uniform vec4 u_water_options;
+uniform vec4 u_water_foam;
+uniform vec4 u_water_ice;
+uniform vec4 u_foam_color;
+uniform vec4 u_fall_speed;
+uniform vec4 u_fall_tiling;
+uniform vec4 u_fall_rough;
+uniform vec4 u_fall_clip;
+uniform vec2 u_fall_alpha;
+uniform sampler2D u_scene_color;
+uniform sampler2D u_scene_depth;
+uniform float u_has_scene;
+uniform vec2 u_scene_size;
+uniform vec2 u_near_far;
+uniform mat4 u_scene_view_proj;
+uniform vec3 u_view_right;
+uniform vec3 u_view_up;
 out vec4 out_color;
 vec3 mapSrgb2Lin(vec3 c) {
   return pow(max(c, vec3(0.0)), vec3(2.2));
@@ -3516,7 +3563,7 @@ vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, 
   float n_dot_v = max(abs(dot(N, V)), 0.001);
   float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
   float v_dot_h = clamp(dot(V, H), 0.0, 1.0);
-  vec3 diff_col = albedo;
+  vec3 diff_col = albedo * (1.0 - metalness);
   vec3 spec_col = mix(vec3(0.04), albedo, metalness);
   float r2 = max(0.08, roughness);
   r2 *= r2;
@@ -3553,6 +3600,47 @@ vec3 mapTonemap(vec3 x) {
   float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
   return (r * 1.2 - lum) * u_weather;
 }
+float mapViewDepth(float depth) {
+  return u_near_far.x * u_near_far.y / max(u_near_far.y - depth * (u_near_far.y - u_near_far.x), 0.00001);
+}
+vec3 mapSurfaceNormal(vec3 sampled, vec3 geometry) {
+  float facing = gl_FrontFacing ? 1.0 : -1.0;
+  vec3 tangent = v_tangent * facing - geometry * dot(v_tangent * facing, geometry);
+  if (dot(tangent, tangent) < 0.00001) {
+    tangent = cross(abs(geometry.y) < 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0), geometry);
+  }
+  tangent = normalize(tangent);
+  float handedness = dot(cross(geometry, tangent), v_bitangent * facing) < 0.0 ? -1.0 : 1.0;
+  vec3 bitangent = normalize(cross(geometry, tangent)) * handedness;
+  return normalize(tangent * sampled.x + bitangent * sampled.y + geometry * sampled.z);
+}
+vec4 mapSourceSample(sampler2D source, vec2 coordinate) {
+  // 上传时已翻转图片，源着色器的 UV 运算完成后再统一转换采样坐标。
+  return texture(source, vec2(coordinate.x, 1.0 - coordinate.y));
+}
+vec3 mapSceneReflection(vec3 normal, vec3 view_dir, float roughness) {
+  vec3 ray = reflect(-view_dir, normal);
+  vec3 environment = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, ray.y));
+  if (u_has_scene < 0.5) return environment;
+  // 沿反射方向查询不透明场景；离屏或没有命中时保留环境光。
+  float stride = max(0.15, u_near_far.y / 800.0);
+  for (int index = 1; index <= 24; index += 1) {
+    float distance_ray = stride * float(index) * (1.0 + float(index) * 0.12);
+    vec4 projected = u_scene_view_proj * vec4(v_world + normal * 0.025 + ray * distance_ray, 1.0);
+    if (projected.w <= 0.0) break;
+    vec3 ndc = projected.xyz / projected.w;
+    vec2 screen = ndc.xy * 0.5 + 0.5;
+    if (any(lessThan(screen, vec2(0.0))) || any(greaterThan(screen, vec2(1.0)))) break;
+    float depth = texture(u_scene_depth, screen).r;
+    float delta = mapViewDepth(ndc.z * 0.5 + 0.5) - mapViewDepth(depth);
+    if (depth < 0.99999 && delta > 0.0 && delta < stride * (2.0 + float(index) * 0.12)) {
+      float edge = smoothstep(0.0, 0.08, min(min(screen.x, screen.y), min(1.0 - screen.x, 1.0 - screen.y)));
+      vec3 reflected = mapSrgb2Lin(texture(u_scene_color, screen).rgb);
+      return mix(environment, reflected, edge * (1.0 - roughness));
+    }
+  }
+  return environment;
+}
 void main() {
   vec2 uv = v_uv;
   uv -= 0.5;
@@ -3564,7 +3652,7 @@ void main() {
   }
   uv += 0.5;
   uv += u_texture_para.zw;
-  if (u_tiling > 0.5) {
+  if (u_tiling > 0.5 && u_water_kind < 0.5) {
     vec3 an = abs(normalize(v_norm));
     vec2 t = v_tiling.yz;
     if (an.x >= an.y && an.x >= an.z) t = v_tiling.yz;
@@ -3576,15 +3664,107 @@ void main() {
   vec4 tex1 = u_has_tex1 > 0.5 ? texture(u_tex1, uv) : vec4(0.5, 0.5, 1.0, 1.0);
   vec4 tex2 = u_has_tex2 > 0.5 ? texture(u_tex2, uv) : vec4(0.0, 0.5, 0.0, 0.0);
   vec4 tex3s = u_has_tex3 > 0.5 ? texture(u_tex3, uv) : vec4(0.0);
+  vec3 geometry = normalize(v_norm);
+  if (!gl_FrontFacing) geometry = -geometry;
+  vec3 normal = geometry;
+  if (u_water_kind < 0.5 && ((u_normal_slot >= 0.0 && u_normal_slot < 0.5 && u_has_tex0 > 0.5) || (u_normal_slot > 0.5 && u_has_tex1 > 0.5))) {
+    vec3 n = (u_normal_slot < 0.5 ? tex0.xyz : tex1.xyz) * 2.0 - 1.0;
+    if (dot(n, n) < 0.001) n = vec3(0, 0, 1);
+    n.xy *= u_normal_intensity;
+    normal = mapSurfaceNormal(normalize(n), geometry);
+  }
+  vec3 view_dir = normalize(u_camera - v_world);
   vec4 m0 = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? vec4(v_paint1.rgb, 1.0) : u_mask0;
   vec4 m1 = u_use_paint > 0.5 && v_paint2.r >= 0.0 ? vec4(v_paint2.rgb, 1.0) : u_mask1;
   vec4 m2 = u_use_paint > 0.5 && v_paint3.r >= 0.0 ? vec4(v_paint3.rgb, 1.0) : u_mask2;
   vec3 color;
   bool color_linear = false;
   float alpha;
-  if (u_glass > 0.5) {
+  float roughness = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.045, 1.0) : clamp(u_roughness, 0.045, 1.0);
+  float metalness = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : clamp(u_metalness, 0.0, 1.0);
+  float ao = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+  float water_transmission = 0.0;
+  vec3 transmitted = vec3(0.0);
+  vec3 liquid_emissive = vec3(0.0);
+  if (u_water_kind > 3.5) {
+    // 瀑布的 Tex3/Tex4/Tex5 对应流动遮罩、噪声和透明边缘。
+    vec2 source_uv = vec2(v_uv.x, 1.0 - v_uv.y);
+    vec2 scale_uv = u_tiling > 0.5 ? v_scale.xz : vec2(1.0);
+    vec2 noise_uv = source_uv * u_fall_tiling.z + u_time * u_fall_speed.zw;
+    float noise = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, noise_uv).r : 0.0;
+    vec2 main_uv = source_uv * scale_uv * u_fall_tiling.xy + noise * (u_tiling > 0.5 ? 0.015 : 0.05) + u_time * u_fall_speed.xy;
+    float flow = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, main_uv).r : 0.5;
+    float gradient = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, source_uv * scale_uv * u_fall_tiling.z).r : 0.0;
+    float weight = clamp(pow(1.0 - flow, 2.0) + pow(clamp(source_uv.y, 0.0, 1.0), 3.0) * gradient * u_fall_tiling.w, 0.0, 1.0);
+    color = mapSrgb2Lin(mix(m0.rgb, m1.rgb, weight));
+    color_linear = true;
+    float edge = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, source_uv).r : 1.0;
+    alpha = u_base_color.a * smoothstep(u_fall_alpha.x, max(u_fall_alpha.x + 0.00001, u_fall_alpha.y), edge) * v_paint1.a * u_alpha_mtl;
+    roughness = clamp(mix(u_fall_rough.y, u_fall_rough.x, weight) * u_intensity_rgb.g, 0.045, 1.0);
+    metalness = clamp(u_fall_rough.z * u_intensity_rgb.b, 0.0, 1.0);
+    liquid_emissive = weight * weight * u_fall_rough.w * m1.rgb
+      + m2.rgb * u_fall_clip.z * (1.0 - step(pow(max(1.0 - flow, 0.0), u_fall_clip.x), u_fall_clip.y)) * u_fall_clip.w;
+  } else if (u_water_kind > 0.5) {
+    vec2 source_uv = vec2(v_uv.x, 1.0 - v_uv.y);
+    vec2 water_uv = u_water_options.x > 0.5 ? source_uv * u_water_uv.xy + u_water_uv.zw + u_time * u_water_options.yz : v_world.xz;
+    vec3 n = vec3(0, 0, 1);
+    if (u_water_kind > 2.5) {
+      vec2 centered = source_uv - 0.5;
+      vec2 polar = vec2(atan(centered.y, centered.x) / 6.2831853 + 0.5, length(centered) * 2.0);
+      polar += u_time * u_water_parameter.zw;
+      float rotation = radians(u_time * u_water_parameter.x);
+      vec2 rotated = vec2(centered.x * cos(rotation) - centered.y * sin(rotation), centered.x * sin(rotation) + centered.y * cos(rotation));
+      vec3 n0 = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, polar * u_water_options.w).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
+      vec3 n1 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, (rotated + 0.5) * u_water_parameter.y).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
+      n = normalize(vec3(n0.xy * u_intensity_rgb.r + n1.xy * u_intensity_rgb.g, n0.z * n1.z));
+      vec3 blended = mapSurfaceNormal(n, geometry);
+      vec3 view_forward = normalize(cross(u_view_right, u_view_up));
+      vec2 reflected_uv = vec2(dot(blended, u_view_right), dot(blended, view_forward)) * u_water_foam.x;
+      vec3 sampled = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, reflected_uv).rgb : vec3(0.5);
+      float luminance = dot(sampled, vec3(0.2125, 0.7154, 0.0721));
+      color = mapSrgb2Lin(mix(m0.rgb, m1.rgb, luminance));
+      color = mix(color, mapSrgb2Lin(m2.rgb), clamp(pow(length(centered), u_water_foam.y), 0.0, 1.0));
+      alpha = mix(1.0, smoothstep(0.5, 0.7, 1.0 - length(centered)), u_water_foam.z) * v_paint1.a * u_alpha_mtl;
+    } else {
+      vec3 n0 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, water_uv * u_water_variable.z + u_water_speed.xy * u_time * 0.1).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
+      vec3 n1 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, water_uv * u_water_variable.w + u_water_speed.yw * u_time * 0.1).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
+      n = normalize(vec3(n0.xy + n1.xy, n0.z * n1.z));
+      n.xy *= u_normal_intensity;
+      vec2 screen = gl_FragCoord.xy / u_scene_size;
+      float background_depth = u_has_scene > 0.5 ? texture(u_scene_depth, screen).r : 1.0;
+      float thickness = background_depth < 0.99999 ? max(0.0, mapViewDepth(background_depth) - mapViewDepth(gl_FragCoord.z)) : 1.0;
+      vec2 refract_uv = clamp(screen + n.xy * min(thickness, 1.0) * 0.02, vec2(0.001), vec2(0.999));
+      if (u_has_scene > 0.5 && texture(u_scene_depth, refract_uv).r < gl_FragCoord.z) refract_uv = screen;
+      transmitted = u_has_scene > 0.5 ? texture(u_scene_color, refract_uv).rgb : vec3(0.2, 0.3, 0.4);
+      float weight = clamp(pow(max(thickness + u_water_variable.x, 0.0001), u_water_variable.y), 0.0, 1.0);
+      vec3 lower = u_water_kind > 1.5 ? m0.rgb : u_down_color.rgb;
+      vec3 upper = u_water_kind > 1.5 ? m1.rgb : u_up_color.rgb;
+      color = mapSrgb2Lin(mix(lower, upper, weight)) * 1.3;
+      water_transmission = u_has_scene * weight * (1.0 - clamp(u_water_ice.x, 0.0, 1.0));
+      float noise = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, source_uv * 2.0).r : 0.0;
+      float wave_u = 1.0 - thickness - u_intensity_a + sin(u_time * 0.5 + noise * 20.0) * u_water_foam.x;
+      float foam = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, vec2(clamp(wave_u, 0.0, 1.0), 0.0)).r : 0.0;
+      float ripple = u_has_tex3 > 0.5 ? mapSourceSample(u_tex3, water_uv * 0.008 + u_time * 0.003).r * 0.4 : 0.0;
+      liquid_emissive = step(0.15, foam * ripple) * (u_water_kind > 1.5 ? u_foam_color.rgb : vec3(1.0));
+      if (u_water_kind > 1.5 && u_water_ice.y > 0.0) {
+        float ice = smoothstep(u_water_ice.z, 1.0, ripple) * u_water_ice.y * u_water_ice.w;
+        color = mix(color, mapSrgb2Lin(m2.rgb), clamp(ice, 0.0, 1.0));
+      }
+      alpha = (u_water_kind > 1.5 ? mix(smoothstep(0.5, 0.8, 1.0 - foam), 1.0, u_water_foam.y) : 1.0) * v_paint1.a * u_alpha_mtl;
+    }
+    normal = u_water_kind > 2.5 ? geometry : mapSurfaceNormal(normalize(n), geometry);
+    color_linear = true;
+  } else if (u_glass > 0.5) {
     color = u_base_color.rgb * u_tint_value;
-    alpha = u_base_color.a * v_paint1.a * u_glass_opacity;
+    alpha = u_base_color.a * v_paint1.a * u_glass_opacity * u_alpha_mtl;
+    if (u_glass_pattern > 0.5 && u_has_tex3 > 0.5) {
+      vec2 pattern_uv = v_uv * u_glass_pattern_para.xy - 0.5;
+      float angle = radians(u_glass_pattern_rotation);
+      pattern_uv = vec2(pattern_uv.x * cos(angle) - pattern_uv.y * sin(angle), pattern_uv.x * sin(angle) + pattern_uv.y * cos(angle));
+      vec4 pattern = texture(u_tex3, pattern_uv + 0.5 + u_glass_pattern_para.zw);
+      color = mix(color, u_design_color.rgb, pattern.a * u_pattern_color_key);
+      alpha = u_base_color.a * v_paint1.a * u_alpha_mtl * mix(u_glass_opacity, u_pattern_opacity, pattern.a);
+    }
   } else {
     vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
     color = painted;
@@ -3596,10 +3776,10 @@ void main() {
       color = mix(u_down_color.rgb, u_up_color.rgb, 0.5) + mapSrgb2Lin(vig.rgb) * u_intensity_a;
       color_linear = true;
     } else if (u_color_mode > 5.5) {
-      vec3 eye_dir = normalize(u_camera - v_world);
-      vec3 cap_t = normalize(cross(eye_dir, vec3(0.0, 1.0, 0.0)));
-      vec3 cap_b = cross(eye_dir, cap_t);
-      vec3 geo_n = normalize(v_norm);
+      vec3 eye_dir = view_dir;
+      vec3 cap_t = normalize(cross(eye_dir, u_view_up));
+      vec3 cap_b = normalize(cross(eye_dir, cap_t));
+      vec3 geo_n = normal;
       vec2 cap_uv = vec2(dot(geo_n, cap_t), dot(geo_n, cap_b)) * 0.5 + 0.5;
       vec4 cap = u_has_tex0 > 0.5 ? texture(u_tex0, cap_uv) : vec4(1.0);
       vec3 below = mapSrgb2Lin(mix(m0.rgb, m1.rgb, cap.b));
@@ -3641,8 +3821,8 @@ void main() {
     alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
     if (u_opacity_tex > 1.5) alpha = 1.0;
     else if (u_opacity_tex > 0.5) alpha = tex1.a;
-    if (u_color_mode > 5.5) alpha = u_alpha_mtl;
-    alpha *= u_base_color.a * v_paint1.a;
+    if (u_color_mode > 5.5) alpha = 1.0;
+    alpha *= u_base_color.a * v_paint1.a * u_alpha_mtl;
   }
   vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : mapSrgb2Lin(color);
   if (u_pattern_mode > 0.5 && u_has_tex3 > 0.5) {
@@ -3657,7 +3837,7 @@ void main() {
     vec3 tiling_col = mapSrgb2Lin(pattern.r * u_pattern_color.rgb);
     albedo_lin = mix(albedo_lin, tiling_col, pattern.r * u_pattern_color.a);
   }
-  vec3 emissive = vec3(0.0);
+  vec3 emissive = liquid_emissive;
   if (u_emissive_kind > 0.5 && u_emissive_kind < 1.5) {
     emissive = mapSrgb2Lin(tex2.a * u_emissive_color.rgb * u_intensity_a);
   } else if (u_emissive_kind > 1.5 && u_emissive_kind < 2.5) {
@@ -3688,14 +3868,6 @@ void main() {
     albedo_lin += e;
   }
   if (alpha < u_alpha_ref) discard;
-  vec3 normal = normalize(v_norm);
-  if (u_has_tex1 > 0.5 && u_unlit < 0.5) {
-    vec3 n = tex1.xyz * 2.0 - 1.0;
-    if (dot(n, n) < 0.001) n = vec3(0.0, 0.0, 1.0);
-    n.xy *= u_normal_intensity;
-    normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_norm * n.z);
-  }
-  vec3 view_dir = normalize(u_camera - v_world);
   float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
   emissive += border_f * u_border_color.rgb * u_border.y;
   if (u_color_mode > 6.5) {
@@ -3712,12 +3884,16 @@ void main() {
     vec3 simple_sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, normal.y));
     final_lin = albedo_lin * max(dot(normal, MAP_SUN_DIR), 0.0) / 3.14159265 * MAP_SUN_COLOR + simple_sky * albedo_lin + emissive;
   } else {
-    float roughness = u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0) : 0.5;
-    float metalness = u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : 0.0;
-    float ao = u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
     final_lin = mapPbrShade(normal, normalize(u_camera - v_world), albedo_lin, roughness, metalness, ao) + emissive;
   }
-  out_color = vec4(mapLin2Srgb(mapTonemap(final_lin)), clamp(alpha, 0.0, 1.0));
+  if (u_glass > 0.5 || (u_water_kind > 0.5 && u_water_kind < 2.5)) {
+    float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(normal, view_dir), 0.0, 1.0), 5.0);
+    float reflect_weight = u_glass > 0.5 ? 2.0 : clamp(u_water_ice.x, 0.0, 1.0) * 2.0;
+    final_lin += mapSceneReflection(normal, view_dir, roughness) * fresnel * reflect_weight;
+  }
+  vec3 final_color = mapLin2Srgb(mapTonemap(final_lin));
+  if (water_transmission > 0.0) final_color = mix(final_color, transmitted, water_transmission);
+  out_color = vec4(final_color, clamp(alpha, 0.0, 1.0));
 }`;
 
 const MAP3D_POINT_VS = `#version 300 es
@@ -3812,8 +3988,26 @@ function map3DUnitMatrix(unit) {
   return gimTrsMatrix([
     Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0,
     quat[0], quat[1], quat[2], quat[3],
-    Number(scale[0]) || 1, Number(scale[1]) || 1, Number(scale[2]) || 1,
+    map3DNumber(scale[0], 1), map3DNumber(scale[1], 1), map3DNumber(scale[2], 1),
   ]);
+}
+
+function map3DNumber(value, fallback) {
+  if (value === null || value === undefined) return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function map3DModelKey(unit) {
+  if (unit.alpha !== null && unit.alpha !== undefined && Number(unit.alpha) < 1) {
+    return JSON.stringify([unit.model, unit.material || "", true]);
+  }
+  return unit.material ? JSON.stringify([unit.model, unit.material]) : unit.model;
+}
+
+function map3DValidPaint(color) {
+  return Array.isArray(color) && color.length >= 3
+    && color.slice(0, 3).every((value) => Number.isFinite(value) && value >= 0 && value <= 255);
 }
 
 function map3DModelColor(model) {
@@ -3845,11 +4039,11 @@ function map3DModelColor(model) {
 
 function map3DUnitColor(unit) {
   const color = unit.color;
-  if (Array.isArray(color) && color.length >= 3) {
+  if (map3DValidPaint(color)) {
     const r = Number(color[0]) || 0;
     const g = Number(color[1]) || 0;
     const b = Number(color[2]) || 0;
-    if (r + g + b > 30) return [r / 255, g / 255, b / 255, 1];
+    return [r / 255, g / 255, b / 255, 1];
   }
   const fallback = map3DModelColor(unit.model);
   return [fallback[0], fallback[1], fallback[2], 0.5];
@@ -3865,7 +4059,7 @@ function map3DUnitPaint(unit) {
     const r = Array.isArray(color) ? Number(color[0]) || 0 : 0;
     const g = Array.isArray(color) ? Number(color[1]) || 0 : 0;
     const b = Array.isArray(color) ? Number(color[2]) || 0 : 0;
-    out.push(r + g + b > 30 ? [r / 255, g / 255, b / 255, alpha] : [-1, -1, -1, alpha]);
+    out.push(map3DValidPaint(color) ? [r / 255, g / 255, b / 255, alpha] : [-1, -1, -1, alpha]);
   }
   return out;
 }
@@ -3962,7 +4156,7 @@ function fitMap3D(data) {
   requestMap3DDraw();
 }
 
-function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
+function map3DBuildModel(model, mesh, units, materials, texturePaths, objects, key = model) {
   const gl = map3d.gl;
   const vertices = mesh.vertices || [];
   const faces = mesh.indices || [];
@@ -3976,7 +4170,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     positions[index * 3 + 2] = Number(vertex[2]) || 0;
     const normal = (mesh.normals && mesh.normals[index]) || [0, 1, 0];
     normals[index * 3] = Number(normal[0]) || 0;
-    normals[index * 3 + 1] = Number(normal[1]) || 1;
+    normals[index * 3 + 1] = map3DNumber(normal[1], 1);
     normals[index * 3 + 2] = Number(normal[2]) || 0;
   }
   const uvSource = mesh.uvs || [];
@@ -4078,7 +4272,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
   gl.bindVertexArray(null);
-  const previous = map3d.models.get(model);
+  const previous = map3d.models.get(key);
   if (previous) {
     gl.deleteVertexArray(previous.vao);
     gl.deleteBuffer(previous.positionBuffer);
@@ -4089,6 +4283,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     gl.deleteBuffer(previous.tangentBuffer);
   }
   const materialList = (Array.isArray(materials) ? materials : []).map((item) => (item && typeof item === "object" ? item : {}));
+  if (materialList.some((item) => /^(water|water_color|water_simple|waterfall)$/.test(item.shader_kind))) map3d.animated = true;
   const submeshes = Array.isArray(mesh.submeshes) ? mesh.submeshes : [];
   const groups = [];
   for (const sub of submeshes) {
@@ -4120,6 +4315,25 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     (Number(min[1]) + Number(max[1])) / 2 || 0,
     (Number(min[2]) + Number(max[2])) / 2 || 0,
   ];
+  const instanceCenters = new Float32Array(units.length * 3);
+  const instanceMirrored = new Uint8Array(units.length);
+  const instanceRuns = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const base = index * 28;
+    for (let axis = 0; axis < 3; axis += 1) {
+      instanceCenters[index * 3 + axis] = instances[base + axis] * bboxCenter[0]
+        + instances[base + 4 + axis] * bboxCenter[1]
+        + instances[base + 8 + axis] * bboxCenter[2] + instances[base + 12 + axis];
+    }
+    const determinant = instances[base] * (instances[base + 5] * instances[base + 10] - instances[base + 6] * instances[base + 9])
+      - instances[base + 4] * (instances[base + 1] * instances[base + 10] - instances[base + 2] * instances[base + 9])
+      + instances[base + 8] * (instances[base + 1] * instances[base + 6] - instances[base + 2] * instances[base + 5]);
+    const mirrored = determinant < 0;
+    instanceMirrored[index] = mirrored ? 1 : 0;
+    const previousRun = instanceRuns[instanceRuns.length - 1];
+    if (previousRun && previousRun.mirrored === mirrored) previousRun.count += 1;
+    else instanceRuns.push({ first: index, count: 1, mirrored });
+  }
   const halfDiag = Math.hypot(
     ((Number(max[0]) || 0) - (Number(min[0]) || 0)) / 2,
     ((Number(max[1]) || 0) - (Number(min[1]) || 0)) / 2,
@@ -4130,7 +4344,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
   for (const unit of units) {
     const position = unit.position || [0, 0, 0];
     const scale = unit.scale || [1, 1, 1];
-    const unitScale = Math.max(Math.abs(Number(scale[0]) || 1), Math.abs(Number(scale[1]) || 1), Math.abs(Number(scale[2]) || 1));
+    const unitScale = Math.max(Math.abs(map3DNumber(scale[0], 1)), Math.abs(map3DNumber(scale[1], 1)), Math.abs(map3DNumber(scale[2], 1)));
     const reach = (Math.hypot(
       (Number(position[0]) || 0) - center[0],
       (Number(position[1]) || 0) - center[1],
@@ -4138,7 +4352,8 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     ) + localRadius * unitScale) * 1.05;
     if (reach > cullRadius) cullRadius = reach;
   }
-  map3d.models.set(model, {
+  map3d.models.set(key, {
+    model,
     vao,
     positionBuffer,
     normalBuffer,
@@ -4148,6 +4363,11 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
     tangentBuffer,
     units,
     instances,
+    instanceCenters,
+    instanceMirrored,
+    instanceRuns,
+    instanceOffset: 0,
+    transparent: units.some((unit) => unit.alpha !== null && unit.alpha !== undefined && Number(unit.alpha) < 1),
     materials: materialList,
     groups,
     textures: [],
@@ -4165,7 +4385,7 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects) {
       Math.max(0.0001, ((Number(max[2]) || 0) - (Number(min[2]) || 0)) / 2),
     ],
   });
-  map3DLoadMaterialTextures(model, materialList, texturePaths);
+  map3DLoadMaterialTextures(key, materialList, texturePaths);
 }
 
 function map3DLoadTexture(path, done) {
@@ -4260,8 +4480,10 @@ function map3DLoadMaterialTextures(model, materials, texturePaths) {
     requestMap3DDraw();
   };
   materials.forEach((material, index) => {
-    const slots = [material.tex0, material.tex1, material.tex2, material.tex3];
-    if (index === 0 && fallback[0]) slots[0] = slots[0] || fallback[0];
+    const slots = material.shader_kind === "waterfall" && Array.isArray(material.waterfall_textures)
+      ? [...material.waterfall_textures, null] : [material.tex0, material.tex1, material.tex2, material.tex3];
+    if (material.shader_kind === "glass") slots[3] = material.pattern_tex || slots[3];
+    if (index === 0 && fallback[0] && (!material.shader_kind || material.shader_kind === "standard")) slots[0] = slots[0] || fallback[0];
     slots.forEach((path, slot) => {
       if (!path) return;
       map3DLoadTexture(path, (texture) => apply(index, slot, texture));
@@ -4287,16 +4509,18 @@ function map3DApplyMaterial(entry, group) {
   }
   const tex = entry.textures[group.material] || [];
   for (let index = 0; index < 4; index += 1) {
-    const texture = (index === 1 && tex[index] && tex[index].__small) ? null : (tex[index] || null);
+    const texture = tex[index] || null;
     gl.activeTexture(gl.TEXTURE0 + index);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1f(u["hasTex" + index], texture ? 1 : 0);
   }
   const surface = String(mat.surface || "").toLowerCase();
+  const kind = mat.shader_kind || (surface.includes("water") ? "water" : surface.includes("glass") ? "glass" : "standard");
+  const waterKind = ({ water: 1, water_color: 2, water_simple: 3, waterfall: 4 })[kind] || 0;
   const changeColor = surface.includes("change_color");
   const weighted = changeColor && (surface.includes("object") || surface.includes("tiling"));
   gl.uniform1f(u.colorMode, weighted ? 3 : (Number(mat.color_mode) || 0));
-  gl.uniform1f(u.usePaint, changeColor ? 1 : 0);
+  gl.uniform1f(u.usePaint, changeColor || kind === "water_color" || kind === "waterfall" || kind === "jelly" ? 1 : 0);
   gl.uniform1f(u.axis, Number(mat.axis) || 0);
   gl.uniform1f(u.lerpCenter, Number(mat.lerp_center) || 0);
   const contrast = Number(mat.lerp_contrast);
@@ -4313,9 +4537,45 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform1f(u.intensityA, Number(intensity[3]) || 0);
   gl.uniform1f(u.emissiveKind, Number(mat.emissive_kind) || 0);
   gl.uniform1f(u.lerpLinear, Number(mat.lerp_linear) || 0);
-  const glassOpacity = Number(mat.glass_opacity);
-  gl.uniform1f(u.glassOpacity, Number.isFinite(glassOpacity) && glassOpacity > 0 ? glassOpacity : 0.6);
-  gl.uniform1f(u.glass, surface.includes("glass") || surface.includes("water") ? 1 : 0);
+  gl.uniform1f(u.glassOpacity, map3DNumber(mat.glass_opacity, 1));
+  gl.uniform1f(u.glass, kind === "glass" ? 1 : 0);
+  gl.uniform1f(u.waterKind, waterKind);
+  gl.uniform1f(u.roughness, map3DNumber(mat.roughness, 0.5));
+  gl.uniform1f(u.metalness, map3DNumber(mat.metalness, 0));
+  gl.uniform1f(u.mixMap, mat.mix_map === false ? 0 : 1);
+  gl.uniform1f(u.normalSlot, mat.normal_slot === "tex0" ? 0 : (mat.normal_slot === "" ? -1 : 1));
+  gl.uniform1f(u.glassPattern, mat.pattern_enabled ? 1 : 0);
+  gl.uniform1f(u.patternOpacity, map3DNumber(mat.pattern_op, map3DNumber(mat.glass_opacity, 1)));
+  gl.uniform1f(u.patternColorKey, map3DNumber(mat.pattern_color_key, 0));
+  const vector = (location, values, defaults) => {
+    const value = Array.isArray(values) ? values : defaults;
+    gl.uniform4f(location, ...defaults.map((fallback, index) => map3DNumber(value[index], fallback)));
+  };
+  vector(u.waterVariable, mat.variable, [1, -0.7, 0.008, 0.007]);
+  vector(u.waterSpeed, mat.speed, [0.2, 0.1, 0.1, 0]);
+  vector(u.waterParameter, mat.parameter, [0, 1, 0, 0]);
+  vector(u.waterUv, mat.uv_para, [1, 1, 0, 0]);
+  vector(u.waterOptions, [mat.uv_sample_key ? 1 : 0, mat.speed_u, mat.speed_v, mat.water_tiling], [0, 0, 0, 1]);
+  vector(u.waterFoam, waterKind === 3 ? [mat.specular_scale, mat.col_pow, mat.opacity_enable, 0] : [mat.foam_intensity, mat.foam_alpha, 0, 0], [0.5, 1, 0, 0]);
+  vector(u.waterIce, mat.ice_param, [0.4, 0, 0.2, 1]);
+  vector(u.foamColor, mat.foam_color, [1, 1, 1, 1]);
+  vector(u.designColor, mat.design_color, [1, 1, 1, 1]);
+  vector(u.glassPatternPara, mat.pattern_para, [1, 1, 0, 0]);
+  gl.uniform1f(u.glassPatternRotation, map3DNumber(mat.pattern_rotation, 0));
+  vector(u.fallSpeed, [mat.speed_main_tex_u, mat.speed_main_tex_v, mat.speed_noise_tex_u, mat.speed_noise_tex_v], [0, 0, 0, 0]);
+  vector(u.fallTiling, [mat.tiling_main_tex_x, mat.tiling_main_tex_y, mat.tiling_noise_tex, mat.noise_remap_max], [1, 1, 1, 1]);
+  vector(u.fallRough, [mat.rough_low, mat.rough_high, mat.metallic, mat.emis_strength], [0.5, 0.5, 0, 0]);
+  vector(u.fallClip, [mat.clip_layer_power, mat.clip_layer_step, mat.clip_layer_mult, mat.clip_layer_emis_mult], [1, 0, 0, 0]);
+  gl.uniform2f(u.fallAlpha, map3DNumber(mat.alpha_step_min, 0), map3DNumber(mat.alpha_step_max, 1));
+  gl.uniform1f(u.time, (performance.now() - map3d.animationStart) / 1000);
+  gl.uniform1f(u.hasScene, map3d.sceneReady ? 1 : 0);
+  gl.uniform2f(u.sceneSize, map3d.canvas.width, map3d.canvas.height);
+  gl.uniform2f(u.nearFar, Math.max(0.5, map3d.camera.distance * 0.02), map3d.camera.distance * 8);
+  gl.uniformMatrix4fv(u.sceneViewProj, false, map3DViewProj());
+  const eye = map3DCameraEye();
+  const view = gimLookAt(eye, map3d.camera.target, [0, 1, 0]);
+  gl.uniform3f(u.viewRight, view[0], view[4], view[8]);
+  gl.uniform3f(u.viewUp, view[1], view[5], view[9]);
   gl.uniform1f(u.patternMode, surface.includes("tiling") ? 1 : 0);
   const patternColor = Array.isArray(mat.pattern_color) ? mat.pattern_color : [1, 1, 1, 1];
   gl.uniform4f(u.patternColor, Number(patternColor[0]) || 0, Number(patternColor[1]) || 0, Number(patternColor[2]) || 0, Number(patternColor[3]) || 0);
@@ -4330,7 +4590,7 @@ function map3DApplyMaterial(entry, group) {
   const rim = Array.isArray(mat.rim_color) ? mat.rim_color : [0, 0, 0, 0];
   gl.uniform4f(u.rimColor, Number(rim[0]) || 0, Number(rim[1]) || 0, Number(rim[2]) || 0, Number(rim[3]) || 0);
   gl.uniform2f(u.fresnel, Number(mat.fresnel_scale) || 0, Number(mat.fresnel_open) || 0);
-  gl.uniform1f(u.alphaMtl, Number.isFinite(Number(mat.alpha_val)) ? Number(mat.alpha_val) : 1);
+  gl.uniform1f(u.alphaMtl, map3DNumber(mat.alpha_val, 1));
   const downColor = Array.isArray(mat.down_color) ? mat.down_color : [1, 1, 1, 1];
   gl.uniform4f(u.downColor, Number(downColor[0]) || 0, Number(downColor[1]) || 0, Number(downColor[2]) || 0, Number(downColor[3]) || 0);
   const upColor = Array.isArray(mat.up_color) ? mat.up_color : [1, 1, 1, 1];
@@ -4372,7 +4632,13 @@ function buildMap3DGrid(data) {
 }
 
 function map3DRefreshColors(model) {
-  const entry = map3d.models.get(model);
+  for (const [key, entry] of map3d.models) {
+    if (entry.model === model) map3DRefreshEntryColors(key);
+  }
+}
+
+function map3DRefreshEntryColors(key) {
+  const entry = map3d.models.get(key);
   const gl = map3d.gl;
   if (!entry || !gl || !entry.instances || !entry.units) return;
   for (let index = 0; index < entry.units.length; index += 1) {
@@ -4398,7 +4664,8 @@ function rebuildMapPoints(forceAll = false) {
   const skip = strict || forceAll ? new Set() : map3d.models;
   const values = [];
   for (const unit of map3d.units) {
-    if (skip.has(unit.model)) continue;
+    if (unit.visible === false) continue;
+    if (skip.has(map3DModelKey(unit))) continue;
     if (map3d.hiddenModels.has(unit.model)) continue;
     const position = unit.position || [0, 0, 0];
     const color = map3DUnitColor(unit);
@@ -4411,18 +4678,57 @@ function rebuildMapPoints(forceAll = false) {
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
 }
 
+function map3DBindInstanceRange(entry, first) {
+  if (entry.instanceOffset === first) return;
+  const gl = map3d.gl;
+  // 仅偏移实例属性的读取起点，排序时不重传矩阵和染色数据。
+  const offset = first * 112;
+  gl.bindBuffer(gl.ARRAY_BUFFER, entry.instanceBuffer);
+  for (let part = 0; part < 4; part += 1) {
+    gl.vertexAttribPointer(2 + part, 4, gl.FLOAT, false, 112, offset + part * 16);
+  }
+  for (let part = 0; part < 3; part += 1) {
+    const location = part === 0 ? 6 : (part === 1 ? 8 : 9);
+    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 112, offset + 64 + part * 16);
+  }
+  entry.instanceOffset = first;
+}
+
+function map3DDrawInstanceRange(draw) {
+  const gl = map3d.gl;
+  const entry = draw.entry;
+  gl.bindVertexArray(entry.vao);
+  map3DBindInstanceRange(entry, draw.first);
+  map3DApplyMaterial(entry, draw.group);
+  // 镜像变换会反转三角形绕序，需同时修正剔除和着色器的正反面判断。
+  gl.frontFace(draw.mirrored ? gl.CW : gl.CCW);
+  if (draw.mat.cull_back === false) gl.disable(gl.CULL_FACE);
+  else {
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+  const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
+  gl.drawElementsInstanced(gl.TRIANGLES, draw.group.count, entry.indexType, draw.group.offset * bytes, draw.count);
+}
+
 function drawMap3D() {
   const gl = map3d.gl;
   const canvas = map3d.canvas;
   if (!gl || !canvas) return;
   resizeMap3D();
+  map3DBeginScene();
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0.055, 0.07, 0.08, 1);
+  gl.depthMask(true);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
   gl.disable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.frontFace(gl.CCW);
   const vp = map3DViewProj();
   const strict = !mapView.ignoreErrors && map3d.loadErrors > 0;
+  let sceneCaptured = false;
   if (map3d.lineProgram && map3d.gridCount) {
     gl.useProgram(map3d.lineProgram);
     gl.uniformMatrix4fv(map3d.uLineView, false, vp);
@@ -4442,37 +4748,46 @@ function drawMap3D() {
     gl.uniform3f(map3d.uniforms.camera, eye[0], eye[1], eye[2]);
     gl.uniform4f(map3d.uniforms.illum, 1, 1, 1, 0);
     gl.uniform3f(map3d.uniforms.weather, 1, 1, 1);
-    const draws = [];
+    const opaqueDraws = [];
+    const transparentDraws = [];
+    const target = map3d.camera?.target || [0, 0, 0];
+    const forward = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+    const forwardLength = Math.hypot(...forward) || 1;
+    for (let axis = 0; axis < 3; axis += 1) forward[axis] /= forwardLength;
     for (const entry of map3d.models.values()) {
       const center = entry.center || [0, 0, 0];
       if (!map3DSphereInFrustum(frustum, center, entry.cullRadius || 0)) continue;
-      const dist = (center[0] - eye[0]) ** 2 + (center[1] - eye[1]) ** 2 + (center[2] - eye[2]) ** 2;
       for (const group of entry.groups) {
         const mat = entry.materials[group.material] || {};
         if (map3DSkipMaterial(mat, entry.sfxBound)) continue;
-        draws.push({ entry, group, mat, dist, transparent: mat.transparent === true });
+        if (mat.transparent === true || entry.transparent) {
+          // 必须跨模型逐实例排序，模型平均中心或欧氏距离均不能表达遮挡先后。
+          for (let index = 0; index < entry.count; index += 1) {
+            const base = index * 3;
+            const depth = (entry.instanceCenters[base] - eye[0]) * forward[0]
+              + (entry.instanceCenters[base + 1] - eye[1]) * forward[1]
+              + (entry.instanceCenters[base + 2] - eye[2]) * forward[2];
+            transparentDraws.push({ entry, group, mat, first: index, count: 1, depth, mirrored: !!entry.instanceMirrored[index] });
+          }
+        } else {
+          // 不透明组件按连续绕序区间保留实例化绘制。
+          for (const run of entry.instanceRuns) opaqueDraws.push({ entry, group, mat, ...run });
+        }
       }
     }
-    draws.sort((a, b) => {
-      if (a.transparent !== b.transparent) return a.transparent ? 1 : -1;
-      return b.dist - a.dist;
-    });
-    for (const draw of draws) {
-      const entry = draw.entry;
-      gl.bindVertexArray(entry.vao);
-      const bytes = entry.indexType === gl.UNSIGNED_INT ? 4 : 2;
-      map3DApplyMaterial(entry, draw.group);
-      if (draw.transparent) {
-        gl.enable(gl.BLEND);
-        gl.depthMask(false);
-      } else {
-        gl.disable(gl.BLEND);
-        gl.depthMask(true);
-      }
-      gl.drawElementsInstanced(gl.TRIANGLES, draw.group.count, entry.indexType, draw.group.offset * bytes, entry.count);
-    }
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    for (const draw of opaqueDraws) map3DDrawInstanceRange(draw);
+    map3DCaptureScene();
+    sceneCaptured = true;
+    transparentDraws.sort((a, b) => b.depth - a.depth);
+    gl.enable(gl.BLEND);
+    gl.depthMask(false);
+    for (const draw of transparentDraws) map3DDrawInstanceRange(draw);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+    gl.disable(gl.CULL_FACE);
+    gl.frontFace(gl.CCW);
     gl.bindVertexArray(null);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, null);
@@ -4483,6 +4798,7 @@ function drawMap3D() {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
+  if (!sceneCaptured) map3DCaptureScene();
   if (map3d.pointCount) {
     gl.useProgram(map3d.pointProgram);
     gl.uniformMatrix4fv(map3d.uPointView, false, vp);
@@ -4497,17 +4813,87 @@ function drawMap3D() {
   drawMapMinimap();
 }
 
+function map3DReleaseScene() {
+  const gl = map3d.gl;
+  const scene = map3d.scene;
+  if (gl && scene) {
+    gl.deleteFramebuffer(scene.framebuffer);
+    gl.deleteTexture(scene.color);
+    gl.deleteTexture(scene.depth);
+  }
+  map3d.scene = null;
+  map3d.sceneReady = false;
+}
+
+function map3DBeginScene() {
+  const gl = map3d.gl;
+  const width = map3d.canvas.width;
+  const height = map3d.canvas.height;
+  map3d.sceneReady = false;
+  // 采样纹理先解绑，避免不透明通道读写同一个帧缓冲。
+  for (let slot = 4; slot <= 5; slot += 1) {
+    gl.activeTexture(gl.TEXTURE0 + slot);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+  if (!map3d.scene || map3d.scene.width !== width || map3d.scene.height !== height) {
+    map3DReleaseScene();
+    const texture = (depth) => {
+      const result = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, result);
+      gl.texImage2D(gl.TEXTURE_2D, 0, depth ? gl.DEPTH24_STENCIL8 : gl.RGBA8, width, height, 0,
+        depth ? gl.DEPTH_STENCIL : gl.RGBA, depth ? gl.UNSIGNED_INT_24_8 : gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, depth ? gl.NEAREST : gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, depth ? gl.NEAREST : gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return result;
+    };
+    const scene = { width, height, framebuffer: gl.createFramebuffer(), color: texture(false), depth: texture(true) };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, scene.color, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, scene.depth, 0);
+    map3d.scene = scene;
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      map3DReleaseScene();
+    }
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, map3d.scene?.framebuffer || null);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+function map3DCaptureScene() {
+  const gl = map3d.gl;
+  const scene = map3d.scene;
+  if (!scene) return;
+  // 不透明颜色与深度送到显示缓冲后，透明材质才能安全采样背景。
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, scene.framebuffer);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  gl.blitFramebuffer(0, 0, scene.width, scene.height, 0, 0, scene.width, scene.height,
+    gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, scene.color);
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, scene.depth);
+  gl.activeTexture(gl.TEXTURE0);
+  map3d.sceneReady = true;
+}
+
 function requestMap3DDraw() {
   if (map3d.frame) return;
   map3d.frame = requestAnimationFrame(() => {
     map3d.frame = 0;
     drawMap3D();
+    if (map3d.animated && mapView.is3d && map3d.gl && !document.hidden) requestMap3DDraw();
   });
 }
 
 function disposeMap3D() {
   const gl = map3d.gl;
   if (gl) {
+    map3DReleaseScene();
     for (const entry of map3d.models.values()) {
       gl.deleteVertexArray(entry.vao);
       gl.deleteBuffer(entry.positionBuffer);
@@ -4536,6 +4922,7 @@ function disposeMap3D() {
   map3d.grid = null;
   map3d.gridCount = 0;
   map3d.ready = false;
+  map3d.animated = false;
   map3d.data = null;
   map3d.program = null;
   map3d.pointProgram = null;
@@ -4555,7 +4942,7 @@ async function openMap3D(file, data) {
   canvas.id = "map-gl";
   canvas.className = "map-gl";
   mapView.stage.insertBefore(canvas, mapView.canvas);
-  const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
+  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, stencil: true });
   if (!gl) {
     canvas.remove();
     mapView.is3d = false;
@@ -4565,6 +4952,7 @@ async function openMap3D(file, data) {
   }
   map3d.canvas = canvas;
   map3d.gl = gl;
+  map3d.animationStart = performance.now();
   canvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
     mapMsgAdd("error", tr("map.msg.render"), "WebGL context lost");
@@ -4607,6 +4995,21 @@ async function openMap3D(file, data) {
     ei: uniform("u_ei"), intensityA: uniform("u_intensity_a"),
     lerpLinear: uniform("u_lerp_linear"), glass: uniform("u_glass"),
     glassOpacity: uniform("u_glass_opacity"),
+    waterKind: uniform("u_water_kind"), time: uniform("u_time"),
+    roughness: uniform("u_roughness"), metalness: uniform("u_metalness"), mixMap: uniform("u_mix_map"),
+    normalSlot: uniform("u_normal_slot"), glassPattern: uniform("u_glass_pattern"),
+    patternOpacity: uniform("u_pattern_opacity"), patternColorKey: uniform("u_pattern_color_key"),
+    designColor: uniform("u_design_color"), glassPatternPara: uniform("u_glass_pattern_para"),
+    glassPatternRotation: uniform("u_glass_pattern_rotation"),
+    waterVariable: uniform("u_water_variable"), waterSpeed: uniform("u_water_speed"),
+    waterParameter: uniform("u_water_parameter"), waterUv: uniform("u_water_uv"),
+    waterOptions: uniform("u_water_options"), waterFoam: uniform("u_water_foam"), waterIce: uniform("u_water_ice"),
+    foamColor: uniform("u_foam_color"),
+    fallSpeed: uniform("u_fall_speed"), fallTiling: uniform("u_fall_tiling"), fallRough: uniform("u_fall_rough"),
+    fallClip: uniform("u_fall_clip"), fallAlpha: uniform("u_fall_alpha"),
+    sceneColor: uniform("u_scene_color"), sceneDepth: uniform("u_scene_depth"),
+    hasScene: uniform("u_has_scene"), sceneSize: uniform("u_scene_size"), nearFar: uniform("u_near_far"),
+    sceneViewProj: uniform("u_scene_view_proj"), viewRight: uniform("u_view_right"), viewUp: uniform("u_view_up"),
     camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
     borderColor: uniform("u_border_color"), border: uniform("u_border"),
     lightness: uniform("u_lightness"),
@@ -4621,9 +5024,11 @@ async function openMap3D(file, data) {
   gl.uniform1i(map3d.uniforms.tex1, 1);
   gl.uniform1i(map3d.uniforms.tex2, 2);
   gl.uniform1i(map3d.uniforms.tex3, 3);
+  gl.uniform1i(map3d.uniforms.sceneColor, 4);
+  gl.uniform1i(map3d.uniforms.sceneDepth, 5);
   map3d.data = data;
   map3d.ready = false;
-  map3d.units = (data.units || []).filter((unit) => Array.isArray(unit.position));
+  map3d.units = (data.units || []).filter((unit) => unit.visible !== false && Array.isArray(unit.position));
   map3d.loadErrors = 0;
   map3d.loading = 0;
   map3d.total = 0;
@@ -4691,6 +5096,7 @@ async function loadMap3DMeshes(data, token) {
   let collisions = 0;
   map3d.hiddenModels.clear();
   for (const unit of data.units || []) {
+    if (unit.visible === false) continue;
     const model = unit.model;
     if (!model || !/\.(gim|mesh)$/i.test(model)) {
       unresolved += 1;
@@ -4702,8 +5108,9 @@ async function loadMap3DMeshes(data, token) {
       collisions += 1;
       continue;
     }
-    if (!groups.has(model)) groups.set(model, []);
-    groups.get(model).push(unit);
+    const key = map3DModelKey(unit);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(unit);
   }
   if (unresolved) {
     mapMsgAdd("warn", tr("map.msg.unresolved"), tr("map.msg.unresolvedDetail", { count: unresolved }));
@@ -4723,16 +5130,17 @@ async function loadMap3DMeshes(data, token) {
   let sinceRebuild = 0;
   const worker = async () => {
     while (cursor < work.length) {
-      const [model, units] = work[cursor];
+      const [key, units] = work[cursor];
+      const model = units[0].model;
       cursor += 1;
       try {
-        const response = await getJson(apiUrl("/api/neox", { path: model }));
+        const response = await getJson(apiUrl("/api/neox", { path: model, material: units[0].material || undefined }));
         if (token !== map3d.token) return;
-        const mesh = response.mesh_data;
+        const mesh = response.mesh_data || (Array.isArray(response.vertices) ? response : null);
         if (!mesh || !Array.isArray(mesh.vertices) || !mesh.indices || !mesh.vertices.length) {
           throw new Error(response.mesh_error || "no mesh");
         }
-        map3DBuildModel(model, mesh, units, response.materials || [], response.texture_images || response.textures || [], response.objects || []);
+        map3DBuildModel(model, mesh, units, response.materials || [], response.texture_images || response.textures || [], response.objects || [], key);
       } catch (error) {
         if (token !== map3d.token) return;
         map3d.loadErrors += 1;
@@ -4858,35 +5266,31 @@ function buildMapLegend() {
   const data = mapView.data;
   const panel = $("map-legend");
   if (!data || !panel) return;
-  const labels = {};
-  const tints = {};
+  const groups = new Map();
   for (const unit of data.units || []) {
-    const eid = unit.eid;
-    if (eid == null) continue;
-    if (!tints[eid] && Array.isArray(unit.color) && unit.color.length >= 3) {
-      tints[eid] = `rgb(${unit.color[0]}, ${unit.color[1]}, ${unit.color[2]})`;
-    }
-    if (labels[eid]) continue;
-    const modelName = unit.model ? mapView.modelNames[unit.model] : "";
-    const base = String(modelName || unit.name || "").replace(/\d+$/, "").trim();
-    if (base) labels[eid] = base;
+    const key = unit.eid != null ? `eid:${unit.eid}` : unit.model_id != null ? `model:${unit.model_id}` : unit.model || `unit:${unit.id}`;
+    if (!groups.has(key)) groups.set(key, { units: [], eid: unit.eid, label: "", color: "" });
+    const group = groups.get(key);
+    group.units.push(unit);
+    if (!group.color && Array.isArray(unit.color) && unit.color.length >= 3) group.color = `rgb(${unit.color[0]}, ${unit.color[1]}, ${unit.color[2]})`;
+    if (!group.label) group.label = String((unit.model && mapView.modelNames[unit.model]) || unit.name || "").trim();
   }
-  const rows = Object.entries(data.eids || {})
-    .sort((a, b) => Number(b[1]) - Number(a[1]))
+  const rows = [...groups.values()]
+    .sort((a, b) => b.units.length - a.units.length)
     .slice(0, 10)
-    .map(([eidText, count]) => {
-      const eid = Number(eidText);
-      const color = tints[eid] || mapColor(eid);
-      const typeColor = mapColor(eid);
-      const label = labels[eid] || MAP_EID_LABEL[eid] || tr("map.unit", { eid: eidText });
-      const icon = mapIconUrl(eid);
+    .map((group) => {
+      const eid = group.eid;
+      const color = group.color || mapColor(eid ?? group.units[0].model_id ?? 0);
+      const typeColor = mapColor(eid ?? 0);
+      const label = group.label || MAP_EID_LABEL[eid] || tr("map.unit", { eid: eid ?? group.units[0].model_id ?? group.units[0].id });
+      const icon = eid == null ? "" : mapIconUrl(eid);
       const swatch = icon
         ? `<span class="map-legend-icon" title="${esc(label)} ${tr("map.legend.kind")}" style="background-image:url('${icon}')"></span>`
         : `<span class="map-legend-swatch" title="${esc(label)} ${tr("map.legend.paint")}" style="width:${mapView.dotSize}px;height:${mapView.dotSize}px;background:${color};border-color:${typeColor}"></span>`;
       return `<div class="map-legend-row">
         ${swatch}
-        <span class="map-legend-name">${esc(label)}</span>
-        <span class="map-legend-count">${Number(count).toLocaleString()}</span>
+        <span class="map-legend-name">${fieldIconLabel("component", label, [...new Set(group.units.flatMap((unit) => [unit.eid, unit.id, unit.model_id, unit.model, unit.name]).filter((value) => value != null))])}</span>
+        <span class="map-legend-count">${Number(group.units.length).toLocaleString()}</span>
       </div>`;
     })
     .join("");
@@ -5087,12 +5491,13 @@ function renderNeoXPreview(data, container, file) {
     </button>`;
   }).join("");
   const objRows = objects.slice(0, 60).map((obj, index) => {
-    const entries = Object.entries(obj).slice(0, 6);
-    const detail = entries.map(([key, value]) => `${esc(key)}=${esc(String(value))}`).join(" · ") || "—";
-    return `<div class="gmp-unit" title="${esc(detail)}">
-      <span class="gmp-unit-name">${esc(tr("common.unit"))} ${index}</span>
+    const entries = Object.entries(obj);
+    const detail = entries.slice(0, 6).map(([key, value]) => `${key}=${String(value)}`).join(" · ") || "—";
+    const objectName = obj.Name || obj.name || `${tr("common.unit")} ${index}`;
+    return `<details class="field-object-row"><summary title="${esc(detail)}">
+      <span class="gmp-unit-name">${fieldIconLabel("object", objectName, [index, obj.Class, obj.Type])}</span>
       <span class="gmp-unit-meta">${esc(detail.slice(0, 110))}</span>
-    </div>`;
+    </summary><div class="field-object-fields">${entries.map(([key, value]) => `<span class="field-object-key">${fieldIconLabel("field", key)}</span><span class="field-object-value">${esc(typeof value === "object" && value !== null ? JSON.stringify(value) : String(value))}</span>`).join("")}</div></details>`;
   }).join("");
   const refRows = refs.slice(0, 60).map((ref) => `<span class="inspect-ref" title="${esc(ref)}">${esc(ref)}</span>`).join("");
   container.innerHTML = `<div class="gmp-preview">
@@ -7648,6 +8053,9 @@ function bind() {
     await loadList(path, false, false, true);
   });
   window.addEventListener("resize", syncTopbarHeight);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && viewerIsOpen() && mapView.is3d && map3d.animated) requestMap3DDraw();
+  });
   window.addEventListener("resize", () => {
     clearTimeout(marqueeResizeTimer);
     marqueeResizeTimer = setTimeout(() => {

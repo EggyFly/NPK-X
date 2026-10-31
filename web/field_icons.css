@@ -1,0 +1,44 @@
+.field-icon-label { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; vertical-align: middle; }
+.field-icon-label > .field-icon-image { position: static; inset: auto; transform: none; display: inline-block; flex: 0 0 auto; object-fit: contain; border-radius: 3px; vertical-align: middle; max-height: none; max-width: none; }
+.field-icon-image[hidden] { display: none; }
+.field-icon-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.field-object-row { flex: 0 0 auto; min-width: 0; font-size: 11px; border-bottom: 1px solid var(--line); }
+.field-object-row > summary { cursor: pointer; padding: 7px 0; }
+.field-object-row > summary .gmp-unit-meta { display: block; padding-top: 3px; overflow: hidden; text-overflow: ellipsis; }
+.field-object-fields { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 7px 10px; padding: 8px 5px 12px; }
+.field-object-key { color: var(--muted); overflow-wrap: anywhere; }
+.field-object-value { min-width: 0; word-break: break-all; white-space: pre-wrap; color: var(--text); }
+#field-icons-dialog { padding: 0; border: 1px solid var(--line); border-radius: 20px; width: min(680px, calc(100vw - 32px)); max-height: min(90vh, 900px); background: var(--panel); color: var(--text); box-shadow: var(--md-elevation-5); }
+#field-icons-dialog::backdrop { background: var(--md-viewer-scrim); backdrop-filter: blur(4px); }
+.field-icons-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.field-icons-head h2 { margin: 0; font-size: 17px; }
+.field-icons-body { padding: 16px 20px 22px; overflow: auto; }
+.field-icons-hint { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0 0 12px; }
+.field-icons-enable { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 18px; }
+.field-icons-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.field-icons-form-grid > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
+.field-icons-wide { grid-column: 1 / -1; }
+.field-icons-form-grid input, .field-icons-form-grid select { min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: var(--panel-2); color: var(--text); font: inherit; box-sizing: border-box; }
+.field-icons-form-grid input[type=file] { padding: 7px; }
+.field-icons-form-grid input:focus-visible, .field-icons-form-grid select:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+.field-icons-preview { display: flex; align-items: center; min-height: 42px; gap: 8px; padding: 10px 0; font-size: 13px; }
+.field-icons-preview img { object-fit: contain; }
+.field-icons-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#field-icons-status { min-height: 20px; font-size: 12px; color: var(--accent-2); margin: 10px 0; }
+#field-icons-status.field-icons-error { color: var(--danger); }
+.field-icons-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.field-icons-list-head h3 { font-size: 13px; margin: 0; }
+.field-icons-rule { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.field-icons-rule > img { flex: 0 0 32px; object-fit: contain; border-radius: 4px; }
+.field-icons-rule-copy { flex: 1; min-width: 0; }
+.field-icons-rule-copy b { display: block; font-size: 12px; overflow-wrap: anywhere; }
+.field-icons-rule-copy small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.field-icons-empty { font-size: 12px; color: var(--muted); padding: 15px 0; }
+#field-icons-rules { margin-bottom: 14px; }
+#field-icons-dialog [hidden] { display: none; }
+@media (max-width: 600px) {
+  .field-icons-form-grid { grid-template-columns: 1fr; }
+  .field-icons-rule { flex-wrap: wrap; }
+  .field-icons-rule-copy { flex-basis: calc(100% - 50px); }
+  .field-icons-body { padding: 12px; }
+}
