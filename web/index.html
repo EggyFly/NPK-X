@@ -19,6 +19,7 @@
 })();
 </script>
   <link rel="stylesheet" href="/static/style.css?v=72">
+  <link rel="stylesheet" href="/static/field_icons.css?v=2">
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
@@ -98,6 +99,7 @@
           <input id="search" type="search" placeholder="搜索资源名称或路径，例如 login、pet、effect" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
         </div>
         <div class="view-actions">
+          <button id="field-icons-open" class="mini-btn" type="button" title="管理字段、对象和 GMP 组件的自定义贴图">字段贴图</button>
           <button id="refresh" class="icon-btn" title="刷新" data-i18n-title="view.refresh" aria-label="刷新" data-i18n-aria="view.refresh"><svg class="icon"><use href="#i-refresh"></use></svg></button>
           <div class="view-switch" role="group">
             <button id="view-grid" class="icon-btn" aria-pressed="true" title="网格视图" data-i18n-title="view.grid" aria-label="网格视图" data-i18n-aria="view.grid"><svg class="icon"><use href="#i-grid"></use></svg></button>
@@ -250,6 +252,7 @@
   <button id="batch-toast-close" class="icon-btn" type="button" title="关闭" data-i18n-title="common.close" aria-label="关闭" data-i18n-aria="common.close"><svg class="icon"><use href="#i-close"></use></svg></button>
 </div>
 
-  <script src="/static/app.js?v=175"></script>
+  <script src="/static/field_icons.js?v=1"></script>
+  <script src="/static/app.js?v=178"></script>
 </body>
 </html>

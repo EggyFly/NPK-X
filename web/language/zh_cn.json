@@ -130,6 +130,7 @@
     "map.messages.clear": "清空",
     "map.msg.chunks": "{count} 个区块无法解析",
     "map.msg.binary": "{count} 个区块为二进制数据",
+    "map.msg.unsupportedUnits": "该地图部分组件使用尚未支持的原生编码，当前显示已解析内容。",
     "map.msg.unresolvedDetail": "{count} 个组件在 GMP 中只存了 eid，未能按地图预载清单唯一匹配模型",
     "map.ignoreErrors": "忽略错误",
     "map.msg.render": "渲染失败",
