@@ -164,12 +164,71 @@ def _position(value):
 
 
 def _vec(value, count):
-    if not isinstance(value, (list, tuple)):
+    if not isinstance(value, (list, tuple)) or len(value) < count:
         return None
     values = [_number(item) for item in value[:count]]
     if any(item is None for item in values):
         return None
     return [round(item, 3) for item in values]
+
+
+def _first_vector(mapping, names, convert):
+    for name in names:
+        value = convert(_key(mapping, name))
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_unit(unit_id, unit):
+    position = _first_vector(unit, ("ctx_world_position", "world_position", "position"), _position)
+    if position is None:
+        return None
+    name = _text(_key(unit, "name") or "")
+    unit_type = _key(unit, "type", "unit_type")
+    model_id = _key(unit, "model_id")
+    model = _key(unit, "ctx_model_path", "model_path", "model")
+    if isinstance(model, int):
+        if not isinstance(model_id, int):
+            model_id = model
+        model = ""
+    model = _text(model or "")
+    material = _text(_key(unit, "mat_path", "material_path") or "")
+    if not name and model:
+        name = model.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    # 组件编号和模型编号属于不同表，不能用 model_id 冒充 eid。
+    eid = _key(unit, "eid")
+    camp = _key(unit, "camp_id")
+    parent = _key(unit, "parent_unit_id")
+    color = _color(_key(unit, "paint_area1"))
+    paint = [color, _color(_key(unit, "paint_area2")), _color(_key(unit, "paint_area3"))]
+    scale = _first_vector(unit, ("ctx_real_scale", "real_scale", "scale"), lambda value: _vec(value, 3))
+    angle = _first_vector(unit, ("ctx_model_angle", "trans_model_angle", "model_angle"), lambda value: _vec(value, 3))
+    alpha = _number(_key(unit, "ctx_model_alpha"))
+    if alpha is not None:
+        # 批次缓存使用字节透明度，普通组件使用 0 到 1 的透明度。
+        alpha /= 255.0
+    else:
+        alpha = _number(_key(unit, "model_alpha"))
+    visible = _key(unit, "ctx_model_visible", "model_visible", "init_model_visible")
+    return {
+        "id": unit_id,
+        "name": name,
+        "type": unit_type if isinstance(unit_type, int) else None,
+        "eid": eid if isinstance(eid, int) else None,
+        "model_id": model_id if isinstance(model_id, int) else None,
+        "model": model,
+        "material": material,
+        "camp": camp if isinstance(camp, int) else None,
+        "parent": parent if isinstance(parent, int) else 0,
+        "position": [round(item, 3) for item in position],
+        "color": color,
+        "paint": paint,
+        "alpha": round(alpha, 3) if alpha is not None else None,
+        "visible": bool(visible) if isinstance(visible, (bool, int)) else True,
+        "scale": scale,
+        "angle": angle,
+    }
 
 
 def _color(value):
@@ -228,14 +287,17 @@ def _find_map_name(value, depth=0):
 def read_map_name(payload: bytes) -> str | None:
     if not payload.startswith(b"DZ") and ZSTD_MAGIC not in payload[:4096]:
         raise ValueError("not a GMP container")
+    sections = _section_formats(payload)
     for index, (offset, compressed, raw) in enumerate(_frames(payload)):
         if index >= 5:
             break
-        if len(raw) > 2 * 1024 * 1024:
+        if len(raw) > 2 * 1024 * 1024 or sections.get(offset, {}).get("encoding") == "bindict":
             continue
         try:
             value, end = _decode(raw)
         except (MsgpackError, RecursionError):
+            continue
+        if end != len(raw):
             continue
         found = _find_map_name(value)
         if found is not None:
@@ -243,6 +305,28 @@ def read_map_name(payload: bytes) -> str | None:
             if text:
                 return text
     return None
+
+
+def _section_formats(payload: bytes) -> dict:
+    if not payload.startswith(b"DZ") or len(payload) < 34:
+        return {}
+    has_bindict_flag = bool(struct.unpack_from("!I", payload, 22)[0] & 2)
+    count = struct.unpack_from("!H", payload, 32)[0]
+    stride = 8 if has_bindict_flag else 6
+    position = 34 + count * stride
+    if not count or position > len(payload):
+        return {}
+    sections = {}
+    for index in range(count):
+        fields = struct.unpack_from("!HHI" if has_bindict_flag else "!HI", payload, 34 + index * stride)
+        section_id, size = fields[0], fields[-1]
+        if position + size > len(payload):
+            return {}
+        # 原生 bindict 与 MessagePack 都使用 Zstd 压缩，须按段表判断编码。
+        encoding = "bindict" if has_bindict_flag and fields[1] else "msgpack"
+        sections[position] = {"section_id": section_id, "encoding": encoding}
+        position += size
+    return sections if position == len(payload) else {}
 
 
 def _frames(payload: bytes):
@@ -274,17 +358,23 @@ def parse(payload: bytes) -> dict:
     chunks = []
     objects = []
     references = set()
+    sections = _section_formats(payload)
     for index, (offset, compressed, raw) in enumerate(_frames(payload)):
         chunk = {"index": index, "offset": offset, "compressed": compressed, "raw": len(raw)}
+        chunk.update(sections.get(offset, {}))
+        unsupported = chunk.get("encoding") == "bindict"
         skipped = len(raw) > MAX_MSGPACK_RAW
         try:
-            if skipped:
+            if skipped or unsupported:
                 value, end = None, 0
             else:
                 value, end = _decode(raw)
         except (MsgpackError, RecursionError):
             value, end = None, 0
-        if isinstance(value, (dict, list)):
+        if unsupported:
+            chunk["kind"] = "unsupported"
+            chunk["consumed"] = 0
+        elif isinstance(value, (dict, list)) and end == len(raw):
             objects.append(value)
             chunk["kind"] = "msgpack"
             chunk["consumed"] = end
@@ -308,7 +398,8 @@ def parse(payload: bytes) -> dict:
     party_map_id = None
     temp_map_id = None
     egg_island_scene = None
-    units = {}
+    unit_records = {}
+    batch_records = {}
     eids = {}
     type_counts = {}
 
@@ -332,65 +423,38 @@ def parse(payload: bytes) -> dict:
                     value = _key(node, "egg_island_scene")
                     if isinstance(value, bool):
                         egg_island_scene = value
-                group = _key(node, "unit", "units")
-                if not isinstance(group, dict):
-                    group = _key(node, "batch_unit_data")
-                if isinstance(group, dict):
+                for names, records in ((("unit", "units"), unit_records), (("batch_unit_data",), batch_records)):
+                    group = _key(node, *names)
+                    if not isinstance(group, dict):
+                        continue
                     for unit_key, unit in group.items():
                         if not isinstance(unit, dict):
-                            continue
-                        position = _position(_key(unit, "ctx_world_position", "world_position", "position"))
-                        if position is None:
                             continue
                         unit_id = _key(unit, "unit_id")
                         if not isinstance(unit_id, int):
                             unit_id = unit_key if isinstance(unit_key, int) else None
-                        if unit_id is None or unit_id in units:
+                        if unit_id is None:
                             continue
-                        name = _text(_key(unit, "name") or "")
-                        unit_type = _key(unit, "type", "unit_type")
-                        model_id = _key(unit, "model_id")
-                        model = _text(_key(unit, "ctx_model_path", "model_path", "model") or "")
-                        material = _text(_key(unit, "mat_path", "material_path") or "")
-                        if not name and model:
-                            name = model.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-                        eid = _key(unit, "eid")
-                        if not isinstance(eid, int) and isinstance(model_id, int):
-                            eid = model_id
-                        camp = _key(unit, "camp_id")
-                        parent = _key(unit, "parent_unit_id")
-                        color = _color(_key(unit, "paint_area1"))
-                        paint = [
-                            color,
-                            _color(_key(unit, "paint_area2")),
-                            _color(_key(unit, "paint_area3")),
-                        ]
-                        scale = _vec(_key(unit, "ctx_real_scale", "real_scale", "scale"), 3)
-                        angle = _vec(_key(unit, "ctx_model_angle", "model_angle"), 3)
-                        alpha = _number(_key(unit, "model_alpha"))
-                        units[unit_id] = {
-                            "id": unit_id,
-                            "name": name,
-                            "type": unit_type if isinstance(unit_type, int) else None,
-                            "eid": eid if isinstance(eid, int) else None,
-                            "model_id": model_id if isinstance(model_id, int) else None,
-                            "model": model,
-                            "material": material,
-                            "camp": camp if isinstance(camp, int) else None,
-                            "parent": parent if isinstance(parent, int) else 0,
-                            "position": [round(item, 3) for item in position],
-                            "color": color,
-                            "paint": paint,
-                            "alpha": round(alpha, 3) if alpha is not None else None,
-                            "scale": scale,
-                            "angle": angle,
-                        }
-                        if isinstance(eid, int):
-                            eids[eid] = eids.get(eid, 0) + 1
-                        if isinstance(unit_type, int):
-                            type_counts[unit_type] = type_counts.get(unit_type, 0) + 1
+                        records.setdefault(unit_id, {}).update({_text(key): value for key, value in unit.items()})
 
-    unit_list = list(units.values())
+    unit_list = []
+    for unit_id in unit_records.keys() | batch_records.keys():
+        # 普通记录保留名称和组件类型，批次记录补充最终模型、材质和世界变换。
+        normal = unit_records.get(unit_id, {})
+        merged = dict(normal)
+        merged.update(batch_records.get(unit_id, {}))
+        for key in ("name", "eid", "type", "unit_type", "camp_id", "parent_unit_id"):
+            if key in normal:
+                merged[key] = normal[key]
+        unit = _parse_unit(unit_id, merged)
+        if unit is None:
+            continue
+        unit_list.append(unit)
+        eid, unit_type = unit["eid"], unit["type"]
+        if isinstance(eid, int):
+            eids[eid] = eids.get(eid, 0) + 1
+        if isinstance(unit_type, int):
+            type_counts[unit_type] = type_counts.get(unit_type, 0) + 1
     positions = [unit["position"] for unit in unit_list]
     bounds = _bounds(positions)
     unit_list.sort(key=lambda item: (item["eid"] or 0, item["name"], item["id"]))
@@ -408,6 +472,8 @@ def parse(payload: bytes) -> dict:
         "chunks": chunks,
         "parsed_chunks": sum(1 for chunk in chunks if chunk["kind"] == "msgpack"),
         "skipped_chunks": sum(1 for chunk in chunks if chunk.get("skipped")),
+        "unsupported_chunks": sum(1 for chunk in chunks if chunk["kind"] == "unsupported"),
+        "unit_data_unsupported": any(chunk["kind"] == "unsupported" and chunk.get("section_id") == 3 for chunk in chunks),
         "binary_chunks": sum(1 for chunk in chunks if chunk["kind"] == "binary"),
         "bounds": bounds,
     }

@@ -80,7 +80,7 @@ run_browser.bat "<party_pc path>"
   * `.wem` → 同名 `.flac`（vgmstream 解码 + soundfile 无损 FLAC）
   * `.mesh`、`.gim`、`.mtg`、`.csb`、`.bnk`、`.json` 等 → 原名原样
 * 纹理只导出基础 mip；PNG 是 DXT 解码后的无损像素，不是原始 DDS 数据。
-* 无法转换的 cubemap DDS、数组/特殊 KTX、DXT3/ASTC 等保留原始字节，状态为 `fallback_original`。
+* 二维 ASTC KTX1 贴图可转换为 PNG；无法转换的 cubemap DDS、数组/特殊 KTX、DXT3 等保留原始字节，状态为 `fallback_original`。
 * 路径词典未收录的资产 → `_unresolved/<package>/<signature>.*`
 * `script.npk` / `script_patch.npk` 是独立脚本命名空间 → `_script/<package>/<signature>.xn`
 * 所有输出都在 `_manifest.csv.gz` 中有逐条记录（状态、源路径、输出路径、偏移、长度）。

@@ -130,6 +130,7 @@
     "map.messages.clear": "Clear",
     "map.msg.chunks": "{count} chunks could not be parsed",
     "map.msg.binary": "{count} binary chunks",
+    "map.msg.unsupportedUnits": "Some map units use an unsupported native encoding. Only decoded content is shown.",
     "map.msg.unresolvedDetail": "{count} components only store an eid in the GMP and could not be uniquely matched to the map preload list",
     "map.ignoreErrors": "Ignore errors",
     "map.msg.render": "Render failed",

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""把本研究中恢复出的标准 KTX1/DXT 纹理转换为 PNG。
+"""把标准二维 KTX1 的 DXT 或 ASTC 纹理转换为 PNG。
 
 这个工具只处理已经可以正常读取的 KTX 文件，不处理 NPK/PPK 的索引保护层。
-KTX 是一个带有小型头部的纹理容器；真正的像素数据在头部之后，按 4x4 像素
-的 DXT 压缩块排列。DXT1 每块占 8 字节，DXT5 每块占 16 字节。这里先解码
-每个块，再交给 Pillow 写 PNG，因此 PNG 是无损保存解码后像素的结果；但
-DXT 本身是有损压缩，PNG 不会恢复压缩前已经丢失的细节。
+KTX 是一个带有小型头部的纹理容器；真正的像素数据在头部之后，按压缩块
+排列。DXT 使用 4x4 像素块，ASTC 的块尺寸由格式编号决定。这里先解码每个
+块，再交给 Pillow 写 PNG；PNG 无损保存解码后像素，不会恢复压缩前丢失的细节。
 """
 
 from __future__ import annotations
@@ -25,6 +24,16 @@ except ImportError:  # pragma: no cover - 纯 Python 后备路径仍可独立工
 KTX1_IDENTIFIER = b"\xABKTX 11\xBB\r\n\x1A\n"
 GL_COMPRESSED_RGB_S3TC_DXT1_EXT = 0x83F0
 GL_COMPRESSED_RGBA_S3TC_DXT5_EXT = 0x83F3
+ASTC_BLOCK_DIMENSIONS = (
+    (4, 4), (5, 4), (5, 5), (6, 5), (6, 6), (8, 5), (8, 6),
+    (8, 8), (10, 5), (10, 6), (10, 8), (10, 10), (12, 10), (12, 12),
+)
+# 线性和 sRGB 的二维 ASTC 枚举共用同一套块尺寸与解码方式。
+ASTC_FORMATS = {
+    base + index: dimensions
+    for base in (0x93B0, 0x93D0)
+    for index, dimensions in enumerate(ASTC_BLOCK_DIMENSIONS)
+}
 
 
 def _rgb565(value: int) -> tuple[int, int, int]:
@@ -88,7 +97,9 @@ def read_ktx1_bytes(blob: bytes, source: object = "<memory>") -> tuple[int, int,
         raise ValueError("不是本工具支持的二维块压缩 KTX1")
     if gl_type_size != 1:
         raise ValueError("只支持块压缩 KTX1")
-    if internal not in (GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT):
+    if width == 0 or height == 0:
+        raise ValueError("KTX 二维纹理的宽高必须大于零")
+    if internal not in (GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT) and internal not in ASTC_FORMATS:
         raise ValueError(f"不支持的 glInternalFormat: 0x{internal:04X}")
     data_offset = 64 + kv_size
     if data_offset + 4 > len(blob):
@@ -100,7 +111,8 @@ def read_ktx1_bytes(blob: bytes, source: object = "<memory>") -> tuple[int, int,
     if data_offset + image_size > len(blob):
         raise ValueError("KTX 图像数据越界")
     expected_block_size = 8 if internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT else 16
-    block_count = ((width + 3) // 4) * ((height + 3) // 4)
+    block_width, block_height = ASTC_FORMATS.get(internal, (4, 4))
+    block_count = ((width + block_width - 1) // block_width) * ((height + block_height - 1) // block_height)
     if image_size != block_count * expected_block_size:
         raise ValueError(f"图像大小 {image_size} 与尺寸/格式不符，预期 {block_count * expected_block_size}")
     return width, height, internal, blob[data_offset:data_offset + image_size]
@@ -117,10 +129,15 @@ def convert_bytes(blob: bytes, output: Path, source: object = "<memory>") -> dic
     解包器使用这个入口逐帧转换，因此不会先把整个 NPK 的 KTX 文件写到磁盘。
     """
     width, height, internal, compressed = read_ktx1_bytes(blob, source)
+    astc_dimensions = ASTC_FORMATS.get(internal)
+    if astc_dimensions is not None and texture2ddecoder is None:
+        raise ValueError("ASTC 纹理解码需要 texture2ddecoder")
     if texture2ddecoder is not None:
         # 原生实现返回 BGRA；Pillow 的 raw 解码器把它转换成 RGBA，
         # 避免在大批量导出时执行数百万次 Python 像素循环。
-        if internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+        if astc_dimensions is not None:
+            pixels = texture2ddecoder.decode_astc(compressed, width, height, *astc_dimensions)
+        elif internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
             pixels = texture2ddecoder.decode_bc1(compressed, width, height)
         else:
             pixels = texture2ddecoder.decode_bc3(compressed, width, height)
@@ -165,7 +182,7 @@ def convert(path: Path, output: Path) -> dict[str, object]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="将 KTX1 DXT1/DXT5 纹理转换为 PNG")
+    parser = argparse.ArgumentParser(description="将 KTX1 DXT1/DXT5/ASTC 纹理转换为 PNG")
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()

@@ -52,6 +52,7 @@ Get-Content .\_extract_run.log -Wait
 * 回退原格式的 422 条：252 个 cubemap DDS、163 个不支持的 KTX1
   （cubemap/array/非二维块压缩）、4 个 glInternalFormat `0x93B0`、
   3 个 DXT3。它们保留原始字节，不是转换失败丢失。
+  以上为当时的统计；现在已支持二维 ASTC（含 `0x93B0`），重新转换即可生成 PNG。
 * 1,009 个 `.wem` 全部转为 `.flac`；4,784 个 `.bnk` 原样保留。
 
 ## 产物

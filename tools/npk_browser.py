@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -304,7 +305,7 @@ def material_tree(data: dict, resolve=None) -> list:
         lighting = True
         cull_back = True
         textures = []
-        tex0 = tex1 = tex2 = tex3 = tex4 = ""
+        tex0 = tex1 = tex2 = tex3 = tex4 = tex5 = ""
         colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
         design_color = [1.0, 1.0, 1.0, 1.0]
         emissive_color = [0.0, 0.0, 0.0, 0.0]
@@ -352,12 +353,70 @@ def material_tree(data: dict, resolve=None) -> list:
         simple_light = False
         base_normal = ""
         pattern_tex = ""
+        # 水、玻璃和果冻的同名纹理槽含义不同，保留原始参数供预览器分支使用。
+        liquid_vectors = {
+            "Speed": [1.0, 1.0, 1.0, 1.0],
+            "Variable": [1.0, -2.0, 1.0, 1.0],
+            "Parameter": [1.0, 1.0, 1.0, 1.0],
+            "UVPara": [1.0, 1.0, 0.0, 0.0],
+            "IceParam": [0.4, 0.0, 0.2, 1.0],
+            "FoamColor": [1.0, 1.0, 1.0, 1.0],
+            "Color_Low": [1.0, 1.0, 1.0, 1.0],
+            "Color_High": [1.0, 1.0, 1.0, 1.0],
+        }
+        liquid_scalars = {
+            "Tiling": 1.0, "ColPow": 1.5, "ParallaxD": 0.0,
+            "SpecularScale": 1.0, "OpacityEnable": 0.0,
+            "UVSampleKey": 0.0, "Speed_U": 0.0, "Speed_V": 0.0,
+            "FoamIntensity": 0.5, "FoamAlpha": 1.0,
+            "IceDistortScale": 0.001, "IceDistortStrength": 0.3,
+            "FresnelSpeed": 1.0, "IcingAmount": 0.0,
+            "UGCKey_R": 1.0, "UGCKey_M": 1.0,
+        }
+        waterfall_scalars = {
+            "Speed_MainTexU": 0.0, "Speed_MainTexV": 0.0,
+            "Speed_NoiseTexU": 0.0, "Speed_NoiseTexV": 0.0,
+            "Tiling_MainTex_x": 1.0, "Tiling_MainTex_y": 1.0,
+            "Tiling_NoiseTex": 1.0, "Rough_Low": 0.0, "Rough_High": 1.0,
+            "Metallic": 0.0, "Specular": 0.5, "NoiseRemapMax": 1.0,
+            "EmisStrength": 1.0, "ClipLayer_Power": 1.0, "ClipLayer_Step": 0.0,
+            "ClipLayer_Mult": 1.0, "ClipLayer_EmisMult": 0.4,
+            "AlphaStepMin": 0.0, "AlphaStepMax": 1.0,
+        }
+        reflection_cube = ""
+        pattern_enabled = False
+        authored_params = set()
         for item in nodes:
             obj = objects[item] if item < len(objects) else None
             if not isinstance(obj, dict):
                 continue
             node_class = class_name(item)
             value = obj.get("Value")
+            if value is not None:
+                authored_params.add(node_class)
+            if node_class in liquid_vectors and isinstance(value, list) and len(value) >= 4:
+                liquid_vectors[node_class] = [float(x) for x in value[:4]]
+            elif node_class in liquid_scalars and isinstance(value, (int, float)):
+                liquid_scalars[node_class] = float(value)
+            elif node_class in waterfall_scalars and isinstance(value, (int, float)):
+                waterfall_scalars[node_class] = float(value)
+            elif node_class == "Cube" and isinstance(value, str):
+                reflection_cube = resolve(value) if resolve else value
+            if "AlphaRef" in obj:
+                try:
+                    alpha_ref = float(obj["AlphaRef"])
+                except (TypeError, ValueError):
+                    pass
+            if "AlphaVal" in obj:
+                try:
+                    alpha_val = float(obj["AlphaVal"]) / 255.0
+                except (TypeError, ValueError):
+                    pass
+            if node_class == "Macro0" and obj.get("Key") == "ENABLE_PATTERN":
+                try:
+                    pattern_enabled = int(obj.get("Val") or 0) != 0
+                except (TypeError, ValueError):
+                    pass
             if fallback_value is None and isinstance(value, list) and len(value) == 4 and all(isinstance(v, (int, float)) for v in value):
                 fallback_value = [float(v) for v in value]
             if not name and isinstance(obj.get("Name"), str):
@@ -397,16 +456,10 @@ def material_tree(data: dict, resolve=None) -> list:
                 base_color_found = True
             elif node_class == "TintValue" and isinstance(value, (int, float)):
                 tint_value = float(value)
-            elif "AlphaRef" in obj:
-                try:
-                    alpha_ref = float(obj["AlphaRef"])
-                except (TypeError, ValueError):
-                    pass
-                if "AlphaVal" in obj:
-                    try:
-                        alpha_val = float(obj["AlphaVal"]) / 255.0
-                    except (TypeError, ValueError):
-                        pass
+            elif node_class == "Extra_Op" and isinstance(value, (int, float)):
+                extra_op = float(value)
+            elif node_class == "Pattern_Op" and isinstance(value, (int, float)):
+                pattern_op = float(value)
             elif "Extra_Op" in obj:
                 try:
                     extra_op = float(obj["Extra_Op"])
@@ -477,7 +530,7 @@ def material_tree(data: dict, resolve=None) -> list:
                 down_color = [float(x) for x in value[:4]]
             elif node_class == "UpColor" and isinstance(value, list) and len(value) >= 4:
                 up_color = [float(x) for x in value[:4]]
-            elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4") and isinstance(value, str):
+            elif node_class in ("Tex0", "Tex1", "Tex2", "Tex3", "Tex4", "Tex5") and isinstance(value, str):
                 slot = resolve(value) if resolve else value
                 if node_class == "Tex0":
                     tex0 = slot
@@ -487,8 +540,10 @@ def material_tree(data: dict, resolve=None) -> list:
                     tex2 = slot
                 elif node_class == "Tex3":
                     tex3 = slot
-                else:
+                elif node_class == "Tex4":
                     tex4 = slot
+                else:
+                    tex5 = slot
             elif node_class == "BaseNormal" and isinstance(value, str):
                 base_normal = resolve(value) if resolve else value
             elif node_class == "PatternTex" and isinstance(value, str):
@@ -501,17 +556,46 @@ def material_tree(data: dict, resolve=None) -> list:
             for value2 in obj.values():
                 if isinstance(value2, str) and value2.lower().endswith((".tga", ".dds", ".kta", ".png")):
                     textures.append(resolve(value2) if resolve else value2)
-        if not any((tex0, tex1, tex2, tex3, tex4)) and len({item for item in textures if item}) == 1:
+        if not any((tex0, tex1, tex2, tex3, tex4, tex5)) and len({item for item in textures if item}) == 1:
             tex0 = next(item for item in textures if item)
         surface_lower = surface.lower()
         if "unlit" in surface_lower:
             lighting = False
-        if "water" in surface_lower and tex0 and "normal" in tex0.lower():
-            tex0 = ""
-            tex1 = ""
-            transparent = True
-            base_color = colors[0]
-            base_color_found = True
+        surface_name = surface_lower.replace("\\", "/").rsplit("/", 1)[-1]
+        if surface_name in ("standard_pubu.surf", "standard_pubu2.surf"):
+            shader_kind = "waterfall"
+        elif surface_name == "object_water_simple.surf":
+            shader_kind = "water_simple"
+        elif surface_name == "object_water_changecolor.surf":
+            shader_kind = "water_color"
+        elif "water" in surface_name:
+            shader_kind = "water"
+        elif "glass" in surface_name:
+            shader_kind = "glass"
+        elif "unlit_jelly" in surface_name:
+            shader_kind = "jelly"
+        else:
+            shader_kind = "standard"
+        if shader_kind in ("water", "water_color") and "Intensity" not in authored_params:
+            intensity = [1.0, 1.0, 0.0, -1.0]
+        if shader_kind == "waterfall":
+            defaults = [[1.0, 1.0, 1.0, 1.0]] * 3
+        elif shader_kind == "water_color":
+            defaults = [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]]
+        elif shader_kind == "water_simple":
+            defaults = [[0.0, 0.33, 0.79, 1.0], [0.62, 0.94, 0.99, 1.0], [0.0, 1.0, 0.92, 1.0]]
+        else:
+            defaults = []
+        for color_index, default_color in enumerate(defaults):
+            if f"MaskColor{color_index}" not in authored_params:
+                colors[color_index] = default_color
+        if shader_kind == "waterfall":
+            # 旧瀑布材质保存 Color_Low/High，新版着色器改为 MaskColor0/1。
+            for color_index, legacy_name in enumerate(("Color_Low", "Color_High")):
+                if f"MaskColor{color_index}" not in authored_params and legacy_name in authored_params:
+                    colors[color_index] = liquid_vectors[legacy_name]
+            if "MaskColor2" not in authored_params and "BorderColor" in authored_params:
+                colors[2] = border_color
         if "_simple" in surface_lower:
             simple_light = True
         if "unlit_jelly" in surface_lower:
@@ -575,12 +659,27 @@ def material_tree(data: dict, resolve=None) -> list:
             emissive_kind = 0
         if not base_color_found and not surface and fallback_value:
             base_color = fallback_value
-        glass_opacity = extra_op if extra_op is not None else (alpha_val if alpha_val is not None else 0.6)
+        # AlphaVal 属于引擎统一透明度；不能再当作玻璃材质的不透明度重复相乘。
+        glass_opacity = extra_op if extra_op is not None else 1.0
+        normal_slot = "" if shader_kind == "waterfall" else ("tex0" if surface_name in ("object_glass.surf", "object_water_simple.surf") else "tex1")
+        roughness = intensity[3] if shader_kind == "water_simple" else intensity[1]
+        metalness = intensity[2]
+        mix_map = shader_kind == "standard" or surface_name in ("standard_glass.surf", "standard_snowglass.surf")
+        if shader_kind in ("water", "water_color", "water_simple", "waterfall", "jelly", "glass"):
+            # 水的泡沫/噪声、玻璃的法线及果冻的 Matcap 都不是颜色图的透明通道。
+            opacity_tex = "none"
         normal_mode = 1 if color_mode == 2 else 0
         materials.append({
             "index": material_index,
             "name": name,
             "surface": surface,
+            "shader_kind": shader_kind,
+            "normal_slot": normal_slot,
+            "matcap_slot": "tex2" if shader_kind == "water_simple" else ("tex0" if shader_kind == "jelly" else ""),
+            "mix_map": mix_map,
+            "roughness": roughness,
+            "metalness": metalness,
+            "reflection_cube": reflection_cube,
             "transparent": transparent,
             "lighting": lighting,
             "cull_back": cull_back,
@@ -590,6 +689,10 @@ def material_tree(data: dict, resolve=None) -> list:
             "tex2": tex2,
             "tex3": tex3,
             "tex4": tex4,
+            "tex5": tex5,
+            "waterfall_textures": [tex3, tex4, tex5] if shader_kind == "waterfall" else [],
+            "color_low": liquid_vectors["Color_Low"],
+            "color_high": liquid_vectors["Color_High"],
             "opacity_tex": opacity_tex,
             "normal_mode": normal_mode,
             "colors": colors,
@@ -634,6 +737,29 @@ def material_tree(data: dict, resolve=None) -> list:
             "tiling": tiling,
             "base_normal": base_normal,
             "pattern_tex": pattern_tex,
+            "pattern_enabled": pattern_enabled,
+            "speed": liquid_vectors["Speed"],
+            "variable": liquid_vectors["Variable"],
+            "parameter": liquid_vectors["Parameter"],
+            "uv_para": liquid_vectors["UVPara"],
+            "ice_param": liquid_vectors["IceParam"],
+            "foam_color": liquid_vectors["FoamColor"],
+            "water_tiling": liquid_scalars["Tiling"],
+            "col_pow": liquid_scalars["ColPow"],
+            "parallax": liquid_scalars["ParallaxD"],
+            "specular_scale": liquid_scalars["SpecularScale"],
+            "opacity_enable": liquid_scalars["OpacityEnable"],
+            "uv_sample_key": liquid_scalars["UVSampleKey"],
+            "speed_u": liquid_scalars["Speed_U"],
+            "speed_v": liquid_scalars["Speed_V"],
+            "foam_intensity": liquid_scalars["FoamIntensity"],
+            "foam_alpha": liquid_scalars["FoamAlpha"],
+            "ice_distort_scale": liquid_scalars["IceDistortScale"],
+            "ice_distort_strength": liquid_scalars["IceDistortStrength"],
+            "fresnel_speed": liquid_scalars["FresnelSpeed"],
+            "icing_amount": liquid_scalars["IcingAmount"],
+            "ugc_roughness": liquid_scalars["UGCKey_R"],
+            "ugc_metalness": liquid_scalars["UGCKey_M"],
             "color_mode": color_mode,
             "lerp_linear": lerp_linear,
             "emissive_kind": emissive_kind,
@@ -641,6 +767,27 @@ def material_tree(data: dict, resolve=None) -> list:
             "extra_op": extra_op,
             "pattern_op": pattern_op,
             "glass_opacity": glass_opacity,
+            **{
+                "speed_main_tex_u": waterfall_scalars["Speed_MainTexU"],
+                "speed_main_tex_v": waterfall_scalars["Speed_MainTexV"],
+                "speed_noise_tex_u": waterfall_scalars["Speed_NoiseTexU"],
+                "speed_noise_tex_v": waterfall_scalars["Speed_NoiseTexV"],
+                "tiling_main_tex_x": waterfall_scalars["Tiling_MainTex_x"],
+                "tiling_main_tex_y": waterfall_scalars["Tiling_MainTex_y"],
+                "tiling_noise_tex": waterfall_scalars["Tiling_NoiseTex"],
+                "rough_low": waterfall_scalars["Rough_Low"],
+                "rough_high": waterfall_scalars["Rough_High"],
+                "metallic": waterfall_scalars["Metallic"],
+                "specular": waterfall_scalars["Specular"],
+                "noise_remap_max": waterfall_scalars["NoiseRemapMax"],
+                "emis_strength": waterfall_scalars["EmisStrength"],
+                "clip_layer_power": waterfall_scalars["ClipLayer_Power"],
+                "clip_layer_step": waterfall_scalars["ClipLayer_Step"],
+                "clip_layer_mult": waterfall_scalars["ClipLayer_Mult"],
+                "clip_layer_emis_mult": waterfall_scalars["ClipLayer_EmisMult"],
+                "alpha_step_min": waterfall_scalars["AlphaStepMin"],
+                "alpha_step_max": waterfall_scalars["AlphaStepMax"],
+            },
         })
     materials.sort(key=lambda item: item["index"])
     return materials
@@ -1801,7 +1948,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _gmp_thumb(self, row, width: int, wait: bool = True) -> bytes:
         width = min(max(32, width), 512)
-        cache = self.server.artifact(row, f"_gmp_w{width}_v1.png", "thumb")
+        cache = self.server.artifact(row, f"_gmp_w{width}_v2.png", "thumb")
         thumb = self.server.read_artifact(cache)
         if thumb is not None:
             return thumb
@@ -1961,7 +2108,7 @@ class Handler(BaseHTTPRequestHandler):
             draw.line([(0, y), (canvas_w, y)], fill=grid)
 
         bounds = data.get("bounds")
-        units = [unit for unit in (data.get("units") or []) if unit.get("position")]
+        units = [unit for unit in (data.get("units") or []) if unit.get("position") and unit.get("visible") is not False]
         if not units or not bounds:
             draw.ellipse([canvas_w / 2 - 12, canvas_h / 2 - 12, canvas_w / 2 + 12, canvas_h / 2 + 12], outline=(255, 255, 255, 40), width=2)
         else:
@@ -2037,9 +2184,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _resolve_ref(self, base_path: str, ref: str) -> str | None:
         target = [p for p in ref.replace("\\", "/").split("/") if p not in ("", ".")]
-        candidate = "/".join(target)
-        if self._row(candidate):
-            return candidate
+        candidates = ["/".join(target)]
         stack = [p for p in base_path.split("/") if p]
         if stack:
             stack.pop()
@@ -2050,21 +2195,68 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 stack.append(part)
         candidate = "/".join(stack)
-        if self._row(candidate):
-            return candidate
+        candidates.append(candidate)
         overlap = candidate.rfind(target[0]) if target else -1
         if overlap > 0:
-            candidate = candidate[overlap:]
+            candidates.append(candidate[overlap:])
+        candidates = list(dict.fromkeys(candidates))
+        for candidate in candidates:
             if self._row(candidate):
                 return candidate
-        # 贴图引用常写 .tga/.dds, 实际文件是同名 .kta
-        stem = target[-1].rsplit(".", 1)[0] if target else ""
-        if stem:
+        # 贴图后缀替换必须同时保留相对目录，否则同目录贴图会丢失。
+        for candidate in candidates:
+            if Path(candidate).suffix.lower() not in IMAGE_EXT:
+                continue
             for suffix in (".kta", ".dds", ".png"):
-                candidate = "/".join(stack[:-1] if False else target[:-1] + [stem + suffix])
-                if self._row(candidate):
-                    return candidate
+                texture_path = str(Path(candidate).with_suffix(suffix)).replace("\\", "/")
+                if self._row(texture_path):
+                    return texture_path
         return None
+
+    def _neox_material_data(self, data: dict, base_path: str, override: str | None = None) -> None:
+        material_data = data
+        material_path = base_path
+        if Path(base_path).suffix.lower() != ".mtg" or override:
+            candidates = [override] if override else []
+            if not override:
+                # GIM 的材质引用可能与模型不同名，优先使用文件中的明确引用。
+                for obj in data.get("objects", []):
+                    ref = obj.get("MtgPath")
+                    if isinstance(ref, str) and ref:
+                        candidates.append(self._resolve_ref(base_path, ref))
+                candidates.append(str(Path(base_path).with_suffix(".mtg")).replace("\\", "/"))
+            for candidate in candidates:
+                row = self._row(candidate) if candidate else None
+                if not row or (row["ext"] or "").lower() != ".mtg":
+                    continue
+                try:
+                    material_data = neox_object.parse(self._entry_payload(row))
+                    material_path = row["path"]
+                    data["material_path"] = material_path
+                    break
+                except (OSError, ValueError, IndexError, struct.error) as exc:
+                    data["material_error"] = str(exc)
+        objects = material_data.get("objects", [])
+        data["material"] = material_flags(objects)
+        # 选定材质的纹理和参数使用同一来源，覆盖材质不能混用原 GIM 的贴图。
+        textures = []
+        for obj in objects:
+            for name, value in obj.items():
+                if isinstance(value, str) and value.lower().endswith((".tga", ".dds", ".kta", ".png")):
+                    textures.append({
+                        "slot": name, "path": value,
+                        "resolved": self._resolve_ref(material_path, value),
+                    })
+        data["textures"] = textures
+        materials = material_tree(material_data, lambda value: self._resolve_ref(material_path, value))
+        if not materials:
+            materials = material_groups(objects, textures)
+        if materials:
+            data["materials"] = materials
+        resolved = [item["resolved"] for item in textures if item.get("resolved")]
+        if resolved:
+            data["material"]["textures"] = resolved
+            data["texture_images"] = resolved
 
     def _gim_bounds(self, data: dict) -> tuple[list | None, list | None]:
         for obj in data.get("objects", []):
@@ -2660,7 +2852,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route.startswith("/static/"):
                 name = route[len("/static/"):]
-                if name in {"app.js", "style.css"}:
+                if name in {"app.js", "style.css", "field_icons.js", "field_icons.css"}:
                     ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
                     self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
                     return
@@ -2910,6 +3102,16 @@ class Handler(BaseHTTPRequestHandler):
                 if (row["ext"] or "").lower() not in (".gim", ".mtg", ".mesh"):
                     self._error("not a NeoX object file", 415)
                     return
+                material_override = (query.get("material", [""])[0] or "").strip()
+                if material_override:
+                    material_override = self._resolve_ref(row["path"], material_override)
+                    material_row = self._row(material_override) if material_override else None
+                    if not material_row:
+                        self._error("material not found", 404)
+                        return
+                    if (material_row["ext"] or "").lower() != ".mtg":
+                        self._error("not an MTG file", 415)
+                        return
                 if (row["ext"] or "").lower() == ".mesh":
                     try:
                         payload = self._entry_payload(row)
@@ -2929,6 +3131,7 @@ class Handler(BaseHTTPRequestHandler):
                             "material": material_flags([]),
                         }
                     )
+                    self._neox_material_data(data, row["path"], material_override)
                     self._json(data)
                     return
                 try:
@@ -2937,28 +3140,14 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._error(f"NeoX parse failed: {exc}", 415)
                     return
-                data["material"] = material_flags(data.get("objects", []))
-                material_objects = data.get("objects", [])
-                textures = []
-                for obj in data.get("objects", []):
-                    for name, value in obj.items():
-                        if (
-                            isinstance(value, str)
-                            and value
-                            and value.lower().endswith((".tga", ".dds", ".kta", ".png"))
-                        ):
-                            textures.append({"slot": name, "path": value})
-                if textures:
-                    data["textures"] = textures
+                self._neox_material_data(data, row["path"], material_override)
+                textures = data.get("textures", [])
                 mesh_ref = None
                 for obj in data.get("objects", []):
                     value = obj.get("Mesh")
                     if isinstance(value, str) and value:
                         mesh_ref = value
                         break
-                if textures:
-                    for texture in textures:
-                        texture["resolved"] = self._resolve_ref(row["path"], texture["path"])
                 if mesh_ref:
                     mesh_path = self._resolve_ref(row["path"], mesh_ref)
                     data["mesh"] = mesh_path or mesh_ref.replace("\\", "/")
@@ -2969,42 +3158,6 @@ class Handler(BaseHTTPRequestHandler):
                         data["mesh"] = sibling
                     else:
                         mesh_path = None
-                tree_materials = []
-                if (row["ext"] or "").lower() != ".mtg":
-                    mtg_sibling = str(Path(row["path"]).with_suffix(".mtg")).replace("\\", "/")
-                    mtg_row = self._row(mtg_sibling)
-                    if mtg_row and (mtg_row["ext"] or "").lower() == ".mtg":
-                        try:
-                            mtg_data = neox_object.parse(self._entry_payload(mtg_row))
-                            data["material"] = material_flags(mtg_data.get("objects", []))
-                            material_objects = mtg_data.get("objects", [])
-                            tree_materials = material_tree(mtg_data, lambda value: self._resolve_ref(mtg_sibling, value))
-                            if not textures:
-                                for obj in mtg_data.get("objects", []):
-                                    for name, value in obj.items():
-                                        if (
-                                            isinstance(value, str)
-                                            and value
-                                            and value.lower().endswith((".tga", ".dds", ".kta", ".png"))
-                                        ):
-                                            textures.append({"slot": name, "path": value, "resolved": self._resolve_ref(mtg_sibling, value)})
-                        except Exception:
-                            pass
-                    if textures:
-                        data["textures"] = textures
-                if tree_materials:
-                    data["materials"] = tree_materials
-                if (row["ext"] or "").lower() == ".mtg":
-                    tree_materials = material_tree(data, lambda value: self._resolve_ref(row["path"], value))
-                    if tree_materials:
-                        data["materials"] = tree_materials
-                if textures:
-                    resolved = [item.get("resolved") for item in textures if item.get("resolved")]
-                    if resolved:
-                        data["material"]["textures"] = resolved
-                        groups = material_groups(material_objects, textures)
-                        if groups and not data.get("materials"):
-                            data["materials"] = groups
                 if mesh_path and not data.get("mesh_data"):
                     try:
                         mesh_row = self._row(mesh_path)
