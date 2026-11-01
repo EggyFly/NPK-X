@@ -31,9 +31,11 @@ def _read_uint(data, pos, width):
     return int.from_bytes(data[pos:pos + width], "big"), pos + width
 
 
-def _decode(data, pos=0):
+def _decode(data, pos=0, depth=0):
     if pos >= len(data):
         raise MsgpackError("unexpected end")
+    if depth > 256:
+        raise MsgpackError("nesting too deep")
     marker = data[pos]
     pos += 1
     if marker <= 0x7F:
@@ -41,9 +43,9 @@ def _decode(data, pos=0):
     if marker >= 0xE0:
         return marker - 256, pos
     if 0x80 <= marker <= 0x8F:
-        return _decode_map(data, pos, marker & 0x0F)
+        return _decode_map(data, pos, marker & 0x0F, depth)
     if 0x90 <= marker <= 0x9F:
-        return _decode_array(data, pos, marker & 0x0F)
+        return _decode_array(data, pos, marker & 0x0F, depth)
     if 0xA0 <= marker <= 0xBF:
         length = marker & 0x1F
         if pos + length > len(data):
@@ -91,11 +93,11 @@ def _decode(data, pos=0):
     if marker in (0xDC, 0xDD):
         width = 2 if marker == 0xDC else 4
         count, pos = _read_uint(data, pos, width)
-        return _decode_array(data, pos, count)
+        return _decode_array(data, pos, count, depth)
     if marker in (0xDE, 0xDF):
         width = 2 if marker == 0xDE else 4
         count, pos = _read_uint(data, pos, width)
-        return _decode_map(data, pos, count)
+        return _decode_map(data, pos, count, depth)
     if marker in (0xC7, 0xC8, 0xC9):
         width = {0xC7: 1, 0xC8: 2, 0xC9: 4}[marker]
         length, pos = _read_uint(data, pos, width)
@@ -105,19 +107,19 @@ def _decode(data, pos=0):
     raise MsgpackError(f"unsupported marker 0x{marker:02x}")
 
 
-def _decode_array(data, pos, count):
+def _decode_array(data, pos, count, depth=0):
     result = []
     for _ in range(count):
-        value, pos = _decode(data, pos)
+        value, pos = _decode(data, pos, depth + 1)
         result.append(value)
     return result, pos
 
 
-def _decode_map(data, pos, count):
+def _decode_map(data, pos, count, depth=0):
     result = {}
     for _ in range(count):
-        key, pos = _decode(data, pos)
-        value, pos = _decode(data, pos)
+        key, pos = _decode(data, pos, depth + 1)
+        value, pos = _decode(data, pos, depth + 1)
         try:
             result[key] = value
         except TypeError:
@@ -201,12 +203,13 @@ def _parse_unit(unit_id, unit):
     camp = _key(unit, "camp_id")
     parent = _key(unit, "parent_unit_id")
     color = _color(_key(unit, "paint_area1"))
-    paint = [color, _color(_key(unit, "paint_area2")), _color(_key(unit, "paint_area3"))]
+    paint = [color, _color(_key(unit, "paint_area2")), _color(_key(unit, "paint_area3")),
+             _color(_key(unit, "paint_area4"))]
     scale = _first_vector(unit, ("ctx_real_scale", "real_scale", "scale"), lambda value: _vec(value, 3))
     angle = _first_vector(unit, ("ctx_model_angle", "trans_model_angle", "model_angle"), lambda value: _vec(value, 3))
     alpha = _number(_key(unit, "ctx_model_alpha"))
     if alpha is not None:
-        # 批次缓存使用字节透明度，普通组件使用 0 到 1 的透明度。
+        # ctx_model_alpha 仅出现在批次记录且取值 0..255，普通组件的 model_alpha 已是 0..1。
         alpha /= 255.0
     else:
         alpha = _number(_key(unit, "model_alpha"))
@@ -226,9 +229,24 @@ def _parse_unit(unit_id, unit):
         "paint": paint,
         "alpha": round(alpha, 3) if alpha is not None else None,
         "visible": bool(visible) if isinstance(visible, (bool, int)) else True,
+        # 路点/组件组/触发器/相机等逻辑实体在 GMP 中天然没有模型，不算解析失败。
+        "logical": (not model) and isinstance(unit_type, int) and unit_type in (512, 2048, 4096),
         "scale": scale,
         "angle": angle,
     }
+
+
+def _env_colors(value):
+    """环境块数组常带序列化标记字节，只保留数值前段。"""
+    if not isinstance(value, (list, tuple)):
+        return None
+    numbers = []
+    for item in value[:6]:
+        number = _number(item)
+        if number is None:
+            break
+        numbers.append(round(number, 4))
+    return numbers or None
 
 
 def _color(value):
@@ -295,7 +313,7 @@ def read_map_name(payload: bytes) -> str | None:
             continue
         try:
             value, end = _decode(raw)
-        except (MsgpackError, RecursionError):
+        except (MsgpackError, RecursionError, MemoryError):
             continue
         if end != len(raw):
             continue
@@ -307,26 +325,60 @@ def read_map_name(payload: bytes) -> str | None:
     return None
 
 
-def _section_formats(payload: bytes) -> dict:
-    if not payload.startswith(b"DZ") or len(payload) < 34:
+def _section_formats_nodz(payload: bytes) -> dict:
+    # 旧版容器：16B 哈希 + u16 版本 + u32 总长 + u16 段数 + N×6B {seg_id, 帧长} + 帧序列。
+    if len(payload) < 26:
         return {}
-    has_bindict_flag = bool(struct.unpack_from("!I", payload, 22)[0] & 2)
-    count = struct.unpack_from("!H", payload, 32)[0]
-    stride = 8 if has_bindict_flag else 6
-    position = 34 + count * stride
-    if not count or position > len(payload):
+    count = struct.unpack_from("!H", payload, 22)[0]
+    if not count or count > 50000:
+        return {}
+    position = 24 + count * 6
+    if position > len(payload):
         return {}
     sections = {}
     for index in range(count):
-        fields = struct.unpack_from("!HHI" if has_bindict_flag else "!HI", payload, 34 + index * stride)
-        section_id, size = fields[0], fields[-1]
+        seg_id, size = struct.unpack_from("!HI", payload, 24 + index * 6)
         if position + size > len(payload):
             return {}
-        # 原生 bindict 与 MessagePack 都使用 Zstd 压缩，须按段表判断编码。
-        encoding = "bindict" if has_bindict_flag and fields[1] else "msgpack"
-        sections[position] = {"section_id": section_id, "encoding": encoding}
+        sections[position] = {"section_id": seg_id, "encoding": "msgpack", "size": size}
         position += size
     return sections if position == len(payload) else {}
+
+
+def _section_formats(payload: bytes) -> dict:
+    if not payload.startswith(b"DZ"):
+        return _section_formats_nodz(payload)
+    if len(payload) < 34:
+        return {}
+    has_bindict_flag = bool(struct.unpack_from("!I", payload, 22)[0] & 2)
+    stride = 8 if has_bindict_flag else 6
+    sections = {}
+    position = 32
+    for _round in range(64):
+        if position + 2 > len(payload):
+            break
+        count = struct.unpack_from("!H", payload, position)[0]
+        table_end = position + 2 + count * stride
+        if not count or count > 50000 or table_end > len(payload):
+            break
+        entries = []
+        sizes_total = 0
+        for index in range(count):
+            fields = struct.unpack_from("!HHI" if has_bindict_flag else "!HI", payload, position + 2 + index * stride)
+            entries.append((fields[0], fields[1] if has_bindict_flag else 0, fields[-1]))
+            sizes_total += fields[-1]
+        if table_end + sizes_total > len(payload):
+            break
+        # 多块 GMP 的段表逐块相连：上一块的段数据结束后紧跟下一块的 u16 count。
+        cursor = table_end
+        for section_id, flag2, size in entries:
+            encoding = "bindict" if has_bindict_flag and flag2 else "msgpack"
+            sections[cursor] = {"section_id": section_id, "encoding": encoding, "size": size}
+            cursor += size
+        position = table_end + sizes_total
+        if position >= len(payload):
+            break
+    return sections
 
 
 def _frames(payload: bytes):
@@ -358,6 +410,7 @@ def parse(payload: bytes) -> dict:
     chunks = []
     objects = []
     references = set()
+    sid3_raws = []
     sections = _section_formats(payload)
     for index, (offset, compressed, raw) in enumerate(_frames(payload)):
         chunk = {"index": index, "offset": offset, "compressed": compressed, "raw": len(raw)}
@@ -369,22 +422,45 @@ def parse(payload: bytes) -> dict:
                 value, end = None, 0
             else:
                 value, end = _decode(raw)
-        except (MsgpackError, RecursionError):
+        except (MsgpackError, RecursionError, MemoryError):
             value, end = None, 0
         if unsupported:
             chunk["kind"] = "unsupported"
             chunk["consumed"] = 0
-        elif isinstance(value, (dict, list)) and end == len(raw):
-            objects.append(value)
-            chunk["kind"] = "msgpack"
-            chunk["consumed"] = end
+            if chunk.get("section_id") == 3 and len(sid3_raws) < 6:
+                sid3_raws.append(raw)
         elif skipped and _looks_msgpack(raw):
             chunk["kind"] = "msgpack"
             chunk["consumed"] = 0
             chunk["skipped"] = True
         else:
-            chunk["kind"] = "binary"
-            chunk["consumed"] = 0
+            # 大量"binary"帧其实是空段/标量/连发 msgpack，逐值探测后再分类。
+            decoded = []
+            cursor = 0
+            try:
+                while cursor < len(raw) and len(decoded) <= 4096:
+                    value, cursor = _decode(raw, cursor)
+                    decoded.append(value)
+            except (MsgpackError, RecursionError, MemoryError):
+                pass
+            if decoded and cursor == len(raw):
+                for value in decoded:
+                    if isinstance(value, (dict, list)):
+                        objects.append(value)
+                chunk["kind"] = "msgpack"
+                chunk["consumed"] = cursor
+            elif raw == b"\xc0":
+                chunk["kind"] = "empty"
+                chunk["consumed"] = 0
+            elif decoded and cursor > 0:
+                chunk["kind"] = "scalar"
+                chunk["consumed"] = cursor
+            elif raw[:4] in (b"TESM", b"TESL"):
+                chunk["kind"] = "terrain"
+                chunk["consumed"] = 0
+            else:
+                chunk["kind"] = "binary"
+                chunk["consumed"] = 0
         chunks.append(chunk)
         if len(references) < 200:
             for match in REF_RE_BYTES.finditer(raw):
@@ -402,6 +478,7 @@ def parse(payload: bytes) -> dict:
     batch_records = {}
     eids = {}
     type_counts = {}
+    env = None
 
     for root in objects:
         budget = [1500000]
@@ -423,6 +500,19 @@ def parse(payload: bytes) -> dict:
                     value = _key(node, "egg_island_scene")
                     if isinstance(value, bool):
                         egg_island_scene = value
+                if env is None and _key(node, "main_light_color") is not None:
+                    env_color_value = _key(node, "env_light_color")
+                    if env_color_value is None:
+                        env_color_value = _key(node, "env_light_r_color")
+                    env = {
+                        "main_light_color": _env_colors(_key(node, "main_light_color")),
+                        "main_light_intensity": _number(_key(node, "main_light_intensity")),
+                        "main_light_euler": _env_colors(_key(node, "main_light_euler")),
+                        "env_light_color": _env_colors(env_color_value),
+                        "env_light_intensity": _number(_key(node, "env_light_intensity")),
+                        "skylight_average_lum_enable": _key(node, "skylight_average_lum_enable")
+                            if isinstance(_key(node, "skylight_average_lum_enable"), bool) else None,
+                    }
                 for names, records in ((("unit", "units"), unit_records), (("batch_unit_data",), batch_records)):
                     group = _key(node, *names)
                     if not isinstance(group, dict):
@@ -455,17 +545,54 @@ def parse(payload: bytes) -> dict:
             eids[eid] = eids.get(eid, 0) + 1
         if isinstance(unit_type, int):
             type_counts[unit_type] = type_counts.get(unit_type, 0) + 1
+    if not unit_list and sid3_raws:
+        # 158 张零单位图的单位数据在 sid3 bindict 里；解码出 unit_id+位置供画布显示。
+        try:
+            import bindict_units
+        except ImportError:
+            bindict_units = None
+        if bindict_units is not None:
+            for raw in sid3_raws:
+                try:
+                    decoded = bindict_units.decode_section(raw)
+                except Exception:
+                    decoded = None
+                for unit in (decoded or {}).get("units", []):
+                    position = unit.get("position_guess")
+                    if not position:
+                        continue
+                    unit_list.append({
+                        "id": unit["unit_id"],
+                        "name": "",
+                        "type": None,
+                        "eid": None,
+                        "model_id": None,
+                        "model": "",
+                        "material": "",
+                        "camp": None,
+                        "parent": 0,
+                        "position": [round(value, 3) for value in position[:3]],
+                        "color": None,
+                        "paint": [None, None, None, None],
+                        "alpha": None,
+                        "visible": True,
+                        "scale": None,
+                        "angle": None,
+                        "from_bindict": True,
+                    })
     positions = [unit["position"] for unit in unit_list]
     bounds = _bounds(positions)
     unit_list.sort(key=lambda item: (item["eid"] or 0, item["name"], item["id"]))
     return {
         "map_name": map_name,
         "party_map_id": party_map_id,
+        "env": env,
         "temp_map_id": temp_map_id,
         "egg_island_scene": egg_island_scene,
         "unit_count": len(unit_list),
         "units": unit_list[:12000],
         "unit_truncated": len(unit_list) > 12000,
+        "bindict_units": sum(1 for unit in unit_list if unit.get("from_bindict")),
         "eids": {str(key): value for key, value in sorted(eids.items())},
         "types": {str(key): value for key, value in sorted(type_counts.items())},
         "references": sorted(references)[:200],
@@ -473,8 +600,11 @@ def parse(payload: bytes) -> dict:
         "parsed_chunks": sum(1 for chunk in chunks if chunk["kind"] == "msgpack"),
         "skipped_chunks": sum(1 for chunk in chunks if chunk.get("skipped")),
         "unsupported_chunks": sum(1 for chunk in chunks if chunk["kind"] == "unsupported"),
-        "unit_data_unsupported": any(chunk["kind"] == "unsupported" and chunk.get("section_id") == 3 for chunk in chunks),
+        "unit_data_unsupported": not unit_list and any(chunk["kind"] == "unsupported" and chunk.get("section_id") == 3 for chunk in chunks),
         "binary_chunks": sum(1 for chunk in chunks if chunk["kind"] == "binary"),
+        "empty_chunks": sum(1 for chunk in chunks if chunk["kind"] == "empty"),
+        "scalar_chunks": sum(1 for chunk in chunks if chunk["kind"] == "scalar"),
+        "terrain_chunks": sum(1 for chunk in chunks if chunk["kind"] == "terrain"),
         "bounds": bounds,
     }
 

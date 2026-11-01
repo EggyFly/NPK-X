@@ -3399,7 +3399,7 @@ const MAP_TEXTURE_LIMIT = 1200;
 const map3d = {
   canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null,
   uViewProj: null, uPointView: null, uPointSize: null, uLineView: null, uLineColor: null,
-  uniforms: {}, textureCache: new Map(), texturePending: new Map(),
+  uniforms: {}, textureCache: new Map(), texturePending: new Map(), cubeCache: new Map(),
   scene: null, sceneReady: false, animationStart: 0, animated: false,
   models: new Map(), units: [], points: null, pointCount: 0, grid: null, gridCount: 0, hiddenModels: new Set(),
   camera: { yaw: 0.9, pitch: 0.9, distance: 100, fit: 100, target: [0, 0, 0] },
@@ -3421,6 +3421,7 @@ out vec3 v_norm;
 out vec3 v_local;
 out vec3 v_world;
 out vec3 v_tiling;
+out vec3 v_tiling_bare;
 out vec3 v_scale;
 out vec2 v_uv;
 out vec4 v_paint1;
@@ -3440,6 +3441,7 @@ void main() {
   v_local = a_pos;
   v_world = (a_model * vec4(a_pos, 1.0)).xyz;
   v_tiling = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz)) * ((a_pos / 2.64) * 0.5 + 0.5);
+  v_tiling_bare = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz)) * (a_pos / 2.64);
   v_scale = vec3(length(a_model[0].xyz), length(a_model[1].xyz), length(a_model[2].xyz));
   v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
   v_paint1 = a_paint1;
@@ -3454,6 +3456,7 @@ in vec3 v_norm;
 in vec3 v_local;
 in vec3 v_world;
 in vec3 v_tiling;
+in vec3 v_tiling_bare;
 in vec3 v_scale;
 in vec2 v_uv;
 in vec4 v_paint1;
@@ -3473,6 +3476,9 @@ uniform vec4 u_rim_color;
 uniform vec2 u_fresnel;
 uniform float u_alpha_mtl;
 uniform float u_simple_light;
+uniform float u_glint_exp;
+uniform float u_hlod_mrs;
+uniform float u_mask_srgb;
 uniform vec4 u_down_color;
 uniform vec4 u_up_color;
 uniform sampler2D u_tex0;
@@ -3526,6 +3532,7 @@ uniform float u_pattern_color_key;
 uniform vec4 u_design_color;
 uniform vec4 u_glass_pattern_para;
 uniform float u_glass_pattern_rotation;
+uniform float u_pattern_depth;
 uniform vec4 u_water_variable;
 uniform vec4 u_water_speed;
 uniform vec4 u_water_parameter;
@@ -3541,6 +3548,104 @@ uniform vec4 u_fall_clip;
 uniform vec2 u_fall_alpha;
 uniform sampler2D u_scene_color;
 uniform sampler2D u_scene_depth;
+uniform sampler2D u_tex4;
+uniform float u_has_tex4;
+uniform float u_detail_scale;
+uniform float u_fresnel_pow;
+uniform float u_fresnel_intensity;
+uniform vec4 u_pattern_intensity;
+uniform float u_border_enable;
+uniform float u_scan_light;
+uniform float u_tiling_obj;
+uniform float u_tiling_nm;
+uniform float u_tiling_all;
+uniform float u_repeat_scale_y;
+uniform float u_sparkle;
+uniform float u_sparkle_scale;
+uniform float u_sparkle_offset;
+uniform float u_sparkle_speed;
+uniform float u_sparkle_pow;
+uniform float u_sparkle_intensity;
+uniform float u_sparkle_noise_scale;
+uniform sampler2D u_tex5;
+uniform float u_has_tex5;
+uniform float u_surf_kind;
+uniform float u_noise_scale;
+uniform float u_noise_strength;
+uniform float u_hue_strength;
+uniform float u_mask_pow;
+uniform float u_mask_style;
+uniform float u_mask_strength;
+uniform float u_audio_range;
+uniform float u_wind_speed;
+uniform float u_dissolve_value;
+uniform float u_dissolve_strength;
+uniform float u_dissolve_noise;
+uniform float u_dissolve_reverse;
+uniform float u_dissolve_dir;
+uniform float u_dissolve_intensity;
+uniform vec4 u_dissolve_scale;
+uniform vec4 u_dissolve_color;
+uniform float u_laser_scale;
+uniform float u_laser_transition;
+uniform vec4 u_flow_speed;
+uniform float u_state;
+uniform float u_flow_u;
+uniform vec4 u_flow;
+uniform float u_flow_strength;
+uniform float u_offset_scale;
+uniform float u_offset_speed;
+uniform float u_offset_strength;
+uniform float u_uv_speed;
+uniform float u_mix_lerp;
+uniform float u_lerp_key;
+uniform float u_change_color_key;
+uniform float u_color_intensity;
+uniform float u_ugc_r;
+uniform float u_ugc_m;
+uniform vec4 u_color0;
+uniform vec4 u_color1;
+uniform float u_streamer_speed;
+uniform float u_streamer_lightness;
+uniform float u_uv_tiling;
+uniform float u_flake_density;
+uniform float u_flake_number;
+uniform float u_sparkle_emis;
+uniform float u_flake_switch;
+uniform float u_offset_mult;
+uniform float u_offset_pow;
+uniform float u_fresnel_speed;
+uniform float u_shadow_enable;
+uniform float u_dw_ns1;
+uniform float u_dw_ns2;
+uniform float u_dw_ns;
+uniform float u_dw_speed_x;
+uniform float u_dw_speed_y;
+uniform float u_dw_depth_scale;
+uniform float u_dw_opacity_max;
+uniform float u_dw_foam_scale;
+uniform float u_dw_highlight_min;
+uniform float u_dw_lightness;
+uniform samplerCube u_env_map;
+uniform float u_has_env;
+uniform float u_object3;
+uniform float u_object4;
+uniform float u_position_x;
+uniform float u_length1;
+uniform float u_length2;
+uniform float u_length3;
+uniform float u_length4;
+uniform float u_dark_intensity;
+uniform float u_up_intensity;
+uniform float u_hsv_s;
+uniform float u_hsv_v;
+uniform float u_border_pow;
+uniform float u_border_speed;
+uniform float u_border_breath;
+uniform vec3 u_sun_color;
+uniform vec3 u_sun_dir;
+uniform vec3 u_sh_ambient;
+uniform float u_env_data;
 uniform float u_has_scene;
 uniform vec2 u_scene_size;
 uniform vec2 u_near_far;
@@ -3551,20 +3656,33 @@ out vec4 out_color;
 vec3 mapSrgb2Lin(vec3 c) {
   return pow(max(c, vec3(0.0)), vec3(2.2));
 }
+vec3 mapRgb2Hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 mapHsv2Rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
 vec3 mapLin2Srgb(vec3 c) {
   return pow(max(c, vec3(0.0)), vec3(0.4545));
 }
 const vec3 MAP_SUN_COLOR = vec3(2.4, 2.25, 2.05);
 const vec3 MAP_SUN_DIR = vec3(0.458, 0.814, 0.356);
-vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
-  vec3 L = MAP_SUN_DIR;
+vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao, vec3 spec0) {
+  vec3 L = u_sun_dir;
   vec3 H = normalize(L + V);
   float n_dot_l = max(dot(N, L), 0.0);
   float n_dot_v = max(abs(dot(N, V)), 0.001);
   float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
   float v_dot_h = clamp(dot(V, H), 0.0, 1.0);
   vec3 diff_col = albedo * (1.0 - metalness);
-  vec3 spec_col = mix(vec3(0.04), albedo, metalness);
+  vec3 spec_col = mix(spec0, albedo, metalness);
   float r2 = max(0.08, roughness);
   r2 *= r2;
   float vis = 0.5 / max(n_dot_l * (n_dot_v * (1.0 - r2) + r2) + n_dot_v * (n_dot_l * (1.0 - r2) + r2), 0.0001);
@@ -3574,13 +3692,24 @@ vec3 mapPbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, 
   float ggx = a2 / max(3.14159265 * dd * dd, 0.0001);
   float fc = pow(1.0 - v_dot_h, 5.0);
   vec3 fres = clamp(50.0 * spec_col.g, 0.0, 1.0) * fc + (1.0 - fc) * spec_col;
-  vec3 direct = (diff_col * n_dot_l / 3.14159265 + vis * ggx * n_dot_l * fres) * MAP_SUN_COLOR;
-  vec3 sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
-  vec3 env_diff = sky * diff_col;
-  vec3 R = reflect(-V, N);
-  vec3 env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
-  env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
+  vec3 sun_col = u_env_data > 0.5 ? u_sun_color : MAP_SUN_COLOR;
+  vec3 direct = (diff_col * n_dot_l / 3.14159265 + vis * ggx * n_dot_l * fres) * sun_col;
   float nv = clamp(abs(dot(N, V)), 0.0, 1.0);
+  vec3 sky = u_env_data > 0.5 ? u_sh_ambient * 0.2257
+    : mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
+  float fd_lum = dot(diff_col, vec3(0.2125, 0.7154, 0.0721));
+  vec3 f90 = clamp(diff_col - fd_lum * 0.3333, 0.0, 1.0);
+  vec3 env_diff = sky * mix(f90, diff_col, nv * nv);
+  vec3 R = reflect(-V, N);
+  float peak_a = roughness * roughness;
+  R = mix(N, R, (1.0 - peak_a) * (sqrt(1.0 - peak_a) + peak_a));
+  vec3 env_col;
+  if (u_has_env > 0.5) {
+    env_col = mapSrgb2Lin(texture(u_env_map, R, roughness * 6.0).rgb);
+  } else {
+    env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
+    env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
+  }
   vec4 cc0 = vec4(-1.0, -0.0275, -0.572, 0.022);
   vec4 cc1 = vec4(1.0, 0.0425, 1.04, -0.04);
   vec4 rr = roughness * cc0 + cc1;
@@ -3595,7 +3724,7 @@ vec3 mapTonemap(vec3 x) {
   float tm2_c = 2.43 - u_illum.w;
   const float tm2_d = 0.59;
   const float tm2_e = 0.14;
-  x = max(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.0));
+  x = clamp(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.01), vec3(60.0));
   vec3 r = (x * (tm2_a * x + tm2_b)) / (x * (tm2_c * x + tm2_d) + tm2_e);
   float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
   return (r * 1.2 - lum) * u_weather;
@@ -3617,6 +3746,29 @@ vec3 mapSurfaceNormal(vec3 sampled, vec3 geometry) {
 vec4 mapSourceSample(sampler2D source, vec2 coordinate) {
   // 上传时已翻转图片，源着色器的 UV 运算完成后再统一转换采样坐标。
   return texture(source, vec2(coordinate.x, 1.0 - coordinate.y));
+}
+vec2 mapRand2(vec2 p) {
+  return -1.0 + 2.0 * fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+float mapPerlin(vec2 p) {
+  vec2 ipos = floor(p);
+  vec2 fpos = fract(p);
+  vec2 s = fpos * fpos * (3.0 - 2.0 * fpos);
+  float n00 = dot(mapRand2(ipos), fpos);
+  float n10 = dot(mapRand2(ipos + vec2(1.0, 0.0)), fpos - vec2(1.0, 0.0));
+  float n01 = dot(mapRand2(ipos + vec2(0.0, 1.0)), fpos - vec2(0.0, 1.0));
+  float n11 = dot(mapRand2(ipos + vec2(1.0, 1.0)), fpos - vec2(1.0, 1.0));
+  return mix(mix(n00, n10, s.x), mix(n01, n11, s.x), s.y);
+}
+float mapRoundRect(vec2 uv, vec2 box, float corner, float sharpness, vec2 center) {
+  vec2 p = max(abs(uv - center) - (box - corner) * 0.5, vec2(0.0));
+  float m = clamp(length(p) / max(corner, 0.0001), 0.0, 1.0);
+  return clamp((1.0 - m) * (sharpness + 1.0), 0.0, 1.0);
+}
+vec2 mapRoundRect2(vec2 uv, float sharpness) {
+  float k = max(sharpness, 0.001);
+  vec2 p = pow(clamp(abs(uv * 2.0 - 1.0), 0.0, 1.0), vec2(k));
+  return pow(clamp(1.0 - p, 0.0, 1.0), vec2(1.0 / k));
 }
 vec3 mapSceneReflection(vec3 normal, vec3 view_dir, float roughness) {
   vec3 ray = reflect(-view_dir, normal);
@@ -3643,33 +3795,81 @@ vec3 mapSceneReflection(vec3 normal, vec3 view_dir, float roughness) {
 }
 void main() {
   vec2 uv = v_uv;
-  uv -= 0.5;
-  uv *= u_texture_para.xy;
+  bool cc_surface = u_use_paint > 0.5 || u_color_mode > 0.5;
+  bool bare29 = u_color_mode > 1.5 && u_color_mode < 2.5;
+  vec2 uv_scale = u_texture_para.xy * (cc_surface ? u_repeat_scale : 1.0);
   float texture_angle = radians(u_rotation_angle);
-  if (abs(texture_angle) > 0.0001) {
-    float s = sin(texture_angle), c = cos(texture_angle);
-    uv = vec2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
-  }
-  uv += 0.5;
-  uv += u_texture_para.zw;
+  float texture_sin = sin(texture_angle), texture_cos = cos(texture_angle);
   if (u_tiling > 0.5 && u_water_kind < 0.5) {
     vec3 an = abs(normalize(v_norm));
-    vec2 t = v_tiling.yz;
-    if (an.x >= an.y && an.x >= an.z) t = v_tiling.yz;
-    else if (an.y >= an.z) t = v_tiling.xz;
-    else t = v_tiling.yx;
-    uv = t * u_repeat_scale;
+    if (an.x >= an.y && an.x >= an.z) uv = bare29 ? v_tiling_bare.yz : v_tiling.yz;
+    else if (an.y >= an.z) uv = bare29 ? v_tiling_bare.xz : v_tiling.xz;
+    else uv = bare29 ? v_tiling_bare.yx : v_tiling.yx;
   }
+  if (u_object4 > 0.5) uv.x += u_position_x;
+  vec2 tiling_obj_uv = v_uv;
+  if (u_tiling_obj > 0.5) {
+    // tiling_obj: 掩码/法线/混合走原始 UV，只有花纹走三平面 UGC 链。
+    vec3 an2 = abs(normalize(v_norm));
+    tiling_obj_uv = (an2.x >= an2.y && an2.x >= an2.z) ? v_tiling.yz : ((an2.y >= an2.z) ? v_tiling.xz : v_tiling.xy);
+    vec2 tsc = u_repeat_scale * u_texture_para.xy;
+    tiling_obj_uv = (tiling_obj_uv - 0.5) * tsc;
+    float tpa = radians(u_rotation_angle);
+    tiling_obj_uv = vec2(tiling_obj_uv.x * cos(tpa) - tiling_obj_uv.y * sin(tpa), tiling_obj_uv.x * sin(tpa) + tiling_obj_uv.y * cos(tpa));
+    tiling_obj_uv += 0.5 * tsc + u_texture_para.zw;
+    uv = v_uv;
+  } else if (u_tiling_nm > 0.5) {
+    // tiling_nm: 掩码原始 UV，法线/混合走三平面 * RepeatScale。
+    vec3 an2 = abs(normalize(v_norm));
+    vec2 nuv = (an2.x >= an2.y && an2.x >= an2.z) ? v_tiling.yz : ((an2.y >= an2.z) ? v_tiling.xz : v_tiling.xy);
+    uv = nuv * u_repeat_scale;
+  } else if (u_tiling_all > 0.5) {
+    // tiling_all: 三平面 * RepeatScale(x) * RepeatScaleY(y)，再走 TP 链（不再乘 RepeatScale）。
+    vec3 an2 = abs(normalize(v_norm));
+    vec2 auv = (an2.x >= an2.y && an2.x >= an2.z) ? v_tiling.yz : ((an2.y >= an2.z) ? v_tiling.xz : v_tiling.xy);
+    auv *= vec2(u_repeat_scale, u_repeat_scale * u_repeat_scale_y);
+    auv -= 0.5;
+    auv *= u_texture_para.xy;
+    float taa = radians(u_rotation_angle);
+    auv = vec2(auv.x * cos(taa) - auv.y * sin(taa), auv.x * sin(taa) + auv.y * cos(taa));
+    auv += 0.5;
+    auv += u_texture_para.zw;
+    uv = auv;
+  }
+  if (!bare29 && u_tiling_obj < 0.5 && u_tiling_nm < 0.5 && u_tiling_all < 0.5) uv -= 0.5;
+  uv *= uv_scale;
+  if (abs(texture_angle) > 0.0001) {
+    uv = vec2(uv.x * texture_cos - uv.y * texture_sin, uv.x * texture_sin + uv.y * texture_cos);
+  }
+  if (!bare29 && u_tiling_obj < 0.5 && u_tiling_nm < 0.5 && u_tiling_all < 0.5) uv += cc_surface ? 0.5 * uv_scale : vec2(0.5);
+  if (u_tiling_obj < 0.5 && u_tiling_nm < 0.5 && u_tiling_all < 0.5) uv += u_texture_para.zw;
   vec4 tex0 = u_has_tex0 > 0.5 ? texture(u_tex0, uv) : vec4(1.0);
   vec4 tex1 = u_has_tex1 > 0.5 ? texture(u_tex1, uv) : vec4(0.5, 0.5, 1.0, 1.0);
   vec4 tex2 = u_has_tex2 > 0.5 ? texture(u_tex2, uv) : vec4(0.0, 0.5, 0.0, 0.0);
   vec4 tex3s = u_has_tex3 > 0.5 ? texture(u_tex3, uv) : vec4(0.0);
+  vec4 tex4 = u_has_tex4 > 0.5 ? texture(u_tex4, uv * u_detail_scale) : vec4(0.5, 0.5, 0.5, 1.0);
+  float mix_lm = 0.0;
+  if (u_surf_kind > 9.5 && u_surf_kind < 10.5) {
+    vec4 t5 = u_has_tex5 > 0.5 ? texture(u_tex5, v_uv) : vec4(0.0);
+    mix_lm = mix(t5.r, 1.0 - smoothstep(u_mix_lerp - 0.1, u_mix_lerp, t5.r), u_lerp_key);
+  }
   vec3 geometry = normalize(v_norm);
   if (!gl_FrontFacing) geometry = -geometry;
   vec3 normal = geometry;
   if (u_water_kind < 0.5 && ((u_normal_slot >= 0.0 && u_normal_slot < 0.5 && u_has_tex0 > 0.5) || (u_normal_slot > 0.5 && u_has_tex1 > 0.5))) {
     vec3 n = (u_normal_slot < 0.5 ? tex0.xyz : tex1.xyz) * 2.0 - 1.0;
     if (dot(n, n) < 0.001) n = vec3(0, 0, 1);
+    if (u_use_paint > 0.5 && u_has_tex4 > 0.5 && u_surf_kind < 9.5) {
+      // Reoriented Normal Mapping：mask.a 控制细节法线强度，AO 同步混合。
+      vec3 dt = tex1.xyz * vec3(2.0) + vec3(-1.0, -1.0, 0.0);
+      vec3 du = tex4.xyz * vec3(-2.0) + vec3(1.0, 1.0, -1.0);
+      n = mix(n, dt * dot(dt, du) - du * dt.z, clamp(tex0.a, 0.0, 1.0));
+    }
+    if (u_surf_kind > 9.5 && u_surf_kind < 10.5 && u_has_tex3 > 0.5) {
+      vec3 nb = tex3s.xyz * 2.0 - 1.0;
+      if (dot(nb, nb) < 0.001) nb = vec3(0, 0, 1);
+      n = normalize(mix(n, nb, mix_lm));
+    }
     n.xy *= u_normal_intensity;
     normal = mapSurfaceNormal(normalize(n), geometry);
   }
@@ -3680,12 +3880,21 @@ void main() {
   vec3 color;
   bool color_linear = false;
   float alpha;
-  float roughness = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.045, 1.0) : clamp(u_roughness, 0.045, 1.0);
+  float roughness = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0) : clamp(u_roughness, 0.08, 1.0);
   float metalness = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0) : clamp(u_metalness, 0.0, 1.0);
   float ao = u_mix_map > 0.5 && u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+  if (u_hlod_mrs > 0.5 && u_has_tex2 > 0.5) {
+    roughness = clamp(tex2.g, 0.08, 1.0);
+    metalness = clamp(tex2.r, 0.0, 1.0);
+    ao = 1.0;
+  }
+  if (u_use_paint > 0.5 && u_has_tex4 > 0.5 && u_has_tex2 > 0.5 && u_surf_kind < 9.5) {
+    ao = mix(ao, min(ao, tex4.a), clamp(tex0.a, 0.0, 1.0));
+  }
   float water_transmission = 0.0;
   vec3 transmitted = vec3(0.0);
   vec3 liquid_emissive = vec3(0.0);
+  vec3 branch_em = vec3(0.0);
   if (u_water_kind > 3.5) {
     // 瀑布的 Tex3/Tex4/Tex5 对应流动遮罩、噪声和透明边缘。
     vec2 source_uv = vec2(v_uv.x, 1.0 - v_uv.y);
@@ -3726,58 +3935,308 @@ void main() {
       color = mix(color, mapSrgb2Lin(m2.rgb), clamp(pow(length(centered), u_water_foam.y), 0.0, 1.0));
       alpha = mix(1.0, smoothstep(0.5, 0.7, 1.0 - length(centered)), u_water_foam.z) * v_paint1.a * u_alpha_mtl;
     } else {
-      vec3 n0 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, water_uv * u_water_variable.z + u_water_speed.xy * u_time * 0.1).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
-      vec3 n1 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, water_uv * u_water_variable.w + u_water_speed.yw * u_time * 0.1).xyz * 2.0 - 1.0 : vec3(0, 0, 1);
-      n = normalize(vec3(n0.xy + n1.xy, n0.z * n1.z));
-      n.xy *= u_normal_intensity;
+      // deepwater 实机公式：世界坐标双层法线 + 深度驱动颜色/透明度 + 波高泡沫 + 探针反射。
+      float wt = u_time;
+      vec2 nuv1 = v_world.xz * u_dw_ns1 * 0.001 * u_dw_ns + vec2(u_dw_speed_x, u_dw_speed_y) * wt * 0.01;
+      vec2 nuv2 = v_world.xz * u_dw_ns2 * 0.001 * u_dw_ns;
+      vec2 foam_uv = v_world.xz * 0.02 + vec2(wt * 0.005);
+      vec2 rough_uv = v_world.xz * 0.02 + vec2(wt * 0.05, 0.0);
+      vec3 n1s = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, nuv1).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
+      vec3 n2s = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, nuv2).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
+      n = normalize(vec3(n1s.xy + n2s.xy, n1s.z * n2s.z));
+      n.xy *= u_intensity_rgb.r;
       vec2 screen = gl_FragCoord.xy / u_scene_size;
       float background_depth = u_has_scene > 0.5 ? texture(u_scene_depth, screen).r : 1.0;
-      float thickness = background_depth < 0.99999 ? max(0.0, mapViewDepth(background_depth) - mapViewDepth(gl_FragCoord.z)) : 1.0;
-      vec2 refract_uv = clamp(screen + n.xy * min(thickness, 1.0) * 0.02, vec2(0.001), vec2(0.999));
-      if (u_has_scene > 0.5 && texture(u_scene_depth, refract_uv).r < gl_FragCoord.z) refract_uv = screen;
-      transmitted = u_has_scene > 0.5 ? texture(u_scene_color, refract_uv).rgb : vec3(0.2, 0.3, 0.4);
-      float weight = clamp(pow(max(thickness + u_water_variable.x, 0.0001), u_water_variable.y), 0.0, 1.0);
-      vec3 lower = u_water_kind > 1.5 ? m0.rgb : u_down_color.rgb;
-      vec3 upper = u_water_kind > 1.5 ? m1.rgb : u_up_color.rgb;
-      color = mapSrgb2Lin(mix(lower, upper, weight)) * 1.3;
-      water_transmission = u_has_scene * weight * (1.0 - clamp(u_water_ice.x, 0.0, 1.0));
-      float noise = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, source_uv * 2.0).r : 0.0;
-      float wave_u = 1.0 - thickness - u_intensity_a + sin(u_time * 0.5 + noise * 20.0) * u_water_foam.x;
-      float foam = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, vec2(clamp(wave_u, 0.0, 1.0), 0.0)).r : 0.0;
-      float ripple = u_has_tex3 > 0.5 ? mapSourceSample(u_tex3, water_uv * 0.008 + u_time * 0.003).r * 0.4 : 0.0;
-      liquid_emissive = step(0.15, foam * ripple) * (u_water_kind > 1.5 ? u_foam_color.rgb : vec3(1.0));
-      if (u_water_kind > 1.5 && u_water_ice.y > 0.0) {
-        float ice = smoothstep(u_water_ice.z, 1.0, ripple) * u_water_ice.y * u_water_ice.w;
-        color = mix(color, mapSrgb2Lin(m2.rgb), clamp(ice, 0.0, 1.0));
-      }
-      alpha = (u_water_kind > 1.5 ? mix(smoothstep(0.5, 0.8, 1.0 - foam), 1.0, u_water_foam.y) : 1.0) * v_paint1.a * u_alpha_mtl;
+      float final_depth = background_depth < 0.99999 ? abs(mapViewDepth(background_depth) - mapViewDepth(gl_FragCoord.z)) : 0.0;
+      vec4 foam_tex = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, foam_uv) : vec4(0.0);
+      float rough_sample = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, rough_uv).r : 0.0;
+      float wave_mask = mix(foam_tex.x + 0.4, 0.0, final_depth);
+      wave_mask = mix(-u_dw_foam_scale, u_dw_foam_scale + 1.0, wave_mask);
+      wave_mask = clamp(wave_mask, 0.0, 1.0);
+      float foam = step(0.8, wave_mask);
+      float foam_mask = 1.0 - foam;
+      vec3 probe = u_has_env > 0.5 ? mapSrgb2Lin(texture(u_env_map, reflect(-view_dir, geometry)).rgb)
+        : mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, reflect(-view_dir, geometry).y));
+      float col_depth = clamp(final_depth * u_dw_depth_scale, 0.0, 1.0);
+      vec3 base_col = mix(m0.rgb, m1.rgb, col_depth);
+      float highlight = step(0.973, max(0.0, dot(normalize(n), normalize(vec3(1.0, 1.0, 6.0))))) * foam_mask;
+      highlight = abs(geometry.y) > u_dw_highlight_min ? highlight : 0.0;
+      color = mapSrgb2Lin(mix(base_col, probe, 0.2)) * u_dw_lightness + foam + highlight;
+      float opacity_depth = clamp(final_depth * 10.0, 0.0, 1.0);
+      float water_opacity = mix(0.05, u_dw_opacity_max, opacity_depth);
+      water_opacity = mix(water_opacity, 1.0, clamp(final_depth * u_dw_depth_scale + 0.05, 0.0, 1.0));
+      alpha = water_opacity * u_alpha_mtl;
+      roughness = mix(0.0, 1.0, clamp(u_intensity_rgb.g * rough_sample, 0.08, 1.0));
+      metalness = clamp(u_intensity_rgb.b, 0.0, 1.0);
+      ao = 1.0;
+      liquid_emissive = vec3(0.0);
+      water_transmission = 0.0;
     }
     normal = u_water_kind > 2.5 ? geometry : mapSurfaceNormal(normalize(n), geometry);
     color_linear = true;
   } else if (u_glass > 0.5) {
-    color = u_base_color.rgb * u_tint_value;
-    alpha = u_base_color.a * v_paint1.a * u_glass_opacity * u_alpha_mtl;
+    // standard_glass 实机链：视差花纹 UV + Extra_Op/Pattern_Op 双透明度 + DesignColor 自发光。
+    vec3 view_toward = normalize(u_camera - v_world);
+    vec3 cdt = normalize(vec3(dot(view_toward, v_tangent), dot(view_toward, v_bitangent), dot(view_toward, v_norm)));
+    vec2 pattern_uv = v_uv * u_glass_pattern_para.xy - (cdt.xy / (abs(cdt.z) > 0.001 ? cdt.z : 0.001)) * u_pattern_depth;
+    float pattern_a = 0.0;
     if (u_glass_pattern > 0.5 && u_has_tex3 > 0.5) {
-      vec2 pattern_uv = v_uv * u_glass_pattern_para.xy - 0.5;
+      pattern_uv -= 0.5;
       float angle = radians(u_glass_pattern_rotation);
       pattern_uv = vec2(pattern_uv.x * cos(angle) - pattern_uv.y * sin(angle), pattern_uv.x * sin(angle) + pattern_uv.y * cos(angle));
-      vec4 pattern = texture(u_tex3, pattern_uv + 0.5 + u_glass_pattern_para.zw);
-      color = mix(color, u_design_color.rgb, pattern.a * u_pattern_color_key);
-      alpha = u_base_color.a * v_paint1.a * u_alpha_mtl * mix(u_glass_opacity, u_pattern_opacity, pattern.a);
+      pattern_uv += 0.5 + u_glass_pattern_para.zw;
+      vec4 pattern = texture(u_tex3, pattern_uv);
+      pattern_a = pattern.a;
+      color = mix(u_base_color.rgb, u_design_color.rgb, pattern.a * u_pattern_color_key);
+      roughness = mix(roughness, u_pattern_intensity.g, pattern.a);
+      metalness = mix(metalness, u_pattern_intensity.b, pattern.a);
+    } else {
+      color = u_base_color.rgb;
     }
+    alpha = u_base_color.a * mix(u_glass_opacity, u_pattern_opacity, pattern_a) * u_alpha_mtl;
+    liquid_emissive = mapSrgb2Lin(u_design_color.rgb) * pattern_a * u_pattern_color_key * u_pattern_intensity.a;
+  } else if (u_surf_kind > 0.5 && (u_surf_kind < 10.5 || (u_surf_kind > 19.5 && u_surf_kind < 22.5))) {
+    vec2 src_uv = vec2(v_uv.x, 1.0 - v_uv.y);
+    if (u_surf_kind < 1.5) {
+      // terrain: perlin 伪 AO 乘 albedo + HSV 色相扰动，albedo/emissive 都不做 sRGB。
+      vec3 c = tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb;
+      float shadow = mapPerlin(uv * u_noise_scale) * 0.5 + 0.5;
+      shadow = mix(1.0, shadow, clamp(u_noise_strength, 0.0, 1.0));
+      float hoff = mapPerlin(uv * 2.0 * u_noise_scale + 8.0) * 0.5;
+      vec3 hsv = mapRgb2Hsv(max(c, vec3(0.0)));
+      float hue = mod((hsv.x + hoff * u_hue_strength) * 360.0, 360.0) / 360.0;
+      color = mapHsv2Rgb(vec3(hue, hsv.y, hsv.z)) * shadow;
+      color_linear = true;
+      alpha = 1.0;
+      if (u_has_tex2 > 0.5) {
+        roughness = clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0);
+        metalness = clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0);
+        ao = clamp(tex2.r, 0.0, 1.0);
+      }
+      branch_em = tex2.a * u_emissive_color.rgb * u_intensity_a;
+    } else if (u_surf_kind < 2.5) {
+      // shine: uv 距离场圆形/圆角矩形高光，HSV 白化。
+      vec3 c = tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb;
+      float sphere_mask = pow(1.0 - clamp(distance(v_uv, vec2(0.5)), 0.0, 1.0), u_mask_pow) * 0.5;
+      float rect_mask = mapRoundRect(v_uv, vec2(0.5), u_mask_pow, 0.0, vec2(0.5));
+      float shine_mask = clamp(sphere_mask * (1.0 - u_mask_style) + rect_mask * u_mask_style, 0.0, 1.0);
+      vec3 hsv = mapRgb2Hsv(max(c, vec3(0.0)));
+      vec3 base = mapSrgb2Lin(mapHsv2Rgb(hsv));
+      color = mix(base, vec3(1.0), shine_mask);
+      color_linear = true;
+      branch_em = mix(base * max(hsv.y, 0.3) * u_intensity_a, vec3(1.0), shine_mask);
+      alpha = tex1.a;
+      roughness = clamp(u_intensity_rgb.g, 0.08, 1.0);
+      metalness = clamp(u_intensity_rgb.b, 0.0, 1.0);
+      ao = u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+    } else if (u_surf_kind < 3.5) {
+      // shine_audio: 圆角矩形遮罩 * MaskStrength，WindSpeed*AudioRange 驱动自发光。
+      vec3 c = tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb;
+      vec2 rp = mapRoundRect2(v_uv, u_mask_pow);
+      float shine_mask = clamp(rp.x * rp.y, 0.0, 1.0) * u_mask_strength;
+      vec3 hsv = mapRgb2Hsv(max(c, vec3(0.0)));
+      float audio_key = u_wind_speed * u_audio_range + (1.0 - u_audio_range);
+      float glow = mix(1.0, u_intensity_a * audio_key, pow(clamp(hsv.y, 0.0, 1.0), 2.0));
+      color = mapSrgb2Lin(max(c, vec3(0.0)));
+      color_linear = true;
+      branch_em = mix(color * glow, vec3(1.0), clamp(shine_mask, 0.0, 1.0));
+      alpha = tex1.a;
+      roughness = clamp(u_intensity_rgb.g, 0.08, 1.0);
+      metalness = clamp(u_intensity_rgb.b, 0.0, 1.0);
+      ao = u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+    } else if (u_surf_kind < 4.5) {
+      // dissolve: 包围盒轴向 + tex1.a 噪声做阈值透明，DissolveValue 取材质静态值。
+      vec3 c = clamp(tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb, 0.0, 1.0);
+      vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+      float dissolve_t = u_dissolve_value * (1.0 + u_dissolve_strength + u_dissolve_noise);
+      float dnoise = u_has_tex1 > 0.5 ? texture(u_tex1, v_uv * u_dissolve_scale.xy).a : 0.0;
+      int ddir = int(u_dissolve_dir + 0.5);
+      float axis_value = ddir == 0 ? uvw.x : (ddir == 1 ? uvw.y : uvw.z);
+      float axis = abs(axis_value - u_dissolve_reverse) + dnoise * u_dissolve_noise;
+      float dissolve_op = smoothstep(axis - u_dissolve_strength, axis, dissolve_t);
+      float dissolve_mask = dissolve_op - step(axis + u_dissolve_strength, dissolve_t);
+      color = c;
+      color_linear = true;
+      alpha = dissolve_op;
+      if (u_has_tex2 > 0.5) {
+        roughness = mix(roughness, clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+        metalness = mix(metalness, clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+        ao = clamp(tex2.r, 0.0, 1.0);
+      }
+      vec3 em = tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g + tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a;
+      branch_em = tex2.a * em + dissolve_mask * u_dissolve_color.rgb * u_dissolve_intensity;
+    } else if (u_surf_kind < 5.5) {
+      // laser: NdotV 折返采样 Tex3 渐变条，与掩码色按 t1.a*LaserTransition 混合。
+      vec3 c = clamp(tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb, 0.0, 1.0);
+      float ndv = clamp(dot(normal, view_dir), 0.0, 1.0);
+      float lx = 1.0 - min(1.0 - ndv, ndv) * 2.0;
+      vec3 laser = mapSrgb2Lin(u_has_tex3 > 0.5 ? mapSourceSample(u_tex3, vec2(lx * u_laser_scale, 0.0)).rgb : vec3(0.0));
+      color = mix(c, laser, tex1.a * u_laser_transition);
+      color_linear = true;
+      alpha = tex1.a;
+      if (u_has_tex2 > 0.5) {
+        roughness = clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0);
+        metalness = clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0);
+        ao = clamp(tex2.r, 0.0, 1.0);
+      }
+      vec3 em = tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g + tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a;
+      branch_em = tex2.a * em;
+    } else if (u_surf_kind < 6.5) {
+      // maskflow: Tex1.a 流动遮罩 + abs(sin(time)) 呼吸，掩码只吃 R/G/B。
+      vec3 c = tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb;
+      float flow_mask = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, src_uv + u_time * u_flow_speed.xy).a : 0.0;
+      float breathe = abs(sin(u_time)) * 0.6 + 0.8;
+      float nov = clamp(1.0 - abs(dot(geometry, view_dir)), 0.0, 1.0);
+      float fres = clamp(pow(nov, 2.0) + u_border.x, 0.0, 1.0);
+      color = c;
+      color_linear = true;
+      branch_em = mapSrgb2Lin(tex2.a * m2.rgb * u_intensity_a * flow_mask * breathe * u_state)
+        + fres * u_mask3.rgb * u_border.y * u_state;
+      alpha = tex1.a;
+      if (u_has_tex2 > 0.5) {
+        roughness = mix(roughness, clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+        metalness = mix(metalness, clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+        ao = clamp(tex2.r, 0.0, 1.0);
+      }
+    } else if (u_surf_kind < 7.5) {
+      // uvflow: uv.x += time*Speed_u*Flow.z，uv.y += time*Flow.w，掩码从 G 通道起逐层 mix。
+      vec2 flow_uv = vec2(src_uv.x + u_time * u_flow_u * u_flow.z, src_uv.y + u_time * u_flow.w);
+      vec4 flow_mask = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, flow_uv) : vec4(1.0);
+      vec3 c = mix(m0.rgb, m1.rgb, flow_mask.g);
+      c = mix(c, m2.rgb, flow_mask.b);
+      c = mix(c, u_mask3.rgb, flow_mask.a);
+      color = c;
+      vec4 flow_t1 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, flow_uv) : vec4(0.5, 0.5, 1.0, 1.0);
+      vec4 flow_t2 = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, flow_uv) : vec4(0.0, 0.5, 0.0, 0.0);
+      vec3 fn = flow_t1.xyz * 2.0 - 1.0;
+      if (dot(fn, fn) < 0.001) fn = vec3(0.0, 0.0, 1.0);
+      fn.xy *= u_normal_intensity;
+      normal = mapSurfaceNormal(normalize(fn), geometry);
+      roughness = mix(roughness, clamp(flow_t2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+      metalness = mix(metalness, clamp(flow_t2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+      ao = u_has_tex2 > 0.5 ? clamp(flow_t2.r, 0.0, 1.0) : 1.0;
+      branch_em = flow_t2.a * u_emissive_color.rgb * u_intensity_a;
+      alpha = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, src_uv).a : 1.0;
+    } else if (u_surf_kind < 8.5) {
+      // disturt: Tex3 双向滚动取 rg 偏移主 UV，掩码逐层 lerp。
+      vec2 duv = src_uv * u_repeat_scale;
+      vec2 off1 = u_has_tex3 > 0.5 ? mapSourceSample(u_tex3, duv * u_offset_scale + u_time * u_offset_speed * vec2(1.0, 0.0)).rg : vec2(0.0);
+      float off2 = u_has_tex3 > 0.5 ? mapSourceSample(u_tex3, duv * u_offset_scale - u_time * u_offset_speed * vec2(1.0, 0.0)).g : 0.0;
+      vec2 uv1 = duv + off1.x * u_offset_strength * 0.1 - off2 * u_offset_strength * 0.1 - u_time * u_uv_speed;
+      vec4 mask = u_has_tex0 > 0.5 ? mapSourceSample(u_tex0, uv1) : vec4(1.0);
+      vec3 c = (1.0 - mask.r) * m0.rgb + mask.r * m1.rgb;
+      c = (1.0 - mask.g) * c + mask.g * m2.rgb;
+      c = (1.0 - mask.b) * c + mask.b * u_mask3.rgb;
+      color = c;
+      vec4 dt1 = u_has_tex1 > 0.5 ? mapSourceSample(u_tex1, uv1) : vec4(0.5, 0.5, 1.0, 1.0);
+      vec4 dt2 = u_has_tex2 > 0.5 ? mapSourceSample(u_tex2, uv1) : vec4(0.0, 0.5, 0.0, 0.0);
+      vec3 dn = dt1.xyz * 2.0 - 1.0;
+      if (dot(dn, dn) < 0.001) dn = vec3(0.0, 0.0, 1.0);
+      dn.xy *= u_normal_intensity;
+      normal = mapSurfaceNormal(normalize(dn), geometry);
+      roughness = mix(roughness, clamp(dt2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+      metalness = mix(metalness, clamp(dt2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+      ao = u_has_tex2 > 0.5 ? clamp(dt2.r, 0.0, 1.0) : 1.0;
+      vec3 em = mix(m0.rgb * u_ei.r, m1.rgb * u_ei.g, mask.r);
+      em = mix(em, m2.rgb * u_ei.b, mask.g);
+      em = mix(em, u_mask3.rgb * u_ei.a, mask.b);
+      branch_em = dt2.a * em + u_emissive_color.rgb * u_intensity_a;
+      alpha = dt1.a;
+    } else if (u_surf_kind < 9.5) {
+      // logo_scale: 掩码逐层 lerp，C.rgb 与 Lightness 双重 sRGB（照抄源色彩空间行为）。
+      vec3 c = mix(m0.rgb, m1.rgb, tex0.r);
+      c = mix(c, m2.rgb, tex0.g);
+      c = mix(c, u_mask3.rgb, tex0.b);
+      color = mapSrgb2Lin(mapSrgb2Lin(clamp(c, 0.0, 1.0))) * u_lightness;
+      color_linear = true;
+      alpha = tex0.a;
+      if (u_has_tex2 > 0.5) {
+        roughness = mix(roughness, clamp(tex2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+        metalness = mix(metalness, clamp(tex2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+        ao = clamp(tex2.r, 0.0, 1.0);
+      }
+      vec3 em = mix(m0.rgb * u_ei.r, m1.rgb * u_ei.g, tex0.r);
+      em = mix(em, m2.rgb * u_ei.b, tex0.g);
+      em = mix(em, u_mask3.rgb * u_ei.a, tex0.b);
+      branch_em = tex2.a * mapSrgb2Lin(clamp(em, 0.0, 1.0));
+    } else if (u_surf_kind < 10.5) {
+      // mix: Tex5 lerpMask 把 (r*M0+g*M1)/(b*M2+a*M3) 与 Tex3/Tex4 第二套法线/混合图 lerp。
+      vec4 t5 = u_has_tex5 > 0.5 ? texture(u_tex5, v_uv) : vec4(0.0);
+      vec3 ca = tex0.r * m0.rgb + tex0.g * m1.rgb;
+      vec3 cb = tex0.b * m2.rgb + tex0.a * u_mask3.rgb;
+      vec3 c = mix(ca, cb, mix_lm);
+      vec3 col = mix(tex0.rgb, t5.gba, mix_lm);
+      vec3 cmix = mapSrgb2Lin(clamp(mix(c, col, u_change_color_key), 0.0, 1.0));
+      vec4 mt1 = mix(tex1, u_has_tex3 > 0.5 ? tex3s : vec4(0.5, 0.5, 1.0, 1.0), mix_lm);
+      vec4 mt2 = mix(tex2, tex4, mix_lm);
+      roughness = mix(roughness, clamp(mt2.g * u_intensity_rgb.g, 0.08, 1.0), u_ugc_r);
+      metalness = mix(metalness, clamp(mt2.b * u_intensity_rgb.b, 0.0, 1.0), u_ugc_m);
+      ao = clamp(mt2.r, 0.0, 1.0);
+      vec3 em = mix(tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g, tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a, mix_lm);
+      em = mix(em, cmix * u_color_intensity, u_change_color_key);
+      branch_em = mt2.a * em;
+      color = cmix * mapSrgb2Lin(clamp(u_base_color.rgb, 0.0, 1.0));
+      color_linear = true;
+      alpha = mt1.a;
+    } else if (u_surf_kind < 20.5) {
+      // unlit_diffuse_changecol_v: uv.y 上下渐变与掩码权重两层 mix，颜色全部进自发光。
+      vec4 ci = vec4(1.0) + u_ei * tex1.r;
+      vec3 c1 = mix(m0.rgb * ci.r, m1.rgb * ci.g, 1.0 - v_uv.y);
+      vec3 c2 = mix(m0.rgb * ci.r, m1.rgb * ci.g, tex0.r);
+      c2 = mix(c2, m2.rgb * ci.b, tex0.g);
+      c2 = mix(c2, u_mask3.rgb * ci.a, tex0.b);
+      vec3 col = mix(c1, mapSrgb2Lin(clamp(c2, 0.0, 1.0)), u_change_color_key);
+      color = vec3(0.0);
+      color_linear = true;
+      branch_em = col * u_lightness * max(0.5, 1.0 - u_shadow_enable);
+      alpha = tex0.a;
+    } else if (u_surf_kind < 21.5) {
+      // unlit_change_color_shine: 与 shine 同构但球遮罩系数 0.3、无自发光。
+      vec3 c = tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb;
+      float sphere_mask = pow(1.0 - clamp(distance(v_uv, vec2(0.5)), 0.0, 1.0), u_mask_pow) * 0.3;
+      float rect_mask = mapRoundRect(v_uv, vec2(0.5), u_mask_pow, 0.0, vec2(0.5));
+      float shine_mask = clamp(sphere_mask * (1.0 - u_mask_style) + rect_mask * u_mask_style, 0.0, 1.0);
+      vec3 hsv = mapRgb2Hsv(max(c, vec3(0.0)));
+      float glow = mix(1.0, u_intensity_a, pow(clamp(hsv.y, 0.0, 1.0), 2.0));
+      color = mix(mapSrgb2Lin(max(c, vec3(0.0))) * glow, vec3(1.0), shine_mask);
+      color_linear = true;
+      alpha = tex1.a;
+      roughness = clamp(u_intensity_rgb.g, 0.08, 1.0);
+      metalness = clamp(u_intensity_rgb.b, 0.0, 1.0);
+      ao = u_has_tex2 > 0.5 ? clamp(tex2.r, 0.0, 1.0) : 1.0;
+    } else {
+      // unlit_streamer_mask: 三平面世界噪声在 Color0/Color1 间插值，掩码外露底图。
+      vec3 sp = v_world / max(u_noise_scale, 0.0001) + u_streamer_speed * u_time * vec3(1.0);
+      vec3 xD = u_has_tex1 > 0.5 ? texture(u_tex1, sp.zy).rgb : vec3(0.0);
+      vec3 yD = u_has_tex1 > 0.5 ? texture(u_tex1, sp.xz).rgb : vec3(0.0);
+      vec3 zD = u_has_tex1 > 0.5 ? texture(u_tex1, sp.xy).rgb : vec3(0.0);
+      vec3 bw = pow(abs(geometry), vec3(0.5));
+      bw /= max(bw.x + bw.y + bw.z, 0.0001);
+      float noise_v = (xD * bw.x + yD * bw.y + zD * bw.z).r;
+      vec3 col = mapSrgb2Lin(mix(u_color0.rgb, u_color1.rgb, clamp(noise_v, 0.0, 1.0))) * u_streamer_lightness;
+      color = col * tex0.a * u_streamer_lightness
+        + mapSrgb2Lin(max((1.0 - tex0.a) * u_base_color.rgb * tex0.rgb, vec3(0.0))) * u_lightness;
+      color_linear = true;
+      alpha = tex0.a;
+    }
+    alpha = clamp(alpha, 0.0, 1.0) * v_paint1.a * u_alpha_mtl;
   } else {
     vec3 painted = u_use_paint > 0.5 && v_paint1.r >= 0.0 ? v_paint1.rgb : u_fallback;
     color = painted;
     if (u_color_mode > 6.5) {
       vec3 an = abs(normalize(v_norm));
-      vec3 np = (v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001));
-      vec2 vig_uv = an.x >= an.y && an.x >= an.z ? np.zy : (an.y >= an.z ? np.xz : np.xy);
+      // icefloor: pos_tiling/world_scale == (local/2.64)*0.5+0.5，各轴偏移不对称。
+      vec3 np = (v_local / 2.64) * 0.5 + 0.5;
+      vec2 vig_uv;
+      if (an.x >= an.y && an.x >= an.z) vig_uv = vec2(np.z * 0.5 + 0.5, np.y * 0.5);
+      else if (an.y >= an.z) vig_uv = np.xz * 0.5 + 0.5;
+      else vig_uv = vec2(np.x * 0.5 + 0.5, np.y * 0.5);
       vec4 vig = u_has_tex0 > 0.5 ? texture(u_tex0, vig_uv) : vec4(0.0);
       color = mix(u_down_color.rgb, u_up_color.rgb, 0.5) + mapSrgb2Lin(vig.rgb) * u_intensity_a;
       color_linear = true;
     } else if (u_color_mode > 5.5) {
       vec3 eye_dir = view_dir;
-      vec3 cap_t = normalize(cross(eye_dir, u_view_up));
+      vec3 cap_t = normalize(cross(eye_dir, vec3(0.0, 1.0, 0.0)));
       vec3 cap_b = normalize(cross(eye_dir, cap_t));
       vec3 geo_n = normal;
       vec2 cap_uv = vec2(dot(geo_n, cap_t), dot(geo_n, cap_b)) * 0.5 + 0.5;
@@ -3786,7 +4245,17 @@ void main() {
       vec3 highlight = mapSrgb2Lin(vec3(cap.a));
       vec3 reflection = mapSrgb2Lin(vec3(cap.g));
       float fres = clamp(u_fresnel.x + (1.0 - u_fresnel.x) * pow(1.0 - clamp(abs(dot(geo_n, eye_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
-      color = below + highlight * u_lightness + reflection * u_reflection + u_rim_color.rgb * (u_fresnel.y * 8.0 * fres * 0.5);
+      float phase = abs(sin(u_time * u_fresnel_speed)) + 0.5;
+      color = below + highlight * u_lightness + reflection * u_reflection + u_rim_color.rgb * (u_fresnel.y * 8.0 * fres * phase);
+      if (u_flake_switch > 0.5) {
+        // jelly 雪花层：Tex2(r-1)/FlakeDensity 阈值出糖霜，Tex3 噪声调制自发光强度。
+        vec4 flake_tex = u_has_tex2 > 0.5 ? texture(u_tex2, v_uv * u_uv_tiling) : vec4(0.0);
+        vec3 flake_view = normalize(v_tangent * -view_dir.x + v_bitangent * -view_dir.y + geometry * -view_dir.z);
+        vec4 detail_tex = u_has_tex3 > 0.5 ? texture(u_tex3, v_uv + flake_view.xy * u_offset_mult) : vec4(0.0);
+        float sugar = clamp((flake_tex.r - 1.0) / max(u_flake_density, 0.0001) + u_flake_number, 0.0, 1.0);
+        float flake_emis = sugar * u_sparkle_emis * pow(detail_tex.r, u_offset_pow);
+        color = mix(color, u_mask2.rgb, pow(sugar, 0.1) * flake_emis);
+      }
       color_linear = true;
     } else if (u_color_mode > 3.5) {
       color = u_has_tex0 > 0.5 ? mix(m0.rgb, m1.rgb, tex0.g) : painted;
@@ -3794,50 +4263,55 @@ void main() {
       color = mix(color, u_mask3.rgb, tex0.a);
     } else if (u_color_mode > 2.5) {
       color = u_has_tex0 > 0.5 ? tex0.r * m0.rgb + tex0.g * m1.rgb + tex0.b * m2.rgb + tex0.a * u_mask3.rgb : painted;
+      if (u_object3 > 0.5) {
+        // object3: 按局部高度 remap 出混合系数，暗色由 MaskColor0 做 HSV 偏移。
+        float k3 = (v_local.y - u_length1) / max(u_length2 - u_length1, 0.0001) * (u_length4 - u_length3) + u_length3;
+        k3 = clamp(k3, u_dark_intensity, u_up_intensity);
+        vec3 hsv = mapRgb2Hsv(m0.rgb);
+        vec3 dark = mapHsv2Rgb(vec3(hsv.x, hsv.y + u_hsv_s, hsv.z - u_hsv_v));
+        color = mix(dark, mapSrgb2Lin(color), k3);
+        color_linear = true;
+      }
     } else if (u_color_mode > 1.5) {
       vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
       float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
       float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
       final_axis *= final_axis;
-      color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), final_axis * (tex0.r * 0.5 + 0.5));
-      color = mix(color, mapSrgb2Lin(m2.rgb), (1.0 - final_axis) * tex0.g);
-      color = mix(color, mapSrgb2Lin(u_mask3.rgb), tex0.b);
+      vec3 mask_w = mapSrgb2Lin(clamp(tex0.rgb, 0.0, 1.0));
+      color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), final_axis * (mask_w.r * 0.5 + 0.5));
+      color = mix(color, mapSrgb2Lin(m2.rgb), (1.0 - final_axis) * mask_w.g);
+      color = mix(color, mapSrgb2Lin(u_mask3.rgb), mask_w.b);
       color_linear = true;
     } else if (u_color_mode > 0.5) {
+      vec3 mask_w = u_mask_srgb > 0.5 ? mapSrgb2Lin(tex0.rgb) : tex0.rgb;
       if (u_lerp_linear > 0.5) {
-        color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), tex0.r);
-        color = mix(color, mapSrgb2Lin(m2.rgb), tex0.g);
-        color = mix(color, mapSrgb2Lin(u_mask3.rgb), tex0.b);
+        color = mix(mapSrgb2Lin(m0.rgb), mapSrgb2Lin(m1.rgb), mask_w.r);
+        color = mix(color, mapSrgb2Lin(m2.rgb), mask_w.g);
+        color = mix(color, mapSrgb2Lin(u_mask3.rgb), mask_w.b);
         color_linear = true;
       } else {
-        color = mix(m0.rgb, m1.rgb, tex0.r);
-        color = mix(color, m2.rgb, tex0.g);
-        color = mix(color, u_mask3.rgb, tex0.b);
+        color = mix(m0.rgb, m1.rgb, mask_w.r);
+        color = mix(color, m2.rgb, mask_w.g);
+        color = mix(color, u_mask3.rgb, mask_w.b);
       }
     } else if (u_has_tex0 > 0.5) {
       color = tex0.rgb;
     }
-    color *= u_base_color.rgb * u_tint_value;
+    color *= u_base_color.rgb;
     alpha = u_has_tex0 > 0.5 ? tex0.a : 1.0;
     if (u_opacity_tex > 1.5) alpha = 1.0;
     else if (u_opacity_tex > 0.5) alpha = tex1.a;
     if (u_color_mode > 5.5) alpha = 1.0;
     alpha *= u_base_color.a * v_paint1.a * u_alpha_mtl;
   }
-  vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : mapSrgb2Lin(color);
+  vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : mapSrgb2Lin(color) * u_tint_value;
   if (u_pattern_mode > 0.5 && u_has_tex3 > 0.5) {
-    vec3 an = abs(normalize(v_norm));
-    vec3 p = v_local * u_repeat_scale;
-    vec2 puv;
-    if (an.x >= an.y && an.x >= an.z) puv = p.yz;
-    else if (an.y >= an.z) puv = p.xz;
-    else puv = p.yx;
-    puv *= u_texture_para.xy;
-    vec4 pattern = texture(u_tex3, puv);
+    vec4 pattern = texture(u_tex3, u_tiling_obj > 0.5 ? tiling_obj_uv : v_local.xz * u_repeat_scale);
     vec3 tiling_col = mapSrgb2Lin(pattern.r * u_pattern_color.rgb);
     albedo_lin = mix(albedo_lin, tiling_col, pattern.r * u_pattern_color.a);
   }
-  vec3 emissive = liquid_emissive;
+  vec3 emissive = liquid_emissive + branch_em;
+  if (u_surf_kind < 0.5) {
   if (u_emissive_kind > 0.5 && u_emissive_kind < 1.5) {
     emissive = mapSrgb2Lin(tex2.a * u_emissive_color.rgb * u_intensity_a);
   } else if (u_emissive_kind > 1.5 && u_emissive_kind < 2.5) {
@@ -3848,14 +4322,16 @@ void main() {
     chain = mix(chain, u_mask3 * u_ei.a, tex0.b);
     emissive = tex2.a * chain.rgb + u_emissive_color.rgb * u_intensity_a;
   } else if (u_emissive_kind > 3.5 && u_emissive_kind < 4.5) {
-    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), tex0.r);
-    chain = mix(chain, vec3(u_ei.b), tex0.g);
-    chain = mix(chain, vec3(u_ei.a), tex0.b);
-    emissive = tex2.a * chain + u_emissive_color.rgb * u_intensity_a;
+    vec3 ei_w = mapSrgb2Lin(clamp(tex0.rgb, 0.0, 1.0));
+    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), ei_w.r);
+    chain = mix(chain, vec3(u_ei.b), ei_w.g);
+    chain = mix(chain, vec3(u_ei.a), ei_w.b);
+    emissive = tex2.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity_a;
   } else if (u_emissive_kind > 4.5 && u_emissive_kind < 5.5) {
-    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), tex0.r);
-    chain = mix(chain, vec3(u_ei.b), tex0.g);
-    chain = mix(chain, vec3(u_ei.a), tex0.b);
+    vec3 ei_w = mapSrgb2Lin(clamp(tex0.rgb, 0.0, 1.0));
+    vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), ei_w.r);
+    chain = mix(chain, vec3(u_ei.b), ei_w.g);
+    chain = mix(chain, vec3(u_ei.a), ei_w.b);
     emissive = tex2.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity_a;
   } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
     vec3 chain = tex0.r * m0.rgb * u_ei.r + tex0.g * m1.rgb * u_ei.g + tex0.b * m2.rgb * u_ei.b + tex0.a * u_mask3.rgb * u_ei.a;
@@ -3867,24 +4343,54 @@ void main() {
     emissive = e;
     albedo_lin += e;
   }
+  }
   if (alpha < u_alpha_ref) discard;
-  float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+  float breath = u_border_breath > 0.0 ? u_border_breath * abs(sin(u_time * u_border_speed)) + (1.0 - u_border_breath) : 1.0;
+  float border_f = u_border_enable * clamp(u_border.x + (1.0 - u_border.x) * pow(max(0.0, 1.0 - abs(dot(normal, view_dir))), u_border_pow) * breath, 0.0, 1.0);
   emissive += border_f * u_border_color.rgb * u_border.y;
-  if (u_color_mode > 6.5) {
-    vec3 sun_dir = -MAP_SUN_DIR;
+  if (u_scan_light > 0.5) {
+    // object 族 ENABLE_LIGHTING 扫光带（01_object家族.md 1.1）。
+    float band_x = v_uv.x + (abs(fract((u_time * 0.3) / max(v_scale.x, 0.001) - 0.5)) * 2.0 - 0.5) * 1.2;
+    float band_m1 = smoothstep(0.4, 0.6, band_x);
+    float band_m2 = smoothstep(0.6, 0.4, band_x) * band_m1;
+    emissive += mapSrgb2Lin(tex2.a * u_emissive_color.rgb * u_intensity_a + band_m2 * u_emissive_color.rgb * u_intensity_a);
+  }
+  if (u_fresnel_intensity > 0.0 && u_use_paint > 0.5) {
+    // new 族的 rim 自发光：tex2.a * (1-NoV)^FresnelPow * FresnelIntensity * albedo。
+    float rim_nov = clamp(1.0 - abs(dot(normal, view_dir)), 0.0, 1.0);
+    emissive += tex2.a * pow(rim_nov, u_fresnel_pow) * u_fresnel_intensity * albedo_lin;
+  }
+  if (u_sparkle > 0.5 && u_has_tex3 > 0.5) {
+    // sparkle 默认噪声闪粉（亮片模式 SequinsKey=0 不走；DistortScale 默认 0）。
+    float s_ndv = pow(clamp(abs(dot(geometry, view_dir)), 0.0, 1.0), u_fresnel_pow);
+    vec2 suv = uv * u_sparkle_scale;
+    float a1 = mapSourceSample(u_tex3, suv + vec2(0.0, u_time * u_sparkle_speed)).r;
+    float a2 = mapSourceSample(u_tex3, suv * 1.5 + vec2(u_time * u_sparkle_speed, 0.0)).r;
+    float s1 = pow(clamp(a1 * a2, 0.0, 1.0), u_sparkle_pow);
+    float b1 = mapSourceSample(u_tex3, suv * 2.0 + vec2(0.3, u_time * u_sparkle_speed)).r;
+    float b2 = mapSourceSample(u_tex3, suv * 3.0 + vec2(u_time * u_sparkle_speed, 0.3)).r;
+    float s2 = pow(clamp(b1 * b2, 0.0, 1.0), u_sparkle_pow);
+    float gray = dot(clamp(color, 0.0, 1.0), vec3(0.299, 0.578, 0.114));
+    float sparkle_mask = (s1 * 2.0 + s2) * gray * (0.01 + s_ndv) * 100.0 * u_sparkle_intensity * tex1.a;
+    emissive += mapSrgb2Lin(clamp(color, 0.0, 1.0)) * sparkle_mask;
+    vec4 t3s_noise = mapSourceSample(u_tex3, gl_FragCoord.xy / u_scene_size * u_sparkle_noise_scale) * tex1.a;
+    albedo_lin *= (1.2 - t3s_noise.g);
+  }
+  if (u_glint_exp > 0.0) {
+    vec3 sun_dir = -u_sun_dir;
     vec3 glint_rz = vec3(cos(3.14) * sun_dir.x + sin(3.14) * sun_dir.z, sun_dir.y, -sin(3.14) * sun_dir.x + cos(3.14) * sun_dir.z);
     vec3 glint_ry = vec3(cos(-0.3) * glint_rz.x - sin(-0.3) * glint_rz.y, sin(-0.3) * glint_rz.x + cos(-0.3) * glint_rz.y, glint_rz.z);
     vec3 glint_h = normalize(-glint_ry + view_dir);
-    emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), 1220.0) * 0.2 * MAP_SUN_COLOR;
+    emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), u_glint_exp) * 0.2 * (u_env_data > 0.5 ? u_sun_color : MAP_SUN_COLOR);
   }
   vec3 final_lin;
   if (u_unlit > 0.5) {
-    final_lin = albedo_lin * (u_color_mode > 5.5 ? 1.0 : u_lightness) + emissive;
+    final_lin = albedo_lin * ((u_color_mode > 5.5 || u_surf_kind > 19.5) ? 1.0 : u_lightness) + emissive;
   } else if (u_simple_light > 0.5) {
     vec3 simple_sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, normal.y));
-    final_lin = albedo_lin * max(dot(normal, MAP_SUN_DIR), 0.0) / 3.14159265 * MAP_SUN_COLOR + simple_sky * albedo_lin + emissive;
+    final_lin = albedo_lin * max(dot(normal, u_sun_dir), 0.0) / 3.14159265 * (u_env_data > 0.5 ? u_sun_color : MAP_SUN_COLOR) + simple_sky * albedo_lin + emissive;
   } else {
-    final_lin = mapPbrShade(normal, normalize(u_camera - v_world), albedo_lin, roughness, metalness, ao) + emissive;
+    final_lin = mapPbrShade(normal, normalize(u_camera - v_world), albedo_lin, roughness, metalness, ao, u_hlod_mrs > 0.5 && u_has_tex2 > 0.5 ? vec3(tex2.b * 0.08) : vec3(0.04)) + emissive;
   }
   if (u_glass > 0.5 || (u_water_kind > 0.5 && u_water_kind < 2.5)) {
     float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(normal, view_dir), 0.0, 1.0), 5.0);
@@ -3980,6 +4486,43 @@ function map3DEulerQuat(rx, ry, rz) {
   ];
 }
 
+function map3DComputeEnv(data) {
+  const out = {
+    sunColor: [2.4, 2.25, 2.05],
+    sunDir: [0.458, 0.814, 0.356],
+    ambient: [1.85, 1.85, 1.85],
+    has: false,
+  };
+  const env = data && data.env;
+  if (!env) return out;
+  const color = Array.isArray(env.main_light_color) ? env.main_light_color : null;
+  const intensity = Number(env.main_light_intensity);
+  if (color && Number.isFinite(intensity)) {
+    out.sunColor = [color[0] / 255 * intensity, color[1] / 255 * intensity, color[2] / 255 * intensity];
+    out.has = true;
+  }
+  const euler = Array.isArray(env.main_light_euler) ? env.main_light_euler : null;
+  if (euler) {
+    // make_matrix_from_model_angle = Rz(roll)*Rx(pitch)*Ry(yaw)，作用于局部 +Z 后取负即指向光的 L。
+    const d2r = Math.PI / 180;
+    const pitch = (Number(euler[0]) || 0) * d2r;
+    const yaw = (Number(euler[1]) || 0) * d2r;
+    const roll = (Number(euler[2]) || 0) * d2r;
+    const v = [Math.sin(yaw), 0, Math.cos(yaw)];
+    const w = [v[0], v[1] * Math.cos(pitch) - v[2] * Math.sin(pitch), v[1] * Math.sin(pitch) + v[2] * Math.cos(pitch)];
+    const u = [w[0] * Math.cos(roll) - w[1] * Math.sin(roll), w[0] * Math.sin(roll) + w[1] * Math.cos(roll), w[2]];
+    out.sunDir = [-u[0], -u[1], -u[2]];
+    out.has = true;
+  }
+  const envColor = Array.isArray(env.env_light_color) ? env.env_light_color : null;
+  const envIntensity = Number(env.env_light_intensity);
+  if (envColor) {
+    const k = 5 / 255 * (Number.isFinite(envIntensity) ? envIntensity : 1);
+    out.ambient = [envColor[0] * k, envColor[1] * k, envColor[2] * k];
+  }
+  return out;
+}
+
 function map3DUnitMatrix(unit) {
   const position = unit.position || [0, 0, 0];
   const scale = unit.scale || [1, 1, 1];
@@ -3990,6 +4533,25 @@ function map3DUnitMatrix(unit) {
     quat[0], quat[1], quat[2], quat[3],
     map3DNumber(scale[0], 1), map3DNumber(scale[1], 1), map3DNumber(scale[2], 1),
   ]);
+}
+
+function map3DSurfaceKind(surface) {
+  const s = String(surface || "").toLowerCase();
+  if (s.includes("change_color_terrain")) return 1;
+  if (s.includes("shine_audio")) return 3;
+  if (s.includes("unlit_change_color_shine")) return 21;
+  if (s.includes("change_color_shine")) return 2;
+  if (s.includes("changecol_v")) return 20;
+  if (s.includes("unlit_streamer_mask")) return 22;
+  if (s.includes("change_color_dissolve")) return 4;
+  if (s.includes("change_color_laser")) return 5;
+  if (s.includes("change_color_maskflow")) return 6;
+  if (s.includes("change_color_uvflow")) return 7;
+  if (s.includes("change_color_disturt")) return 8;
+  if (s.includes("change_color_logo_scale")) return 9;
+  if (s.includes("change_color_mix")) return 10;
+  if (s.includes("unlit_jelly")) return 23;
+  return 0;
 }
 
 function map3DNumber(value, fallback) {
@@ -4217,6 +4779,17 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects, k
     const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
     tangents[index * 4] = tx; tangents[index * 4 + 1] = ty; tangents[index * 4 + 2] = tz;
     tangents[index * 4 + 3] = cx * bx + cy * by + cz * bz < 0 ? -1 : 1;
+  }
+  const realTangents = Array.isArray(mesh.tangents) && mesh.tangents.length === vertices.length ? mesh.tangents : null;
+  if (realTangents) {
+    for (let index = 0; index < vertices.length; index += 1) {
+      const t = realTangents[index] || [1, 0, 0];
+      const tl = Math.hypot(t[0], t[1], t[2]) || 1;
+      tangents[index * 4] = t[0] / tl;
+      tangents[index * 4 + 1] = t[1] / tl;
+      tangents[index * 4 + 2] = t[2] / tl;
+      tangents[index * 4 + 3] = 1;
+    }
   }
   const use32 = vertices.length > 65535;
   const indices = use32 ? new Uint32Array(faces) : new Uint16Array(faces);
@@ -4481,13 +5054,58 @@ function map3DLoadMaterialTextures(model, materials, texturePaths) {
   };
   materials.forEach((material, index) => {
     const slots = material.shader_kind === "waterfall" && Array.isArray(material.waterfall_textures)
-      ? [...material.waterfall_textures, null] : [material.tex0, material.tex1, material.tex2, material.tex3];
+      ? [...material.waterfall_textures, null, null] : [material.tex0, material.tex1, material.tex2, material.tex3, material.tex4, material.tex5];
     if (material.shader_kind === "glass") slots[3] = material.pattern_tex || slots[3];
     if (index === 0 && fallback[0] && (!material.shader_kind || material.shader_kind === "standard")) slots[0] = slots[0] || fallback[0];
     slots.forEach((path, slot) => {
       if (!path) return;
       map3DLoadTexture(path, (texture) => apply(index, slot, texture));
     });
+  });
+  const cubePath = materials.map((material) => material.reflection_cube).find((path) => typeof path === "string" && path);
+  if (cubePath) map3DLoadCube(cubePath, model);
+}
+
+function map3DLoadCube(path, model) {
+  const gl = map3d.gl;
+  if (!gl || map3d.cubeCache.has(path)) {
+    const cached = map3d.cubeCache.get(path);
+    if (cached) requestMap3DDraw();
+    return;
+  }
+  map3d.cubeCache.set(path, null);
+  getJson(apiUrl("/api/cube", { path })).then((data) => {
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const faceTargets = [
+      gl.TEXTURE_CUBE_MAP_POSITIVE_X, gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+      gl.TEXTURE_CUBE_MAP_POSITIVE_Y, gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+      gl.TEXTURE_CUBE_MAP_POSITIVE_Z, gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+    ];
+    let loaded = 0;
+    data.faces.forEach((face, index) => {
+      const image = new Image();
+      image.onload = () => {
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+        gl.texImage2D(faceTargets[index], 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        loaded += 1;
+        if (loaded === data.faces.length) {
+          gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+          gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+          gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+          map3d.cubeCache.set(path, texture);
+          const entry = map3d.models.get(model);
+          if (entry && !entry.envTexture) entry.envTexture = texture;
+          requestMap3DDraw();
+        }
+      };
+      image.src = face;
+    });
+  }).catch(() => {
+    map3d.cubeCache.delete(path);
   });
 }
 
@@ -4514,6 +5132,19 @@ function map3DApplyMaterial(entry, group) {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1f(u["hasTex" + index], texture ? 1 : 0);
   }
+  gl.activeTexture(gl.TEXTURE7);
+  gl.bindTexture(gl.TEXTURE_2D, tex[4] || null);
+  gl.uniform1f(u.hasTex4, tex[4] ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D, tex[5] || null);
+  gl.uniform1f(u.hasTex5, tex[5] ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(gl.TEXTURE_CUBE_MAP, entry.envTexture || null);
+  gl.uniform1f(u.hasEnv, entry.envTexture ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1f(u.detailScale, map3DNumber(mat.detail_normal_scale, 1));
+  gl.uniform1f(u.fresnelPow, map3DNumber(mat.fresnel_pow, 1));
+  gl.uniform1f(u.fresnelIntensity, map3DNumber(mat.fresnel_intensity, 0));
   const surface = String(mat.surface || "").toLowerCase();
   const kind = mat.shader_kind || (surface.includes("water") ? "water" : surface.includes("glass") ? "glass" : "standard");
   const waterKind = ({ water: 1, water_color: 2, water_simple: 3, waterfall: 4 })[kind] || 0;
@@ -4537,7 +5168,9 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform1f(u.intensityA, Number(intensity[3]) || 0);
   gl.uniform1f(u.emissiveKind, Number(mat.emissive_kind) || 0);
   gl.uniform1f(u.lerpLinear, Number(mat.lerp_linear) || 0);
-  gl.uniform1f(u.glassOpacity, map3DNumber(mat.glass_opacity, 1));
+  gl.uniform1f(u.glassOpacity, map3DNumber(mat.extra_op, 1));
+  const patternIntensity = Array.isArray(mat.pattern_intensity) ? mat.pattern_intensity : [1, 0.5, 0, 0];
+  gl.uniform4f(u.patternIntensity, Number(patternIntensity[0]) || 0, Number(patternIntensity[1]) || 0, Number(patternIntensity[2]) || 0, Number(patternIntensity[3]) || 0);
   gl.uniform1f(u.glass, kind === "glass" ? 1 : 0);
   gl.uniform1f(u.waterKind, waterKind);
   gl.uniform1f(u.roughness, map3DNumber(mat.roughness, 0.5));
@@ -4562,6 +5195,7 @@ function map3DApplyMaterial(entry, group) {
   vector(u.designColor, mat.design_color, [1, 1, 1, 1]);
   vector(u.glassPatternPara, mat.pattern_para, [1, 1, 0, 0]);
   gl.uniform1f(u.glassPatternRotation, map3DNumber(mat.pattern_rotation, 0));
+  gl.uniform1f(u.patternDepth, map3DNumber(mat.pattern_depth, 0));
   vector(u.fallSpeed, [mat.speed_main_tex_u, mat.speed_main_tex_v, mat.speed_noise_tex_u, mat.speed_noise_tex_v], [0, 0, 0, 0]);
   vector(u.fallTiling, [mat.tiling_main_tex_x, mat.tiling_main_tex_y, mat.tiling_noise_tex, mat.noise_remap_max], [1, 1, 1, 1]);
   vector(u.fallRough, [mat.rough_low, mat.rough_high, mat.metallic, mat.emis_strength], [0.5, 0.5, 0, 0]);
@@ -4596,6 +5230,99 @@ function map3DApplyMaterial(entry, group) {
   const upColor = Array.isArray(mat.up_color) ? mat.up_color : [1, 1, 1, 1];
   gl.uniform4f(u.upColor, Number(upColor[0]) || 0, Number(upColor[1]) || 0, Number(upColor[2]) || 0, Number(upColor[3]) || 0);
   gl.uniform1f(u.simpleLight, mat.simple_light ? 1 : 0);
+  const surfaceForGlint = String(mat.surface || "").toLowerCase();
+  gl.uniform1f(u.glintExp, surfaceForGlint.includes("icefloor") ? 1220 : (surfaceForGlint.includes("tiling_obj") ? 220 : 0));
+  gl.uniform1f(u.hlodMrs, surfaceForGlint.includes("new_hlod") ? 1 : 0);
+  gl.uniform1f(u.object3, surfaceForGlint.includes("object3") ? 1 : 0);
+  gl.uniform1f(u.object4, surfaceForGlint.includes("object4") ? 1 : 0);
+  gl.uniform1f(u.positionX, map3DNumber(mat.position_x, 0));
+  gl.uniform1f(u.length1, map3DNumber(mat.length1, 0));
+  gl.uniform1f(u.length2, map3DNumber(mat.length2, 3));
+  gl.uniform1f(u.length3, map3DNumber(mat.length3, 0));
+  gl.uniform1f(u.length4, map3DNumber(mat.length4, 1));
+  gl.uniform1f(u.darkIntensity, map3DNumber(mat.dark_intensity, 0.5));
+  gl.uniform1f(u.upIntensity, map3DNumber(mat.up_intensity, 1));
+  gl.uniform1f(u.hsvS, map3DNumber(mat.hsv_s, 0.4));
+  gl.uniform1f(u.hsvV, map3DNumber(mat.hsv_v, 0.4));
+  gl.uniform1f(u.borderPow, map3DNumber(mat.border_pow, 5));
+  gl.uniform1f(u.borderSpeed, map3DNumber(mat.border_speed, 3));
+  gl.uniform1f(u.borderBreath, surfaceForGlint.includes("object2") ? map3DNumber(mat.border_breath, 1) : 0);
+  const waterParams = mat.water_params || {};
+  gl.uniform1f(u.dwNs1, map3DNumber(waterParams.NormalScale1, 1));
+  gl.uniform1f(u.dwNs2, map3DNumber(waterParams.NormalScale2, 1));
+  gl.uniform1f(u.dwNs, map3DNumber(waterParams.NormalScale, 1));
+  gl.uniform1f(u.dwSpeedX, map3DNumber(waterParams.SpeedX, 0));
+  gl.uniform1f(u.dwSpeedY, map3DNumber(waterParams.SpeedY, 0));
+  gl.uniform1f(u.dwDepthScale, map3DNumber(waterParams.DepthScale, 0.1));
+  gl.uniform1f(u.dwOpacityMax, map3DNumber(waterParams.OpacityMax, 0.6));
+  gl.uniform1f(u.dwFoamScale, map3DNumber(waterParams.FoamScale, 0.3));
+  gl.uniform1f(u.dwHighlightMin, map3DNumber(waterParams.HighlightMin, 0));
+  gl.uniform1f(u.dwLightness, map3DNumber(waterParams.WaterLightness, 1));
+  const isSparkle = surfaceForGlint.includes("sparkle");
+  gl.uniform1f(u.sparkle, isSparkle ? 1 : 0);
+  gl.uniform1f(u.sparkleScale, map3DNumber(mat.sparkle_scale, 2));
+  gl.uniform1f(u.sparkleOffset, map3DNumber(mat.sparkle_offset, 8));
+  gl.uniform1f(u.sparkleSpeed, map3DNumber(mat.sparkle_speed, 0.02));
+  gl.uniform1f(u.sparklePow, map3DNumber(mat.sparkle_pow, 8));
+  gl.uniform1f(u.sparkleIntensity, isSparkle ? map3DNumber(mat.sparkle_intensity, 4) : 0);
+  gl.uniform1f(u.sparkleNoiseScale, map3DNumber(mat.noise_scale, 0.2));
+  const surfaceKind = map3DSurfaceKind(surfaceForGlint);
+  gl.uniform1f(u.surfKind, surfaceKind);
+  gl.uniform1f(u.noiseScale, map3DNumber(mat.noise_scale, surfaceKind === 1 ? 1 : 10));
+  gl.uniform1f(u.noiseStrength, map3DNumber(mat.noise_strength, 1));
+  gl.uniform1f(u.hueStrength, map3DNumber(mat.hue_strength, 0));
+  gl.uniform1f(u.maskPow, map3DNumber(mat.mask_pow, surfaceKind === 3 ? 1 : 3));
+  gl.uniform1f(u.maskStyle, map3DNumber(mat.mask_style, 0));
+  gl.uniform1f(u.maskStrength, map3DNumber(mat.mask_strength, 0.5));
+  gl.uniform1f(u.audioRange, map3DNumber(mat.audio_range, 1));
+  gl.uniform1f(u.windSpeed, 1);
+  gl.uniform1f(u.dissolveValue, map3DNumber(mat.dissolve_value, 1));
+  gl.uniform1f(u.dissolveStrength, map3DNumber(mat.dissolve_strength, 0.1));
+  gl.uniform1f(u.dissolveNoise, map3DNumber(mat.dissolve_noise, 0.3));
+  gl.uniform1f(u.dissolveReverse, map3DNumber(mat.dissolve_reverse, 0));
+  gl.uniform1f(u.dissolveDir, map3DNumber(mat.dissolve_dir, 2));
+  gl.uniform1f(u.dissolveIntensity, map3DNumber(mat.dissolve_intensity, 4));
+  vector(u.dissolveScale, mat.dissolve_scale, [1, 1, 0, 0]);
+  vector(u.dissolveColor, mat.dissolve_color, [0, 0, 0, 1]);
+  gl.uniform1f(u.laserScale, map3DNumber(mat.laser_scale, 1));
+  gl.uniform1f(u.laserTransition, map3DNumber(mat.laser_transition, 0.5));
+  vector(u.flowSpeed, mat.flow_speed, [0.1, 0, 0, 0]);
+  gl.uniform1f(u.state, map3DNumber(mat.state, 1));
+  gl.uniform1f(u.flowU, map3DNumber(mat.speed_u, -0.5));
+  vector(u.flow, mat.flow, [1, 1, 1, 0]);
+  gl.uniform1f(u.flowStrength, map3DNumber(mat.flow_strength, 0.5));
+  gl.uniform1f(u.offsetScale, map3DNumber(mat.offset_scale, 1));
+  gl.uniform1f(u.offsetSpeed, map3DNumber(mat.offset_speed, 0));
+  const offsetStrengthValue = map3DNumber(mat.offset_strength, 5);
+  gl.uniform1f(u.offsetStrength, surfaceKind === 8 && !offsetStrengthValue ? 5 : offsetStrengthValue);
+  gl.uniform1f(u.uvSpeed, map3DNumber(mat.uv_speed, 0.01));
+  gl.uniform1f(u.mixLerp, map3DNumber(mat.mix_lerp, 0));
+  gl.uniform1f(u.lerpKey, map3DNumber(mat.lerp_key, 0));
+  gl.uniform1f(u.changeColorKey, map3DNumber(mat.change_color_key, 0));
+  gl.uniform1f(u.colorIntensity, map3DNumber(mat.color_intensity, 0));
+  gl.uniform1f(u.ugcR, map3DNumber(mat.ugc_key_r, 1));
+  gl.uniform1f(u.ugcM, map3DNumber(mat.ugc_key_m, 1));
+  vector(u.color0, mat.color0, [1, 1, 1, 1]);
+  vector(u.color1, mat.color1, [1, 1, 1, 1]);
+  gl.uniform1f(u.streamerSpeed, map3DNumber(mat.streamer_speed, 1));
+  gl.uniform1f(u.streamerLightness, map3DNumber(mat.streamer_lightness, 1));
+  gl.uniform1f(u.uvTiling, map3DNumber(mat.uv_tiling, 1));
+  gl.uniform1f(u.flakeDensity, map3DNumber(mat.flake_density, 0.1));
+  gl.uniform1f(u.flakeNumber, map3DNumber(mat.flake_number, 0));
+  gl.uniform1f(u.sparkleEmis, map3DNumber(mat.sparkle_emis, 1));
+  gl.uniform1f(u.flakeSwitch, map3DNumber(mat.flake_switch, 0));
+  gl.uniform1f(u.offsetMult, map3DNumber(mat.offset_mult, 1));
+  gl.uniform1f(u.offsetPow, map3DNumber(mat.offset_pow, 1));
+  gl.uniform1f(u.fresnelSpeed, map3DNumber(mat.fresnel_speed, 1));
+  gl.uniform1f(u.shadowEnable, map3DNumber(mat.shadow_enable, 0));
+  const macros = mat.macros || {};
+  gl.uniform1f(u.borderEnable, macros.ENABLE_BORDER === undefined ? 1 : (macros.ENABLE_BORDER ? 1 : 0));
+  gl.uniform1f(u.scanLight, macros.ENABLE_LIGHTING ? 1 : 0);
+  gl.uniform1f(u.tilingObj, surfaceForGlint.includes("change_color_tiling_obj") ? 1 : 0);
+  gl.uniform1f(u.tilingNm, surfaceForGlint.includes("change_color_tiling_nm") ? 1 : 0);
+  gl.uniform1f(u.tilingAll, surfaceForGlint.includes("change_color_tiling_all") ? 1 : 0);
+  gl.uniform1f(u.repeatScaleY, map3DNumber(mat.repeat_scale_y, 1));
+  gl.uniform1f(u.maskSrgb, mat.mask_srgb ? 1 : 0);
   const opacityTex = mat.opacity_tex === "tex1" ? 1 : (mat.opacity_tex === "none" ? 2 : 0);
   gl.uniform1f(u.opacityTex, surface.includes("tiling") ? 2 : opacityTex);
   gl.uniform1f(u.alphaRef, Number(mat.alpha_ref) || 0);
@@ -4748,6 +5475,11 @@ function drawMap3D() {
     gl.uniform3f(map3d.uniforms.camera, eye[0], eye[1], eye[2]);
     gl.uniform4f(map3d.uniforms.illum, 1, 1, 1, 0);
     gl.uniform3f(map3d.uniforms.weather, 1, 1, 1);
+    const sun = map3d.env || map3DComputeEnv(null);
+    gl.uniform3f(map3d.uniforms.sunColor, sun.sunColor[0], sun.sunColor[1], sun.sunColor[2]);
+    gl.uniform3f(map3d.uniforms.sunDir, sun.sunDir[0], sun.sunDir[1], sun.sunDir[2]);
+    gl.uniform3f(map3d.uniforms.shAmbient, sun.ambient[0], sun.ambient[1], sun.ambient[2]);
+    gl.uniform1f(map3d.uniforms.envData, sun.has ? 1 : 0);
     const opaqueDraws = [];
     const transparentDraws = [];
     const target = map3d.camera?.target || [0, 0, 0];
@@ -4904,6 +5636,7 @@ function disposeMap3D() {
       gl.deleteBuffer(entry.tangentBuffer);
     }
     for (const texture of map3d.textureCache.values()) gl.deleteTexture(texture);
+    for (const texture of map3d.cubeCache.values()) if (texture) gl.deleteTexture(texture);
     if (map3d.points) gl.deleteBuffer(map3d.points);
     if (map3d.grid) gl.deleteBuffer(map3d.grid);
     if (map3d.program) gl.deleteProgram(map3d.program);
@@ -4914,6 +5647,7 @@ function disposeMap3D() {
   map3d.frame = 0;
   map3d.textureCache.clear();
   map3d.texturePending.clear();
+  map3d.cubeCache.clear();
   map3d.uniforms = {};
   map3d.models.clear();
   map3d.hiddenModels.clear();
@@ -5000,7 +5734,7 @@ async function openMap3D(file, data) {
     normalSlot: uniform("u_normal_slot"), glassPattern: uniform("u_glass_pattern"),
     patternOpacity: uniform("u_pattern_opacity"), patternColorKey: uniform("u_pattern_color_key"),
     designColor: uniform("u_design_color"), glassPatternPara: uniform("u_glass_pattern_para"),
-    glassPatternRotation: uniform("u_glass_pattern_rotation"),
+    glassPatternRotation: uniform("u_glass_pattern_rotation"), patternDepth: uniform("u_pattern_depth"),
     waterVariable: uniform("u_water_variable"), waterSpeed: uniform("u_water_speed"),
     waterParameter: uniform("u_water_parameter"), waterUv: uniform("u_water_uv"),
     waterOptions: uniform("u_water_options"), waterFoam: uniform("u_water_foam"), waterIce: uniform("u_water_ice"),
@@ -5010,6 +5744,10 @@ async function openMap3D(file, data) {
     sceneColor: uniform("u_scene_color"), sceneDepth: uniform("u_scene_depth"),
     hasScene: uniform("u_has_scene"), sceneSize: uniform("u_scene_size"), nearFar: uniform("u_near_far"),
     sceneViewProj: uniform("u_scene_view_proj"), viewRight: uniform("u_view_right"), viewUp: uniform("u_view_up"),
+    envMap: uniform("u_env_map"), hasEnv: uniform("u_has_env"),
+    tex4: uniform("u_tex4"), hasTex4: uniform("u_has_tex4"),
+    detailScale: uniform("u_detail_scale"), fresnelPow: uniform("u_fresnel_pow"),
+    fresnelIntensity: uniform("u_fresnel_intensity"),
     camera: uniform("u_camera"), intensityRGB: uniform("u_intensity_rgb"),
     borderColor: uniform("u_border_color"), border: uniform("u_border"),
     lightness: uniform("u_lightness"),
@@ -5017,6 +5755,52 @@ async function openMap3D(file, data) {
     alphaMtl: uniform("u_alpha_mtl"),
     downColor: uniform("u_down_color"), upColor: uniform("u_up_color"),
     simpleLight: uniform("u_simple_light"),
+    glintExp: uniform("u_glint_exp"),
+    hlodMrs: uniform("u_hlod_mrs"),
+    object3: uniform("u_object3"), object4: uniform("u_object4"),
+    positionX: uniform("u_position_x"), length1: uniform("u_length1"),
+    length2: uniform("u_length2"), length3: uniform("u_length3"), length4: uniform("u_length4"),
+    darkIntensity: uniform("u_dark_intensity"), upIntensity: uniform("u_up_intensity"),
+    hsvS: uniform("u_hsv_s"), hsvV: uniform("u_hsv_v"),
+    borderPow: uniform("u_border_pow"), borderSpeed: uniform("u_border_speed"),
+    borderBreath: uniform("u_border_breath"),
+    dwNs1: uniform("u_dw_ns1"), dwNs2: uniform("u_dw_ns2"), dwNs: uniform("u_dw_ns"),
+    dwSpeedX: uniform("u_dw_speed_x"), dwSpeedY: uniform("u_dw_speed_y"),
+    dwDepthScale: uniform("u_dw_depth_scale"), dwOpacityMax: uniform("u_dw_opacity_max"),
+    dwFoamScale: uniform("u_dw_foam_scale"), dwHighlightMin: uniform("u_dw_highlight_min"),
+    dwLightness: uniform("u_dw_lightness"), patternIntensity: uniform("u_pattern_intensity"),
+    sparkle: uniform("u_sparkle"), sparkleScale: uniform("u_sparkle_scale"),
+    sparkleOffset: uniform("u_sparkle_offset"), sparkleSpeed: uniform("u_sparkle_speed"),
+    sparklePow: uniform("u_sparkle_pow"), sparkleIntensity: uniform("u_sparkle_intensity"),
+    sparkleNoiseScale: uniform("u_sparkle_noise_scale"),
+    tex5: uniform("u_tex5"), hasTex5: uniform("u_has_tex5"), surfKind: uniform("u_surf_kind"),
+    noiseScale: uniform("u_noise_scale"), noiseStrength: uniform("u_noise_strength"), hueStrength: uniform("u_hue_strength"),
+    maskPow: uniform("u_mask_pow"), maskStyle: uniform("u_mask_style"), maskStrength: uniform("u_mask_strength"),
+    audioRange: uniform("u_audio_range"), windSpeed: uniform("u_wind_speed"),
+    dissolveValue: uniform("u_dissolve_value"), dissolveStrength: uniform("u_dissolve_strength"),
+    dissolveNoise: uniform("u_dissolve_noise"), dissolveReverse: uniform("u_dissolve_reverse"),
+    dissolveDir: uniform("u_dissolve_dir"), dissolveIntensity: uniform("u_dissolve_intensity"),
+    dissolveScale: uniform("u_dissolve_scale"), dissolveColor: uniform("u_dissolve_color"),
+    laserScale: uniform("u_laser_scale"), laserTransition: uniform("u_laser_transition"),
+    flowSpeed: uniform("u_flow_speed"), state: uniform("u_state"),
+    flowU: uniform("u_flow_u"), flow: uniform("u_flow"), flowStrength: uniform("u_flow_strength"),
+    offsetScale: uniform("u_offset_scale"), offsetSpeed: uniform("u_offset_speed"),
+    offsetStrength: uniform("u_offset_strength"), uvSpeed: uniform("u_uv_speed"),
+    mixLerp: uniform("u_mix_lerp"), lerpKey: uniform("u_lerp_key"),
+    changeColorKey: uniform("u_change_color_key"), colorIntensity: uniform("u_color_intensity"),
+    ugcR: uniform("u_ugc_r"), ugcM: uniform("u_ugc_m"),
+    color0: uniform("u_color0"), color1: uniform("u_color1"),
+    streamerSpeed: uniform("u_streamer_speed"), streamerLightness: uniform("u_streamer_lightness"),
+    uvTiling: uniform("u_uv_tiling"), flakeDensity: uniform("u_flake_density"), flakeNumber: uniform("u_flake_number"),
+    sparkleEmis: uniform("u_sparkle_emis"), flakeSwitch: uniform("u_flake_switch"),
+    offsetMult: uniform("u_offset_mult"), offsetPow: uniform("u_offset_pow"),
+    fresnelSpeed: uniform("u_fresnel_speed"), shadowEnable: uniform("u_shadow_enable"),
+    borderEnable: uniform("u_border_enable"), scanLight: uniform("u_scan_light"),
+    tilingObj: uniform("u_tiling_obj"), tilingNm: uniform("u_tiling_nm"),
+    tilingAll: uniform("u_tiling_all"), repeatScaleY: uniform("u_repeat_scale_y"),
+    sunColor: uniform("u_sun_color"), sunDir: uniform("u_sun_dir"),
+    shAmbient: uniform("u_sh_ambient"), envData: uniform("u_env_data"),
+    maskSrgb: uniform("u_mask_srgb"),
     illum: uniform("u_illum"), weather: uniform("u_weather"),
   };
   gl.useProgram(map3d.program);
@@ -5026,7 +5810,11 @@ async function openMap3D(file, data) {
   gl.uniform1i(map3d.uniforms.tex3, 3);
   gl.uniform1i(map3d.uniforms.sceneColor, 4);
   gl.uniform1i(map3d.uniforms.sceneDepth, 5);
+  gl.uniform1i(map3d.uniforms.envMap, 6);
+  gl.uniform1i(map3d.uniforms.tex4, 7);
+  gl.uniform1i(map3d.uniforms.tex5, 8);
   map3d.data = data;
+  map3d.env = map3DComputeEnv(data);
   map3d.ready = false;
   map3d.units = (data.units || []).filter((unit) => unit.visible !== false && Array.isArray(unit.position));
   map3d.loadErrors = 0;
@@ -5097,6 +5885,7 @@ async function loadMap3DMeshes(data, token) {
   map3d.hiddenModels.clear();
   for (const unit of data.units || []) {
     if (unit.visible === false) continue;
+    if (unit.logical || unit.from_bindict) continue;
     const model = unit.model;
     if (!model || !/\.(gim|mesh)$/i.test(model)) {
       unresolved += 1;
@@ -5912,6 +6701,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   if (!gl) throw new Error("WebGL unavailable");
   const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  const gimStartTime = performance.now();
   gim3d.canvas = canvas;
   gim3d.gl = gl;
   gim3d.zoomInput = $("gim-zoom-input");
@@ -6008,6 +6798,10 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform vec2 u_fresnel;
     uniform float u_alpha_mtl;
     uniform float u_simple_light;
+    uniform float u_glint_exp;
+    uniform float u_hlod_mrs;
+    uniform float u_border_enable;
+    uniform float u_mask_srgb;
     uniform vec4 u_down_color;
     uniform vec4 u_up_color;
     uniform float u_glass_opacity;
@@ -6017,15 +6811,86 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     uniform vec4 u_ei;
     uniform sampler2D u_tex3;
     uniform float u_has_tex3;
+    uniform sampler2D u_tex4;
+    uniform float u_has_tex4;
+    uniform float u_detail_scale;
+    uniform float u_fresnel_pow;
+    uniform float u_fresnel_intensity;
+    uniform samplerCube u_env_map;
+    uniform float u_has_env;
+    uniform float u_time;
+    uniform vec2 u_scene_size;
+    uniform float u_surf_kind;
+    uniform float u_object3;
+    uniform float u_length1;
+    uniform float u_length2;
+    uniform float u_length3;
+    uniform float u_length4;
+    uniform float u_dark_intensity;
+    uniform float u_up_intensity;
+    uniform float u_hsv_s;
+    uniform float u_hsv_v;
+    uniform float u_border_pow;
+    uniform float u_border_speed;
+    uniform float u_border_breath;
+    uniform float u_scan_light;
+    uniform float u_tiling_obj;
+    uniform float u_tiling_nm;
+    uniform float u_tiling_all;
+    uniform float u_repeat_scale_y;
+    uniform float u_dissolve_value;
+    uniform float u_dissolve_strength;
+    uniform float u_dissolve_noise;
+    uniform float u_dissolve_reverse;
+    uniform float u_dissolve_dir;
+    uniform float u_dissolve_intensity;
+    uniform vec2 u_dissolve_scale;
+    uniform vec4 u_dissolve_color;
+    uniform float u_mask_pow;
+    uniform float u_mask_style;
+    uniform float u_sparkle;
+    uniform float u_sparkle_scale;
+    uniform float u_sparkle_offset;
+    uniform float u_sparkle_speed;
+    uniform float u_sparkle_pow;
+    uniform float u_sparkle_intensity;
+    uniform float u_sparkle_noise_scale;
+    uniform float u_glass_pattern;
+    uniform float u_pattern_depth;
+    uniform vec4 u_glass_pattern_para;
+    uniform float u_glass_pattern_rotation;
+    uniform vec4 u_pattern_intensity;
+    uniform float u_pattern_opacity;
     vec3 srgb2lin(vec3 c) {
       return pow(max(c, vec3(0.0)), vec3(2.2));
     }
     vec3 lin2srgb(vec3 c) {
       return pow(max(c, vec3(0.0)), vec3(0.4545));
     }
+    vec3 rgb2hsv(vec3 c) {
+      vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+      vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+      vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+      float d = q.x - min(q.w, q.y);
+      float e = 1.0e-10;
+      return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+    }
+    vec3 hsv2rgb(vec3 c) {
+      vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+    vec2 srcUV(vec2 c) {
+      return vec2(c.x, 1.0 - c.y);
+    }
+    float roundRect(vec2 uv, vec2 box, float corner, float sharpness, vec2 center) {
+      vec2 p = max(abs(uv - center) - (box - corner) * 0.5, vec2(0.0));
+      float m = clamp(length(p) / max(corner, 0.0001), 0.0, 1.0);
+      return clamp((1.0 - m) * (sharpness + 1.0), 0.0, 1.0);
+    }
     const vec3 SUN_COLOR = vec3(2.4, 2.25, 2.05);
     const vec3 SUN_DIR = vec3(0.458, 0.814, 0.356);
-    vec3 pbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao) {
+    vec3 pbrShade(vec3 N, vec3 V, vec3 albedo, float roughness, float metalness, float ao, vec3 spec0) {
       vec3 L = SUN_DIR;
       vec3 H = normalize(L + V);
       float n_dot_l = max(dot(N, L), 0.0);
@@ -6033,7 +6898,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       float n_dot_h = clamp(dot(N, H), 0.0, 1.0);
       float v_dot_h = clamp(dot(V, H), 0.0, 1.0);
       vec3 diff_col = albedo;
-      vec3 spec_col = mix(vec3(0.04), albedo, metalness);
+      vec3 spec_col = mix(spec0, albedo, metalness);
       float r2 = max(0.08, roughness);
       r2 *= r2;
       float vis = 0.5 / max(n_dot_l * (n_dot_v * (1.0 - r2) + r2) + n_dot_v * (n_dot_l * (1.0 - r2) + r2), 0.0001);
@@ -6044,12 +6909,21 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       float fc = pow(1.0 - v_dot_h, 5.0);
       vec3 fres = clamp(50.0 * spec_col.g, 0.0, 1.0) * fc + (1.0 - fc) * spec_col;
       vec3 direct = (diff_col * n_dot_l / 3.14159265 + vis * ggx * n_dot_l * fres) * SUN_COLOR;
-      vec3 sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
-      vec3 env_diff = sky * diff_col;
-      vec3 R = reflect(-V, N);
-      vec3 env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
-      env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
       float nv = clamp(abs(dot(N, V)), 0.0, 1.0);
+      vec3 sky = mix(vec3(0.42, 0.46, 0.56), vec3(0.72, 0.80, 0.95), smoothstep(-0.15, 0.75, N.y));
+      float fd_lum = dot(diff_col, vec3(0.2125, 0.7154, 0.0721));
+      vec3 f90 = clamp(diff_col - fd_lum * 0.3333, 0.0, 1.0);
+      vec3 env_diff = sky * mix(f90, diff_col, nv * nv);
+      vec3 R = reflect(-V, N);
+      float peak_a = roughness * roughness;
+      R = mix(N, R, (1.0 - peak_a) * (sqrt(1.0 - peak_a) + peak_a));
+      vec3 env_col;
+      if (u_has_env > 0.5) {
+        env_col = srgb2lin(textureCube(u_env_map, R).rgb);
+      } else {
+        env_col = mix(vec3(0.38, 0.42, 0.48), vec3(0.72, 0.80, 0.92), smoothstep(-0.25, 0.6, R.y));
+        env_col = mix(env_col, vec3(0.40, 0.44, 0.50), roughness * roughness);
+      }
       vec4 cc0 = vec4(-1.0, -0.0275, -0.572, 0.022);
       vec4 cc1 = vec4(1.0, 0.0425, 1.04, -0.04);
       vec4 rr = roughness * cc0 + cc1;
@@ -6064,7 +6938,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       float tm_c = 2.43 - u_illum.w;
       const float tm_d = 0.59;
       const float tm_e = 0.14;
-      x = max(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.0));
+      x = clamp(x * (1.0 / max(u_illum.z, 0.000001)), vec3(0.01), vec3(60.0));
       vec3 r = (x * (tm_a * x + tm_b)) / (x * (tm_c * x + tm_d) + tm_e);
       float lum = dot(vec3(0.0425, 0.14308, 0.01442), r);
       return (r * 1.2 - lum) * u_weather;
@@ -6075,39 +6949,106 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         return;
       }
       vec2 sample_uv = v_uv;
-      sample_uv -= 0.5;
-      sample_uv *= u_texture_para.xy;
+      bool cc_surface = u_color_mode > 0.5 || u_repeat_always > 0.5;
+      bool bare29 = u_color_mode > 1.5 && u_color_mode < 2.5;
+      vec2 uv_scale = u_texture_para.xy * (cc_surface ? u_repeat_scale : 1.0);
       float texture_angle = radians(u_rotation_angle);
+      float texture_sin = sin(texture_angle), texture_cos = cos(texture_angle);
+      vec3 an = abs(normalize(v_normal));
+      vec3 pt = (v_local / 2.64) * 0.5 + 0.5;
+      vec3 pb = v_local / 2.64;
+      bool triplain_split = u_tiling_obj > 0.5 || u_tiling_nm > 0.5 || u_tiling_all > 0.5;
+      vec2 tiling_obj_uv = v_uv;
+      if (u_tiling_obj > 0.5) {
+        // tiling_obj: 掩码/法线/混合走原始 UV，只有花纹走三平面 UGC 链。
+        tiling_obj_uv = (an.x >= an.y && an.x >= an.z) ? pt.yz : ((an.y >= an.z) ? pt.xz : pt.xy);
+        vec2 tsc = u_repeat_scale * u_texture_para.xy;
+        tiling_obj_uv = (tiling_obj_uv - 0.5) * tsc;
+        float tpa = radians(u_rotation_angle);
+        tiling_obj_uv = vec2(tiling_obj_uv.x * cos(tpa) - tiling_obj_uv.y * sin(tpa), tiling_obj_uv.x * sin(tpa) + tiling_obj_uv.y * cos(tpa));
+        tiling_obj_uv += 0.5 * tsc + u_texture_para.zw;
+        sample_uv = v_uv;
+      } else if (u_tiling_nm > 0.5) {
+        // tiling_nm: 掩码原始 UV，法线/混合走三平面 * RepeatScale。
+        sample_uv = ((an.x >= an.y && an.x >= an.z) ? pt.yz : ((an.y >= an.z) ? pt.xz : pt.xy)) * u_repeat_scale;
+      } else if (u_tiling_all > 0.5) {
+        // tiling_all: 三平面 * RepeatScale(x) * RepeatScaleY(y)，再走 TP 链。
+        vec2 auv = (an.x >= an.y && an.x >= an.z) ? pt.yz : ((an.y >= an.z) ? pt.xz : pt.xy);
+        auv *= vec2(u_repeat_scale, u_repeat_scale * u_repeat_scale_y);
+        auv -= 0.5;
+        auv *= u_texture_para.xy;
+        float taa = radians(u_rotation_angle);
+        auv = vec2(auv.x * cos(taa) - auv.y * sin(taa), auv.x * sin(taa) + auv.y * cos(taa));
+        auv += 0.5;
+        auv += u_texture_para.zw;
+        sample_uv = auv;
+      } else if (u_tiling > 0.5) {
+        if (an.x >= an.y && an.x >= an.z) sample_uv = bare29 ? pb.yz : pt.yz;
+        else if (an.y >= an.z) sample_uv = bare29 ? pb.xz : pt.xz;
+        else sample_uv = bare29 ? pb.yx : pt.yx;
+      }
+      if (!bare29 && !triplain_split) sample_uv -= 0.5;
+      sample_uv *= uv_scale;
       if (abs(texture_angle) > 0.0001) {
-        float texture_sin = sin(texture_angle), texture_cos = cos(texture_angle);
         sample_uv = vec2(sample_uv.x * texture_cos - sample_uv.y * texture_sin, sample_uv.x * texture_sin + sample_uv.y * texture_cos);
       }
-      sample_uv += 0.5;
-      sample_uv += u_texture_para.zw;
-      if (u_repeat_always > 0.5) sample_uv *= u_repeat_scale;
-      if (u_tiling > 0.5) {
-        vec3 an = abs(normalize(v_normal));
-        vec3 p = (v_local / 2.64) * 0.5 + 0.5;
-        if (an.x >= an.y && an.x >= an.z) sample_uv = p.yz * u_repeat_scale;
-        else if (an.y >= an.z) sample_uv = p.xz * u_repeat_scale;
-        else sample_uv = p.yx * u_repeat_scale;
-      }
+      if (!bare29 && !triplain_split) sample_uv += cc_surface ? 0.5 * uv_scale : vec2(0.5);
+      if (!triplain_split) sample_uv += u_texture_para.zw;
       vec4 texel = u_has_tex > 0.5 ? texture2D(u_tex, sample_uv) : vec4(1.0);
       vec4 normal_texel = u_has_normal > 0.5 ? texture2D(u_normal_tex, sample_uv) : vec4(0.5, 0.5, 1.0, 1.0);
       vec4 mrs_texel = u_has_tex2 > 0.5 ? texture2D(u_tex2, sample_uv) : vec4(0.0, 0.5, 0.0, 0.0);
+      vec4 tex4 = u_has_tex4 > 0.5 ? texture2D(u_tex4, sample_uv * u_detail_scale) : vec4(0.5, 0.5, 0.5, 1.0);
       vec4 tex3s = u_has_tex3 > 0.5 ? texture2D(u_tex3, sample_uv) : vec4(0.0);
       vec3 color;
       bool color_linear = false;
       float alpha;
+      vec3 branch_em = vec3(0.0);
       if (u_glass > 0.5) {
-        color = u_base_color.rgb;
-        alpha = u_base_color.a * u_glass_opacity;
+        // standard_glass 实机链：视差花纹 UV + Extra_Op/Pattern_Op 双透明度 + DesignColor 自发光。
+        vec3 view_toward = normalize(u_eye - v_local);
+        vec3 cdt = normalize(vec3(dot(view_toward, v_tangent), dot(view_toward, v_bitangent), dot(view_toward, v_normal)));
+        vec2 pattern_uv = v_uv * u_glass_pattern_para.xy - (cdt.xy / (abs(cdt.z) > 0.001 ? cdt.z : 0.001)) * u_pattern_depth;
+        float pattern_a = 0.0;
+        if (u_glass_pattern > 0.5 && u_has_tex3 > 0.5) {
+          pattern_uv -= 0.5;
+          float gangle = radians(u_glass_pattern_rotation);
+          pattern_uv = vec2(pattern_uv.x * cos(gangle) - pattern_uv.y * sin(gangle), pattern_uv.x * sin(gangle) + pattern_uv.y * cos(gangle));
+          pattern_uv += 0.5 + u_glass_pattern_para.zw;
+          vec4 pattern = texture2D(u_tex3, pattern_uv);
+          pattern_a = pattern.a;
+          color = mix(u_base_color.rgb, u_design.rgb, pattern.a * u_pattern_color_key);
+        } else {
+          color = u_base_color.rgb;
+        }
+        alpha = u_base_color.a * mix(u_glass_opacity, u_pattern_opacity, pattern_a) * u_alpha_mtl;
+        branch_em = srgb2lin(u_design.rgb) * pattern_a * u_pattern_color_key * u_pattern_intensity.a;
+      } else if (u_surf_kind > 1.5 && u_surf_kind < 2.5) {
+        // shine: uv 距离场圆形/圆角矩形高光，HSV 白化。
+        vec3 c = texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb;
+        float sphere_mask = pow(1.0 - clamp(distance(v_uv, vec2(0.5)), 0.0, 1.0), u_mask_pow) * 0.5;
+        float rect_mask = roundRect(v_uv, vec2(0.5), u_mask_pow, 0.0, vec2(0.5));
+        float shine_mask = clamp(sphere_mask * (1.0 - u_mask_style) + rect_mask * u_mask_style, 0.0, 1.0);
+        vec3 hsv = rgb2hsv(max(c, vec3(0.0)));
+        vec3 base = srgb2lin(hsv2rgb(hsv));
+        color = mix(base, vec3(1.0), shine_mask);
+        color_linear = true;
+        branch_em = mix(base * max(hsv.y, 0.3) * u_intensity.a, vec3(1.0), shine_mask);
+        alpha = normal_texel.a;
+      } else if (u_surf_kind > 3.5 && u_surf_kind < 4.5) {
+        // dissolve: 掩码色加权和，透明度由包围盒轴向阈值给出。
+        color = clamp(texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb, 0.0, 1.0);
+        color_linear = true;
+        alpha = 1.0;
       } else {
         color = u_has_tex > 0.5 ? texel.rgb : u_base_color.rgb;
         if (u_color_mode > 6.5) {
           vec3 an = abs(normalize(v_normal));
-          vec3 np = (v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001));
-          vec2 vig_uv = an.x >= an.y && an.x >= an.z ? np.zy : (an.y >= an.z ? np.xz : np.xy);
+          // icefloor: pos_tiling/world_scale == (local/2.64)*0.5+0.5，各轴偏移不对称。
+          vec3 np = (v_local / 2.64) * 0.5 + 0.5;
+          vec2 vig_uv;
+          if (an.x >= an.y && an.x >= an.z) vig_uv = vec2(np.z * 0.5 + 0.5, np.y * 0.5);
+          else if (an.y >= an.z) vig_uv = np.xz * 0.5 + 0.5;
+          else vig_uv = vec2(np.x * 0.5 + 0.5, np.y * 0.5);
           vec4 vig = u_has_tex > 0.5 ? texture2D(u_tex, vig_uv) : vec4(0.0);
           color = mix(u_down_color.rgb, u_up_color.rgb, 0.5) + srgb2lin(vig.rgb) * u_intensity.a;
           color_linear = true;
@@ -6130,27 +7071,38 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           color = mix(color, u_mask3.rgb, texel.a);
         } else if (u_color_mode > 2.5) {
           color = texel.r * u_mask0.rgb + texel.g * u_mask1.rgb + texel.b * u_mask2.rgb + texel.a * u_mask3.rgb;
+          if (u_object3 > 0.5) {
+            // object3: 按局部高度 remap 出混合系数，暗色由 MaskColor0 做 HSV 偏移。
+            float k3 = (v_local.y - u_length1) / max(u_length2 - u_length1, 0.0001) * (u_length4 - u_length3) + u_length3;
+            k3 = clamp(k3, u_dark_intensity, u_up_intensity);
+            vec3 hsv3 = rgb2hsv(u_mask0.rgb);
+            vec3 dark3 = hsv2rgb(vec3(hsv3.x, hsv3.y + u_hsv_s, hsv3.z - u_hsv_v));
+            color = mix(dark3, srgb2lin(color), k3);
+            color_linear = true;
+          }
         } else if (u_color_mode > 1.5) {
           vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
           float axis_value = u_axis < 0.5 ? uvw.x : (u_axis < 1.5 ? uvw.y : uvw.z);
           float final_axis = smoothstep(-0.5 + u_lerp_contrast, 1.5001 - u_lerp_contrast, axis_value - u_lerp_center * 0.5);
           final_axis *= final_axis;
-          float mask1 = final_axis * (texel.r * 0.5 + 0.5);
-          float mask2 = (1.0 - final_axis) * texel.g;
+          vec3 mask_w = srgb2lin(clamp(texel.rgb, 0.0, 1.0));
+          float mask1 = final_axis * (mask_w.r * 0.5 + 0.5);
+          float mask2 = (1.0 - final_axis) * mask_w.g;
           color = mix(srgb2lin(u_mask0.rgb), srgb2lin(u_mask1.rgb), mask1);
           color = mix(color, srgb2lin(u_mask2.rgb), mask2);
-          color = mix(color, srgb2lin(u_mask3.rgb), texel.b);
+          color = mix(color, srgb2lin(u_mask3.rgb), mask_w.b);
           color_linear = true;
         } else if (u_color_mode > 0.5) {
+          vec3 mask_w = u_mask_srgb > 0.5 ? srgb2lin(texel.rgb) : texel.rgb;
           if (u_lerp_linear > 0.5) {
-            color = mix(srgb2lin(u_mask0.rgb), srgb2lin(u_mask1.rgb), texel.r);
-            color = mix(color, srgb2lin(u_mask2.rgb), texel.g);
-            color = mix(color, srgb2lin(u_mask3.rgb), texel.b);
+            color = mix(srgb2lin(u_mask0.rgb), srgb2lin(u_mask1.rgb), mask_w.r);
+            color = mix(color, srgb2lin(u_mask2.rgb), mask_w.g);
+            color = mix(color, srgb2lin(u_mask3.rgb), mask_w.b);
             color_linear = true;
           } else {
-            color = mix(u_mask0.rgb, u_mask1.rgb, texel.r);
-            color = mix(color, u_mask2.rgb, texel.g);
-            color = mix(color, u_mask3.rgb, texel.b);
+            color = mix(u_mask0.rgb, u_mask1.rgb, mask_w.r);
+            color = mix(color, u_mask2.rgb, mask_w.g);
+            color = mix(color, u_mask3.rgb, mask_w.b);
           }
           if (u_has_pattern > 0.5) {
             vec2 pattern_uv = sample_uv * u_pattern_scale;
@@ -6182,7 +7134,8 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         alpha *= u_tint.a;
       }
       vec3 albedo_lin = color_linear ? max(color, vec3(0.0)) : srgb2lin(color);
-      vec3 emissive = vec3(0.0);
+      vec3 emissive = branch_em;
+      if (u_surf_kind < 0.5) {
       if (u_emissive_kind > 0.5 && u_emissive_kind < 1.5) {
         emissive = srgb2lin(mrs_texel.a * u_emissive_color.rgb * u_intensity.a);
       } else if (u_emissive_kind > 1.5 && u_emissive_kind < 2.5) {
@@ -6193,14 +7146,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         chain = mix(chain, u_mask3 * u_ei.a, texel.b);
         emissive = mrs_texel.a * chain.rgb + u_emissive_color.rgb * u_intensity.a;
       } else if (u_emissive_kind > 3.5 && u_emissive_kind < 4.5) {
-        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), texel.r);
-        chain = mix(chain, vec3(u_ei.b), texel.g);
-        chain = mix(chain, vec3(u_ei.a), texel.b);
-        emissive = mrs_texel.a * chain + u_emissive_color.rgb * u_intensity.a;
+        vec3 ei_w = srgb2lin(clamp(texel.rgb, 0.0, 1.0));
+        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), ei_w.r);
+        chain = mix(chain, vec3(u_ei.b), ei_w.g);
+        chain = mix(chain, vec3(u_ei.a), ei_w.b);
+        emissive = mrs_texel.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity.a;
       } else if (u_emissive_kind > 4.5 && u_emissive_kind < 5.5) {
-        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), texel.r);
-        chain = mix(chain, vec3(u_ei.b), texel.g);
-        chain = mix(chain, vec3(u_ei.a), texel.b);
+        vec3 ei_w = srgb2lin(clamp(texel.rgb, 0.0, 1.0));
+        vec3 chain = mix(vec3(u_ei.r), vec3(u_ei.g), ei_w.r);
+        chain = mix(chain, vec3(u_ei.b), ei_w.g);
+        chain = mix(chain, vec3(u_ei.a), ei_w.b);
         emissive = mrs_texel.a * albedo_lin * chain + u_emissive_color.rgb * u_intensity.a;
       } else if (u_emissive_kind > 5.5 && u_emissive_kind < 6.5) {
         vec3 chain = texel.r * u_mask0.rgb * u_ei.r + texel.g * u_mask1.rgb * u_ei.g + texel.b * u_mask2.rgb * u_ei.b + texel.a * u_mask3.rgb * u_ei.a;
@@ -6211,6 +7166,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         vec3 e = srgb2lin(tex3s.rgb * tex3s.a * u_intensity.a);
         emissive = e;
         albedo_lin += e;
+      }
       }
       vec3 normal = normalize(v_normal);
       if (u_has_normal > 0.5 && u_unlit < 0.5) {
@@ -6224,6 +7180,10 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
             vec3 u = base * vec3(-2.0, -2.0, 2.0) + vec3(1.0, 1.0, -1.0);
             n = t * dot(t, u) - u * t.z;
           }
+          if (u_has_tex4 > 0.5) {
+            vec3 du = tex4.xyz * vec3(-2.0) + vec3(1.0, 1.0, -1.0);
+            n = mix(n, n * dot(n, du) - du * n.z, clamp(texel.a, 0.0, 1.0));
+          }
         } else {
           n = tex_normal * 2.0 - 1.0;
         }
@@ -6231,16 +7191,59 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         n.xy *= u_intensity.r;
         normal = normalize(v_tangent * n.x + v_bitangent * n.y + v_normal * n.z);
       }
+      if (u_surf_kind > 3.5 && u_surf_kind < 4.5) {
+        // dissolve: 包围盒轴向 + tex1.a 噪声做阈值透明，DissolveValue 取材质静态值。
+        vec3 uvw = abs((v_local - u_bound_min) / max(u_bound_half * 2.0, vec3(0.0001)));
+        float dissolve_t = u_dissolve_value * (1.0 + u_dissolve_strength + u_dissolve_noise);
+        float dnoise = u_has_normal > 0.5 ? texture2D(u_normal_tex, srcUV(v_uv * u_dissolve_scale)).a : 0.0;
+        int ddir = int(u_dissolve_dir + 0.5);
+        float axis_value = ddir == 0 ? uvw.x : (ddir == 1 ? uvw.y : uvw.z);
+        float axis = abs(axis_value - u_dissolve_reverse) + dnoise * u_dissolve_noise;
+        float dissolve_op = smoothstep(axis - u_dissolve_strength, axis, dissolve_t);
+        float dissolve_mask = dissolve_op - step(axis + u_dissolve_strength, dissolve_t);
+        alpha = dissolve_op * u_alpha_mtl;
+        vec3 em = texel.r * u_mask0.rgb * u_ei.r + texel.g * u_mask1.rgb * u_ei.g + texel.b * u_mask2.rgb * u_ei.b + texel.a * u_mask3.rgb * u_ei.a;
+        branch_em = mrs_texel.a * em + dissolve_mask * u_dissolve_color.rgb * u_dissolve_intensity;
+      }
       if (alpha < u_alpha_ref) discard;
       vec3 view_dir = normalize(u_eye - v_local);
-      float border_f = clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), 5.0), 0.0, 1.0);
+      float breath = u_border_breath > 0.0 ? u_border_breath * abs(sin(u_time * u_border_speed)) + (1.0 - u_border_breath) : 1.0;
+      float border_f = u_border_enable * clamp(u_border.x + (1.0 - u_border.x) * pow(1.0 - clamp(abs(dot(normal, view_dir)), 0.0, 1.0), u_border_pow) * breath, 0.0, 1.0);
+      emissive += branch_em;
       emissive += border_f * u_border_color.rgb * u_border.y;
-      if (u_color_mode > 6.5) {
+      if (u_scan_light > 0.5) {
+        // object 族 ENABLE_LIGHTING 扫光带（01_object家族.md 1.1）。
+        float band_x = v_uv.x + (abs(fract(u_time * 0.3 - 0.5)) * 2.0 - 0.5) * 1.2;
+        float band_m1 = smoothstep(0.4, 0.6, band_x);
+        float band_m2 = smoothstep(0.6, 0.4, band_x) * band_m1;
+        emissive += srgb2lin(mrs_texel.a * u_emissive_color.rgb * u_intensity.a + band_m2 * u_emissive_color.rgb * u_intensity.a);
+      }
+      if (u_sparkle > 0.5 && u_has_tex3 > 0.5) {
+        // sparkle 默认噪声闪粉（亮片模式 SequinsKey=0 不走；DistortScale 默认 0）。
+        float s_ndv = pow(clamp(abs(dot(normalize(v_normal), view_dir)), 0.0, 1.0), u_fresnel_pow);
+        vec2 suv = sample_uv * u_sparkle_scale;
+        float a1 = texture2D(u_tex3, srcUV(suv + vec2(0.0, u_time * u_sparkle_speed))).r;
+        float a2 = texture2D(u_tex3, srcUV(suv * 1.5 + vec2(u_time * u_sparkle_speed, 0.0))).r;
+        float s1 = pow(clamp(a1 * a2, 0.0, 1.0), u_sparkle_pow);
+        float b1 = texture2D(u_tex3, srcUV(suv * 2.0 + vec2(0.3, u_time * u_sparkle_speed))).r;
+        float b2 = texture2D(u_tex3, srcUV(suv * 3.0 + vec2(u_time * u_sparkle_speed, 0.3))).r;
+        float s2 = pow(clamp(b1 * b2, 0.0, 1.0), u_sparkle_pow);
+        float gray = dot(clamp(color, 0.0, 1.0), vec3(0.299, 0.578, 0.114));
+        float sparkle_mask = (s1 * 2.0 + s2) * gray * (0.01 + s_ndv) * 100.0 * u_sparkle_intensity * normal_texel.a;
+        emissive += srgb2lin(clamp(color, 0.0, 1.0)) * sparkle_mask;
+        vec4 t3n = texture2D(u_tex3, srcUV(gl_FragCoord.xy / u_scene_size * u_sparkle_noise_scale)) * normal_texel.a;
+        albedo_lin *= (1.2 - t3n.g);
+      }
+      if (u_fresnel_intensity > 0.0) {
+        float rim_nov = clamp(1.0 - abs(dot(normal, view_dir)), 0.0, 1.0);
+        emissive += mrs_texel.a * pow(rim_nov, u_fresnel_pow) * u_fresnel_intensity * albedo_lin;
+      }
+      if (u_glint_exp > 0.0) {
         vec3 sun_dir = -SUN_DIR;
         vec3 glint_rz = vec3(cos(3.14) * sun_dir.x + sin(3.14) * sun_dir.z, sun_dir.y, -sin(3.14) * sun_dir.x + cos(3.14) * sun_dir.z);
         vec3 glint_ry = vec3(cos(-0.3) * glint_rz.x - sin(-0.3) * glint_rz.y, sin(-0.3) * glint_rz.x + cos(-0.3) * glint_rz.y, glint_rz.z);
         vec3 glint_h = normalize(-glint_ry + view_dir);
-        emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), 1220.0) * 0.2 * SUN_COLOR;
+        emissive += pow(clamp(dot(normal, glint_h), 0.0, 1.0), u_glint_exp) * 0.2 * SUN_COLOR;
       }
       vec3 final_lin;
       if (u_unlit > 0.5) {
@@ -6252,7 +7255,12 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         float roughness = u_has_tex2 > 0.5 ? clamp(mrs_texel.g * u_intensity.g, 0.08, 1.0) : 0.5;
         float metalness = u_has_tex2 > 0.5 ? clamp(mrs_texel.b * u_intensity.b, 0.0, 1.0) : 0.0;
         float ao = u_has_tex2 > 0.5 ? clamp(mrs_texel.r, 0.0, 1.0) : 1.0;
-        final_lin = pbrShade(normal, normalize(u_eye - v_local), albedo_lin, roughness, metalness, ao) + emissive;
+        if (u_hlod_mrs > 0.5 && u_has_tex2 > 0.5) {
+          roughness = clamp(mrs_texel.g, 0.08, 1.0);
+          metalness = clamp(mrs_texel.r, 0.0, 1.0);
+          ao = 1.0;
+        }
+        final_lin = pbrShade(normal, normalize(u_eye - v_local), albedo_lin, roughness, metalness, ao, u_hlod_mrs > 0.5 && u_has_tex2 > 0.5 ? vec3(mrs_texel.b * 0.08) : vec3(0.04)) + emissive;
       }
       gl_FragColor = vec4(lin2srgb(tonemap(final_lin)), clamp(alpha, 0.0, 1.0));
     }`);
@@ -6311,6 +7319,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
       tangentData[index * 4] = tx; tangentData[index * 4 + 1] = ty; tangentData[index * 4 + 2] = tz;
       tangentData[index * 4 + 3] = cx * bx + cy * by + cz * bz < 0 ? -1 : 1;
+    }
+  }
+  const realTangents = Array.isArray(meshData.tangents) && meshData.tangents.length === verts.length ? meshData.tangents : null;
+  if (realTangents) {
+    for (let index = 0; index < verts.length; index += 1) {
+      const t = realTangents[index] || [1, 0, 0];
+      const tl = Math.hypot(t[0], t[1], t[2]) || 1;
+      tangentData[index * 4] = t[0] / tl;
+      tangentData[index * 4 + 1] = t[1] / tl;
+      tangentData[index * 4 + 2] = t[2] / tl;
+      tangentData[index * 4 + 3] = 1;
     }
   }
   let maxIndex = 0;
@@ -6531,6 +7550,70 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uDownColor = gl.getUniformLocation(program, "u_down_color");
   const uUpColor = gl.getUniformLocation(program, "u_up_color");
   const uSimpleLight = gl.getUniformLocation(program, "u_simple_light");
+  const uGlintExp = gl.getUniformLocation(program, "u_glint_exp");
+  const uHlodMrs = gl.getUniformLocation(program, "u_hlod_mrs");
+  const glintExpFor = (mat) => {
+    const surfaceText = String(mat && mat.surface || "").toLowerCase();
+    return surfaceText.includes("icefloor") ? 1220 : (surfaceText.includes("tiling_obj") ? 220 : 0);
+  };
+  const hlodMrsFor = (mat) => String(mat && mat.surface || "").toLowerCase().includes("new_hlod") ? 1 : 0;
+  const gimSurfaceKind = (mat) => {
+    const s = String(mat && mat.surface || "").toLowerCase();
+    if (s.includes("change_color_dissolve")) return 4;
+    if (s.includes("change_color_shine")) return 2;
+    return 0;
+  };
+  const applyGimSurface = (mat) => {
+    const surfaceText = String(mat && mat.surface || "").toLowerCase();
+    const macros = mat.macros || {};
+    gl.uniform1f(uSurfKind, gimSurfaceKind(mat));
+    gl.uniform1f(uObject3, surfaceText.includes("object3") ? 1 : 0);
+    gl.uniform1f(uLength1, map3DNumber(mat.length1, 0));
+    gl.uniform1f(uLength2, map3DNumber(mat.length2, 3));
+    gl.uniform1f(uLength3, map3DNumber(mat.length3, 0));
+    gl.uniform1f(uLength4, map3DNumber(mat.length4, 1));
+    gl.uniform1f(uDarkIntensity, map3DNumber(mat.dark_intensity, 0.5));
+    gl.uniform1f(uUpIntensity, map3DNumber(mat.up_intensity, 1));
+    gl.uniform1f(uHsvS, map3DNumber(mat.hsv_s, 0.4));
+    gl.uniform1f(uHsvV, map3DNumber(mat.hsv_v, 0.4));
+    gl.uniform1f(uBorderPow, map3DNumber(mat.border_pow, 5));
+    gl.uniform1f(uBorderSpeed, map3DNumber(mat.border_speed, 3));
+    gl.uniform1f(uBorderBreath, surfaceText.includes("object2") ? map3DNumber(mat.border_breath, 1) : 0);
+    gl.uniform1f(uScanLight, macros.ENABLE_LIGHTING ? 1 : 0);
+    gl.uniform1f(uTilingObj, surfaceText.includes("change_color_tiling_obj") ? 1 : 0);
+    gl.uniform1f(uTilingNm, surfaceText.includes("change_color_tiling_nm") ? 1 : 0);
+    gl.uniform1f(uTilingAll, surfaceText.includes("change_color_tiling_all") ? 1 : 0);
+    gl.uniform1f(uRepeatScaleY, map3DNumber(mat.repeat_scale_y, 1));
+    gl.uniform1f(uDissolveValue, map3DNumber(mat.dissolve_value, 1));
+    gl.uniform1f(uDissolveStrength, map3DNumber(mat.dissolve_strength, 0.1));
+    gl.uniform1f(uDissolveNoise, map3DNumber(mat.dissolve_noise, 0.3));
+    gl.uniform1f(uDissolveReverse, map3DNumber(mat.dissolve_reverse, 0));
+    gl.uniform1f(uDissolveDir, map3DNumber(mat.dissolve_dir, 2));
+    gl.uniform1f(uDissolveIntensity, map3DNumber(mat.dissolve_intensity, 4));
+    const dissolveScale = Array.isArray(mat.dissolve_scale) ? mat.dissolve_scale : [1, 1];
+    gl.uniform2f(uDissolveScale, map3DNumber(dissolveScale[0], 1), map3DNumber(dissolveScale[1], 1));
+    const dissolveColor = Array.isArray(mat.dissolve_color) ? mat.dissolve_color : [0, 0, 0, 1];
+    gl.uniform4f(uDissolveColor, map3DNumber(dissolveColor[0], 0), map3DNumber(dissolveColor[1], 0), map3DNumber(dissolveColor[2], 0), map3DNumber(dissolveColor[3], 1));
+    gl.uniform1f(uMaskPow, map3DNumber(mat.mask_pow, 3));
+    gl.uniform1f(uMaskStyle, map3DNumber(mat.mask_style, 0));
+    const isSparkle = surfaceText.includes("sparkle");
+    gl.uniform1f(uSparkle, isSparkle ? 1 : 0);
+    gl.uniform1f(uSparkleScale, map3DNumber(mat.sparkle_scale, 2));
+    gl.uniform1f(uSparkleOffset, map3DNumber(mat.sparkle_offset, 8));
+    gl.uniform1f(uSparkleSpeed, map3DNumber(mat.sparkle_speed, 0.02));
+    gl.uniform1f(uSparklePow, map3DNumber(mat.sparkle_pow, 8));
+    gl.uniform1f(uSparkleIntensity, isSparkle ? map3DNumber(mat.sparkle_intensity, 4) : 0);
+    gl.uniform1f(uSparkleNoiseScale, map3DNumber(mat.noise_scale, 0.2));
+    gl.uniform1f(uGlassPattern, mat.pattern_enabled ? 1 : 0);
+    gl.uniform1f(uPatternDepth, map3DNumber(mat.pattern_depth, 0));
+    const glassPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
+    gl.uniform4f(uGlassPatternPara, map3DNumber(glassPara[0], 1), map3DNumber(glassPara[1], 1), map3DNumber(glassPara[2], 0), map3DNumber(glassPara[3], 0));
+    gl.uniform1f(uGlassPatternRotation, map3DNumber(mat.pattern_rotation, 0));
+    const patternIntensity = Array.isArray(mat.pattern_intensity) ? mat.pattern_intensity : [1, 0.5, 0, 0];
+    gl.uniform4f(uPatternIntensity, map3DNumber(patternIntensity[0], 1), map3DNumber(patternIntensity[1], 0.5), map3DNumber(patternIntensity[2], 0), map3DNumber(patternIntensity[3], 0));
+    gl.uniform1f(uPatternOpacity, map3DNumber(mat.pattern_op, map3DNumber(mat.glass_opacity, 1)));
+  };
+  const uMaskSrgb = gl.getUniformLocation(program, "u_mask_srgb");
   const uHasPattern = gl.getUniformLocation(program, "u_has_pattern");
   const uPatternScale = gl.getUniformLocation(program, "u_pattern_scale");
   const uPatternOffset = gl.getUniformLocation(program, "u_pattern_offset");
@@ -6544,6 +7627,57 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   const uEmissiveColor = gl.getUniformLocation(program, "u_emissive_color");
   const uEi = gl.getUniformLocation(program, "u_ei");
   const uTex3 = gl.getUniformLocation(program, "u_tex3");
+  const uTime = gl.getUniformLocation(program, "u_time");
+  const uSceneSize = gl.getUniformLocation(program, "u_scene_size");
+  const uSurfKind = gl.getUniformLocation(program, "u_surf_kind");
+  const uObject3 = gl.getUniformLocation(program, "u_object3");
+  const uLength1 = gl.getUniformLocation(program, "u_length1");
+  const uLength2 = gl.getUniformLocation(program, "u_length2");
+  const uLength3 = gl.getUniformLocation(program, "u_length3");
+  const uLength4 = gl.getUniformLocation(program, "u_length4");
+  const uDarkIntensity = gl.getUniformLocation(program, "u_dark_intensity");
+  const uUpIntensity = gl.getUniformLocation(program, "u_up_intensity");
+  const uHsvS = gl.getUniformLocation(program, "u_hsv_s");
+  const uHsvV = gl.getUniformLocation(program, "u_hsv_v");
+  const uBorderPow = gl.getUniformLocation(program, "u_border_pow");
+  const uBorderSpeed = gl.getUniformLocation(program, "u_border_speed");
+  const uBorderBreath = gl.getUniformLocation(program, "u_border_breath");
+  const uScanLight = gl.getUniformLocation(program, "u_scan_light");
+  const uTilingObj = gl.getUniformLocation(program, "u_tiling_obj");
+  const uTilingNm = gl.getUniformLocation(program, "u_tiling_nm");
+  const uTilingAll = gl.getUniformLocation(program, "u_tiling_all");
+  const uRepeatScaleY = gl.getUniformLocation(program, "u_repeat_scale_y");
+  const uDissolveValue = gl.getUniformLocation(program, "u_dissolve_value");
+  const uDissolveStrength = gl.getUniformLocation(program, "u_dissolve_strength");
+  const uDissolveNoise = gl.getUniformLocation(program, "u_dissolve_noise");
+  const uDissolveReverse = gl.getUniformLocation(program, "u_dissolve_reverse");
+  const uDissolveDir = gl.getUniformLocation(program, "u_dissolve_dir");
+  const uDissolveIntensity = gl.getUniformLocation(program, "u_dissolve_intensity");
+  const uDissolveScale = gl.getUniformLocation(program, "u_dissolve_scale");
+  const uDissolveColor = gl.getUniformLocation(program, "u_dissolve_color");
+  const uMaskPow = gl.getUniformLocation(program, "u_mask_pow");
+  const uMaskStyle = gl.getUniformLocation(program, "u_mask_style");
+  const uSparkle = gl.getUniformLocation(program, "u_sparkle");
+  const uSparkleScale = gl.getUniformLocation(program, "u_sparkle_scale");
+  const uSparkleOffset = gl.getUniformLocation(program, "u_sparkle_offset");
+  const uSparkleSpeed = gl.getUniformLocation(program, "u_sparkle_speed");
+  const uSparklePow = gl.getUniformLocation(program, "u_sparkle_pow");
+  const uSparkleIntensity = gl.getUniformLocation(program, "u_sparkle_intensity");
+  const uSparkleNoiseScale = gl.getUniformLocation(program, "u_sparkle_noise_scale");
+  const uGlassPattern = gl.getUniformLocation(program, "u_glass_pattern");
+  const uPatternDepth = gl.getUniformLocation(program, "u_pattern_depth");
+  const uGlassPatternPara = gl.getUniformLocation(program, "u_glass_pattern_para");
+  const uGlassPatternRotation = gl.getUniformLocation(program, "u_glass_pattern_rotation");
+  const uPatternIntensity = gl.getUniformLocation(program, "u_pattern_intensity");
+  const uPatternOpacity = gl.getUniformLocation(program, "u_pattern_opacity");
+  const uTex4 = gl.getUniformLocation(program, "u_tex4");
+  const uHasTex4 = gl.getUniformLocation(program, "u_has_tex4");
+  const uDetailScale = gl.getUniformLocation(program, "u_detail_scale");
+  const uFresnelPow = gl.getUniformLocation(program, "u_fresnel_pow");
+  const uFresnelIntensity = gl.getUniformLocation(program, "u_fresnel_intensity");
+  const uBorderEnable = gl.getUniformLocation(program, "u_border_enable");
+  const uEnvMap = gl.getUniformLocation(program, "u_env_map");
+  const uHasEnv = gl.getUniformLocation(program, "u_has_env");
   const uHasTex3 = gl.getUniformLocation(program, "u_has_tex3");
   const potImage = (image) => {
     if (isWebGL2) return image;
@@ -6574,6 +7708,51 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform1i(uBaseNormalTex, 2);
   gl.uniform1i(uTex2, 4);
   gl.uniform1i(uTex3, 5);
+  gl.uniform1i(uEnvMap, 6);
+  gl.uniform1f(uHasEnv, 0);
+  const envCubeCache = new Map();
+  let envCube = null;
+  const gimLoadCube = (path) => {
+    if (!path || envCubeCache.has(path)) return;
+    envCubeCache.set(path, null);
+    getJson(apiUrl("/api/cube", { path })).then((data) => {
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const faceTargets = [
+        gl.TEXTURE_CUBE_MAP_POSITIVE_X, gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+        gl.TEXTURE_CUBE_MAP_POSITIVE_Y, gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+        gl.TEXTURE_CUBE_MAP_POSITIVE_Z, gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+      ];
+      let loaded = 0;
+      data.faces.forEach((face, index) => {
+        const image = new Image();
+        image.onload = () => {
+          gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+          gl.texImage2D(faceTargets[index], 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+          loaded += 1;
+          if (loaded === data.faces.length) {
+            if (isWebGL2) {
+              gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+              gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+            } else {
+              gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            }
+            envCubeCache.set(path, texture);
+            if (envCube === null) {
+              envCube = texture;
+              gim3d.raf = requestAnimationFrame(draw);
+            }
+          }
+        };
+        image.src = face;
+      });
+    }).catch(() => {
+      envCubeCache.delete(path);
+    });
+  };
   const mrsTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, mrsTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
@@ -6638,7 +7817,16 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
   gl.uniform4f(uDownColor, 1, 1, 1, 1);
   gl.uniform4f(uUpColor, 1, 1, 1, 1);
   gl.uniform1f(uSimpleLight, 0);
+  gl.uniform1f(uGlintExp, 0);
+  gl.uniform1f(uHlodMrs, 0);
+  gl.uniform1f(uMaskSrgb, 0);
   gl.uniform1f(uHasTex3, 0);
+  gl.uniform1i(uTex4, 7);
+  gl.uniform1f(uHasTex4, 0);
+  gl.uniform1f(uDetailScale, 1);
+  gl.uniform1f(uFresnelPow, 1);
+  gl.uniform1f(uFresnelIntensity, 0);
+  gl.uniform1f(uBorderEnable, 1);
   gl.uniform1f(uLerpLinear, 0);
   gl.uniform1f(uEmissiveKind, 0);
   gl.uniform4f(uEmissiveColor, 0, 0, 0, 0);
@@ -6696,6 +7884,15 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     const firstUp = Array.isArray(firstTreeMaterial.up_color) ? firstTreeMaterial.up_color : [1, 1, 1, 1];
     gl.uniform4f(uUpColor, Number(firstUp[0]) || 0, Number(firstUp[1]) || 0, Number(firstUp[2]) || 0, Number(firstUp[3]) || 0);
     gl.uniform1f(uSimpleLight, firstTreeMaterial.simple_light ? 1 : 0);
+    gl.uniform1f(uGlintExp, glintExpFor(firstTreeMaterial));
+    gl.uniform1f(uHlodMrs, hlodMrsFor(firstTreeMaterial));
+    gl.uniform1f(uMaskSrgb, firstTreeMaterial.mask_srgb ? 1 : 0);
+    gl.uniform1f(uDetailScale, map3DNumber(firstTreeMaterial.detail_normal_scale, 1));
+    gl.uniform1f(uFresnelPow, map3DNumber(firstTreeMaterial.fresnel_pow, 1));
+    gl.uniform1f(uFresnelIntensity, map3DNumber(firstTreeMaterial.fresnel_intensity, 0));
+    gl.uniform1f(uBorderEnable, (firstTreeMaterial.macros || {}).ENABLE_BORDER === undefined ? 1 : ((firstTreeMaterial.macros || {}).ENABLE_BORDER ? 1 : 0));
+    applyGimSurface(firstTreeMaterial);
+    gimLoadCube(firstTreeMaterial.reflection_cube);
     const emissiveColor = Array.isArray(firstTreeMaterial.emissive_color) ? firstTreeMaterial.emissive_color : [0, 0, 0, 0];
     gl.uniform4f(uEmissiveColor, Number(emissiveColor[0]) || 0, Number(emissiveColor[1]) || 0, Number(emissiveColor[2]) || 0, Number(emissiveColor[3]) || 0);
     const eiValue = Array.isArray(firstTreeMaterial.emissive_intensity) ? firstTreeMaterial.emissive_intensity : [0, 0, 0, 0];
@@ -6824,6 +8021,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         normal: normalPath ? cachedGimTexture(apiUrl("/api/image", { path: normalPath }), true) : null,
         mrs: group.tex2 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex2 }), false) : null,
         tex3: group.tex3 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex3 }), false) : null,
+        tex4: group.tex4 ? cachedGimTexture(apiUrl("/api/image", { path: group.tex4 }), false) : null,
         baseNormal: group.base_normal ? cachedGimTexture(apiUrl("/api/image", { path: group.base_normal }), true) : null,
         pattern: group.pattern_tex ? cachedGimTexture(apiUrl("/api/image", { path: group.pattern_tex }), false) : null,
       });
@@ -6893,8 +8091,14 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
     gl.useProgram(program);
     gl.uniformMatrix4fv(uMvp, false, mvp);
     gl.uniform3f(uEye, eye[0], eye[1], eye[2]);
+    gl.uniform1f(uTime, (performance.now() - gimStartTime) / 1000);
+    gl.uniform2f(uSceneSize, pixelWidth, pixelHeight);
     gl.uniform4f(uIllum, 1, 1, 1, 0);
     gl.uniform3f(uWeather, 1, 1, 1);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, envCube || null);
+    gl.uniform1f(uHasEnv, envCube ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0);
     gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
     gl.uniform1f(uFlat, 0);
     gl.uniform3f(uColor, 0.35, 0.78, 0.72);
@@ -6924,6 +8128,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
       submeshOrder.forEach(({ sub }) => {
         const materialIndex = Number.isInteger(sub.material_index) ? sub.material_index : 0;
         const entry = materialTextures[materialIndex] || materialTextures[0];
+        const mat = materialList[materialIndex] || materialList[0] || {};
         if (entry) {
           const diffuse = entry.diffuse;
           const normal = entry.normal;
@@ -6955,6 +8160,17 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           } else {
             gl.uniform1f(uHasTex3, 0);
           }
+          if (entry.tex4) {
+            gl.activeTexture(gl.TEXTURE7);
+            gl.bindTexture(gl.TEXTURE_2D, entry.tex4.texture);
+            gl.uniform1f(uHasTex4, entry.tex4.ready ? 1 : 0);
+          } else {
+            gl.uniform1f(uHasTex4, 0);
+          }
+          gl.uniform1f(uDetailScale, map3DNumber(mat.detail_normal_scale, 1));
+          gl.uniform1f(uFresnelPow, map3DNumber(mat.fresnel_pow, 1));
+          gl.uniform1f(uFresnelIntensity, map3DNumber(mat.fresnel_intensity, 0));
+        gl.uniform1f(uBorderEnable, (mat.macros || {}).ENABLE_BORDER === undefined ? 1 : ((mat.macros || {}).ENABLE_BORDER ? 1 : 0));
         } else {
           gl.uniform1f(uHasTex, hasTexture ? 1 : 0);
           gl.uniform1f(uHasNormal, hasNormal ? 1 : 0);
@@ -6973,7 +8189,7 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
           }
           gl.uniform1f(uHasTex3, hasTex3 ? 1 : 0);
         }
-        const mat = materialList[materialIndex] || materialList[0] || {};
+        applyGimSurface(mat);
         const colors = Array.isArray(mat.colors) ? mat.colors : [];
         const setColor = (location, colorIndex) => {
           const value = Array.isArray(colors[colorIndex]) ? colors[colorIndex] : [1, 1, 1, 1];
@@ -7029,6 +8245,9 @@ function renderGim3D(stage, meshData, token, textureUrl, material) {
         const matUp = Array.isArray(mat.up_color) ? mat.up_color : [1, 1, 1, 1];
         gl.uniform4f(uUpColor, Number(matUp[0]) || 0, Number(matUp[1]) || 0, Number(matUp[2]) || 0, Number(matUp[3]) || 0);
         gl.uniform1f(uSimpleLight, mat.simple_light ? 1 : 0);
+        gl.uniform1f(uGlintExp, glintExpFor(mat));
+        gl.uniform1f(uHlodMrs, hlodMrsFor(mat));
+        gl.uniform1f(uMaskSrgb, mat.mask_srgb ? 1 : 0);
         const patternPara = Array.isArray(mat.pattern_para) ? mat.pattern_para : [1, 1, 0, 0];
         gl.uniform2f(uPatternScale, Number(patternPara[0]) || 1, Number(patternPara[1]) || 1);
         gl.uniform2f(uPatternOffset, Number(patternPara[2]) || 0, Number(patternPara[3]) || 0);

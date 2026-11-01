@@ -36,7 +36,7 @@ def _read_table(data: bytes, offset: int) -> dict | None:
         color_len = data[pos + 9]
         if not (0 < vcount <= 2_000_000 and 0 < fcount <= 2_000_000):
             return None
-        if not 1 <= uv_layers <= 8 or color_len > 8:
+        if not 0 <= uv_layers <= 8 or color_len > 8:
             return None
         records.append((vcount, fcount, uv_layers, color_len))
         pos += 10
@@ -50,8 +50,8 @@ def _read_table(data: bytes, offset: int) -> dict | None:
         "kind": "single" if len(records) == 1 else "multi",
         "vcount": records[0][0],
         "fcount": records[0][1],
-        "uv_layers": records[0][2],
-        "color_len": records[0][3],
+        "uv_layers": max(item[2] for item in records),
+        "color_len": max(item[3] for item in records),
         "end": pos + 8,
         "records": records,
         "total_vcount": total_vcount,
@@ -98,11 +98,32 @@ def _read_normals(data: bytes, start: int, count: int, stride: int = 3) -> list 
     total = 0.0
     for index in range(count):
         x, y, z = struct.unpack_from("<3b", data, start + index * stride)
+        x = max(-127, min(127, x))
+        y = max(-127, min(127, y))
+        z = max(-127, min(127, z))
         normals.append([round(x / 127.0, 3), round(y / 127.0, 3), round(z / 127.0, 3)])
         total += math.sqrt(x * x + y * y + z * z) / 127.0
     if count <= 0 or total / count < 0.5:
         return None
     return normals
+
+
+def _read_directions(data: bytes, start: int, count: int, offset: int, stride: int = 3) -> list | None:
+    vectors = []
+    total = 0.0
+    for index in range(count):
+        base = start + index * stride + offset
+        if base + 3 > len(data):
+            return None
+        x, y, z = struct.unpack_from("<3b", data, base)
+        x = max(-127, min(127, x))
+        y = max(-127, min(127, y))
+        z = max(-127, min(127, z))
+        vectors.append([round(x / 127.0, 3), round(y / 127.0, 3), round(z / 127.0, 3)])
+        total += math.sqrt(x * x + y * y + z * z) / 127.0
+    if count <= 0 or total / count < 0.5:
+        return None
+    return vectors
 
 
 def _compute_normals(vertices: list, indices: list) -> list:
@@ -138,7 +159,7 @@ def _pick_skinned_face_start(data: bytes, data_start: int, data_end: int, vcount
         nonlocal best
         if face_start < data_start:
             return
-        indices, valid = _decode_faces(data[face_start:face_start + 6 * fcount], vcount)
+        indices, valid = _decode_faces_best(data[face_start:face_start + 6 * fcount], vcount)
         if valid < fcount * 3 * 0.999:
             return
         if best is None or score < best[0]:
@@ -164,7 +185,7 @@ def _pick_skinned_face_start(data: bytes, data_start: int, data_end: int, vcount
         face_start = data_end - tail - post_size - 6 * fcount
         if face_start < data_start:
             continue
-        indices, valid = _decode_faces(data[face_start:face_start + 6 * fcount], vcount)
+        indices, valid = _decode_faces_best(data[face_start:face_start + 6 * fcount], vcount)
         if valid < fcount * 3 * 0.999:
             continue
         geometry = face_start - data_start
@@ -228,17 +249,48 @@ def _decode_faces(blob: bytes, vcount: int) -> tuple[list, int]:
     return indices, valid
 
 
+def _decode_faces_absolute(blob: bytes, vcount: int) -> tuple[list, int]:
+    indices = []
+    valid = 0
+    for (value,) in struct.iter_unpack("<H", blob):
+        if value < vcount:
+            indices.append(value)
+            valid += 1
+        else:
+            indices.append(0)
+    return indices, valid
+
+
+def _decode_faces_best(blob: bytes, vcount: int) -> tuple[list, int]:
+    if len(blob) % 2:
+        blob = blob[:-1]
+    if not blob:
+        return [], 0
+    absolute_indices, absolute_valid = _decode_faces_absolute(blob, vcount)
+    delta_indices, delta_valid = _decode_faces(blob, vcount)
+    if absolute_valid > delta_valid:
+        return absolute_indices, absolute_valid
+    return delta_indices, delta_valid
+
+
 def _face_probe(blob: bytes, vcount: int) -> tuple[int, int]:
     current = 0
-    valid = 0
+    delta_valid = 0
     total = 0
     for (delta,) in struct.iter_unpack("<h", blob):
         current += delta
         total += 1
         if 0 <= current < vcount:
-            valid += 1
+            delta_valid += 1
         else:
             break
+    absolute_valid = 0
+    for (value,) in struct.iter_unpack("<H", blob):
+        if value < vcount:
+            absolute_valid += 1
+        else:
+            break
+    valid = max(delta_valid, absolute_valid)
     return valid, total
 
 
@@ -262,7 +314,7 @@ def _find_face_start(data: bytes, norm_end: int, uv_start: int, vcount: int) -> 
             valid, total = _face_probe(probe, vcount)
             if total == 0 or valid < total:
                 continue
-            indices, valid = _decode_faces(data[start:start + size], vcount)
+            indices, valid = _decode_faces_best(data[start:start + size], vcount)
             if valid < fcount * 3 * 0.999:
                 continue
             score = (fcount, -start)
@@ -271,23 +323,6 @@ def _find_face_start(data: bytes, norm_end: int, uv_start: int, vcount: int) -> 
     if not best:
         return None
     return best[1], best[2]
-
-
-def _scan_face_start(data: bytes, start: int, end: int, vcount: int, fcount: int) -> int | None:
-    size = fcount * 6
-    if size <= 0 or start < 0 or end - start < size:
-        return None
-    for pos in range(start, end - size + 1):
-        probe = data[pos:pos + 96]
-        if len(probe) % 2:
-            probe = probe[:-1]
-        valid, total = _face_probe(probe, vcount)
-        if total == 0 or valid < total:
-            continue
-        _, valid = _decode_faces(data[pos:pos + size], vcount)
-        if valid >= fcount * 3 * 0.999:
-            return pos
-    return None
 
 
 def _read_v3_faces(data: bytes, offset: int, vcount: int, fcount: int):
@@ -363,6 +398,7 @@ def _v3_result(data: bytes, version: int, flag: int, variant: str, total_vcount:
         "color_len": records[0][3] if records else 0,
         "vertices": vertices,
         "normals": normals,
+        "tangents": None,
         "uvs": uvs,
         "indices": indices,
         "bounds": {"min": mins, "max": maxs},
@@ -419,22 +455,25 @@ def _parse_v3(data: bytes, version: int) -> dict:
     records = info["records"]
     if total_vcount <= 0 or total_fcount <= 0 or data_end > len(data):
         raise ValueError("skinned mesh header out of range")
-    face_start = None
-    indices = None
-    for geom in (24, 36, 48, 20, 40):
-        for pad in (0, 2, 4):
-            candidate = data_start + geom * total_vcount + pad
-            values = _read_v3_faces(data, candidate, total_vcount, total_fcount)
-            if values is not None:
-                face_start = candidate
-                indices = values
-                break
-        if indices is not None:
-            break
-    if indices is None:
-        raise ValueError("mesh face stream invalid")
-    uv_start = face_start + 6 * total_fcount + 2
     uv_total = 8 * sum(item[0] * item[2] for item in records)
+    color_total = 4 * sum(item[0] * item[3] for item in records)
+    skin_total = 20 * total_vcount + 32
+    face_start = data_end - 6 * total_fcount - uv_total - color_total - skin_total
+    indices = _read_v3_faces(data, face_start, total_vcount, total_fcount) if face_start >= data_start else None
+    if indices is None:
+        for geom in (24, 36, 48, 20, 40):
+            for pad in (0, 2, 4):
+                candidate = data_start + geom * total_vcount + pad
+                values = _read_v3_faces(data, candidate, total_vcount, total_fcount)
+                if values is not None:
+                    face_start = candidate
+                    indices = values
+                    break
+            if indices is not None:
+                break
+        if indices is None:
+            raise ValueError("mesh face stream invalid")
+    uv_start = face_start + 6 * total_fcount
     if uv_start + uv_total > data_end:
         raise ValueError("mesh uv range out of bounds")
     vertices = []
@@ -443,8 +482,134 @@ def _parse_v3(data: bytes, version: int) -> dict:
         vertices.append([round(x, 4), round(y, 4), round(z, 4)])
     normals = _v3_normals(data, data_start, total_vcount)
     uvs = _read_v3_uvs(data, uv_start, records, total_vcount)
-    return _v3_result(data, version, 1, "v3-24", total_vcount, total_fcount,
-                      records, indices, vertices, normals, uvs)
+    result = _v3_result(data, version, 1, "v3-24", total_vcount, total_fcount,
+                        records, indices, vertices, normals, uvs)
+    joints = []
+    weights = []
+    skin_start = uv_start + uv_total + color_total
+    if skin_start + 20 * total_vcount <= data_end:
+        for index in range(total_vcount):
+            joint_row = tuple(data[skin_start + index * 4:skin_start + index * 4 + 4])
+            wx, wy, wz, ww = struct.unpack_from("<4f", data, skin_start + 4 * total_vcount + index * 16)
+            joints.append(joint_row)
+            weights.append([round(wx, 5), round(wy, 5), round(wz, 5), round(ww, 5)])
+    result["joints"] = joints
+    result["weights"] = weights
+    return result
+
+
+def _parse_v256(data: bytes) -> dict:
+    # 0x0100 布局：f32 位置/法线/切线 + u16 绝对面 + f32 UV；骨骼头无层级数组且 data_end 恒 0。
+    flag8 = _u16(data, 8)
+    pos = 12
+    skin = flag8 == 1
+    if skin:
+        bone_count = _u16(data, pos)
+        pos += 2 + bone_count * 32
+        bounds_flag = data[pos]
+        pos += 1
+        if bounds_flag:
+            pos += bone_count * 28
+        pos += bone_count * 64 + 1 + 4
+    else:
+        pos += 4
+    table = _read_table(data, pos)
+    if not table:
+        raise ValueError("v256 submesh table not found")
+    total_vcount = table["total_vcount"]
+    total_fcount = table["total_fcount"]
+    if total_vcount <= 0 or total_fcount <= 0:
+        raise ValueError("v256 mesh has no faces")
+    start = table["end"]
+    vertices = []
+    for index in range(total_vcount):
+        x, y, z = struct.unpack_from("<3f", data, start + index * 12)
+        vertices.append([round(x, 4), round(y, 4), round(z, 4)])
+    normals = []
+    normal_start = start + total_vcount * 12
+    for index in range(total_vcount):
+        x, y, z = struct.unpack_from("<3f", data, normal_start + index * 12)
+        length = math.sqrt(x * x + y * y + z * z)
+        if length < 1e-6:
+            normals.append([0.0, 1.0, 0.0])
+        else:
+            normals.append([round(x / length, 3), round(y / length, 3), round(z / length, 3)])
+    marker_pos = normal_start + total_vcount * 12
+    if _u16(data, marker_pos) != 1:
+        raise ValueError("v256 normal/tangent marker missing")
+    tangent_start = marker_pos + 2
+    tangents = []
+    for index in range(total_vcount):
+        x, y, z = struct.unpack_from("<3f", data, tangent_start + index * 12)
+        tangents.append([round(x, 3), round(y, 3), round(z, 3)])
+    face_start = tangent_start + total_vcount * 12
+    indices, valid = _decode_faces_absolute(data[face_start:face_start + total_fcount * 6], total_vcount)
+    if valid < total_fcount * 3 * 0.999:
+        raise ValueError("v256 face stream invalid")
+    uv_start = face_start + total_fcount * 6
+    uvs = []
+    cursor = uv_start
+    for item in table["records"]:
+        for _layer in range(item[2]):
+            for _index in range(item[0]):
+                if cursor + 8 > len(data):
+                    raise ValueError("v256 uv out of range")
+                u, v = struct.unpack_from("<2f", data, cursor)
+                uvs.append([round(u, 5), round(v, 5)])
+                cursor += 8
+    if len(uvs) < total_vcount:
+        uvs.extend([[0.0, 0.0]] * (total_vcount - len(uvs)))
+    joints = []
+    weights = []
+    for item in table["records"]:
+        for _index in range(item[0] * item[3]):
+            pass
+    color_total = 4 * sum(item[0] * item[3] for item in table["records"])
+    skin_start = uv_start + 8 * sum(item[0] * item[2] for item in table["records"]) + color_total
+    if skin:
+        for index in range(total_vcount):
+            joints.append(tuple(data[skin_start + index * 4:skin_start + index * 4 + 4]))
+            wx, wy, wz, ww = struct.unpack_from("<4f", data, skin_start + total_vcount * 4 + index * 16)
+            weights.append([round(wx, 5), round(wy, 5), round(wz, 5), round(ww, 5)])
+    mins = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
+    maxs = [max(vertex[axis] for vertex in vertices) for axis in range(3)]
+    submeshes = []
+    vertex_offset = 0
+    face_offset = 0
+    for item in table["records"]:
+        chunk = vertices[vertex_offset:vertex_offset + item[0]]
+        lo = [min(vertex[axis] for vertex in chunk) for axis in range(3)] if chunk else [0.0, 0.0, 0.0]
+        hi = [max(vertex[axis] for vertex in chunk) for axis in range(3)] if chunk else [0.0, 0.0, 0.0]
+        submeshes.append({
+            "vertex_count": item[0],
+            "face_count": item[1],
+            "face_offset": face_offset,
+            "vertex_offset": vertex_offset,
+            "bounds": {"min": lo, "max": hi},
+        })
+        vertex_offset += item[0]
+        face_offset += item[1]
+    return {
+        "size": len(data),
+        "version": 256,
+        "flag": flag8,
+        "variant": "v256",
+        "packed": True,
+        "vertex_count": total_vcount,
+        "face_count": total_fcount,
+        "index_count": total_fcount * 3,
+        "uv_layers": table["uv_layers"],
+        "color_len": table["color_len"],
+        "vertices": vertices,
+        "normals": normals,
+        "tangents": tangents,
+        "uvs": uvs,
+        "joints": joints,
+        "weights": weights,
+        "indices": indices,
+        "bounds": {"min": mins, "max": maxs},
+        "submeshes": submeshes,
+    }
 
 
 def parse(data: bytes) -> dict:
@@ -454,16 +619,18 @@ def parse(data: bytes) -> dict:
         raise ValueError("mesh too large")
     version = _u16(data, 4)
     flag = _u16(data, 8)
-    if version == 3:
+    if version in (2, 3):
         return _parse_v3(data, version)
+    if version == 256:
+        return _parse_v256(data)
     if flag != 0:
         info = _parse_bone_header(data)
         total_vcount = info["vcount"]
         total_fcount = info["fcount"]
         data_start = info["data_start"]
         data_end = info["data_end"]
-        uv_layers = info["records"][0][2] if info["records"] else 1
-        color_len = info["records"][0][3] if info["records"] else 0
+        uv_layers = max((item[2] for item in info["records"]), default=1)
+        color_len = max((item[3] for item in info["records"]), default=0)
         if total_vcount <= 0 or total_fcount <= 0 or data_end > len(data):
             raise ValueError("skinned mesh header out of range")
         layout = _pick_skinned_face_start(
@@ -478,10 +645,18 @@ def parse(data: bytes) -> dict:
         if uv_start + uv_total > data_end:
             raise ValueError("skinned mesh uv out of range")
         geometry = (115 * total_vcount + 16) // 8
+        tangents = None
         if face_start - data_start == geometry:
             variant = "v4-115"
             vertices = _choose_115_positions(data, data_start, total_vcount, indices)
-            normals = _compute_normals(vertices, indices)
+            vertex_flag = data[data_start]
+            pos_size = 12 * total_vcount if vertex_flag & 1 else 8 * total_vcount
+            norm_start = data_start + 1 + pos_size
+            normals = _read_normals(data, norm_start, total_vcount, 3) if norm_start + 3 * total_vcount <= face_start else None
+            if normals is None:
+                normals = _compute_normals(vertices, indices)
+            if vertex_flag in (0, 1, 2):
+                tangents = _read_directions(data, norm_start + 3 * total_vcount, total_vcount, 0, 3)
         else:
             vertex_flag = data[data_start]
             pos_start = data_start + 1
@@ -500,10 +675,11 @@ def parse(data: bytes) -> dict:
                     x, y, z = _decode_position(packed)
                     vertices.append([round(x, 4), round(y, 4), round(z, 4)])
                 norm_start = pos_start + total_vcount * 8
-            normal_stride = 6 if vertex_flag in (0, 1) else 3
-            normals = _read_normals(data, norm_start, total_vcount, normal_stride) if norm_start + total_vcount * normal_stride <= face_start else None
+            normals = _read_normals(data, norm_start, total_vcount, 3) if norm_start + 3 * total_vcount <= face_start else None
             if normals is None:
                 normals = _compute_normals(vertices, indices)
+            if vertex_flag in (0, 1, 2):
+                tangents = _read_directions(data, norm_start + 3 * total_vcount, total_vcount, 0, 3)
         uvs = []
         uv_cursor = uv_start
         for item in info["records"]:
@@ -565,6 +741,7 @@ def parse(data: bytes) -> dict:
             "color_len": color_len,
             "vertices": vertices,
             "normals": normals,
+            "tangents": tangents,
             "uvs": uvs,
             "joints": joints,
             "weights": weights,
@@ -603,24 +780,16 @@ def parse(data: bytes) -> dict:
     if total_vcount <= 0 or pos_size > data_end - pos_start:
         raise ValueError("mesh vertex count out of range")
     norm_start = pos_start + pos_size
-    normal_stride = 6 if vertex_flag in (0, 1) else 3
-    norm_end = norm_start + total_vcount * normal_stride
-    if vertex_flag in (0, 1):
-        norm_end += (total_vcount * 3 + 7) // 8
+    norm_end = norm_start + total_vcount * 3
+    if vertex_flag in (0, 1, 2):
+        norm_end += total_vcount * 3 + total_vcount * 3 // 8 + 1
     post_size = _post_block_size(table["records"])
-    if table["kind"] == "single" and not (vertex_flag & 1):
-        geometry115 = (115 * total_vcount + 16) // 8
-        base115 = geometry115 + 6 * total_fcount + post_size
-        extra = (data_end - vertex_start) - base115
-        tail_size = 12 * total_vcount + 32
-        if extra in (4 * total_vcount, tail_size, 4 * total_vcount + tail_size):
-            raise ValueError("v4 115-bit prop mesh positions are not verified")
     uv_start = data_end - post_size
     if uv_start <= norm_end:
         raise ValueError("mesh uv range out of bounds")
     face_start = uv_start - 6 * total_fcount
     if face_start >= norm_end:
-        _, valid = _decode_faces(data[face_start:face_start + 6 * total_fcount], total_vcount)
+        _, valid = _decode_faces_best(data[face_start:face_start + 6 * total_fcount], total_vcount)
     else:
         valid = 0
     if valid < total_fcount * 3 * 0.999:
@@ -631,7 +800,7 @@ def parse(data: bytes) -> dict:
     uv_total = 4 * sum(item[0] * item[2] for item in table["records"])
     if uv_start + uv_total > data_end:
         raise ValueError("mesh uv range out of bounds")
-    indices, valid = _decode_faces(data[face_start:face_start + total_fcount * 6], total_vcount)
+    indices, valid = _decode_faces_best(data[face_start:face_start + total_fcount * 6], total_vcount)
     if valid < total_fcount * 3 * 0.999:
         raise ValueError("mesh face stream invalid")
     vertices = []
@@ -646,10 +815,10 @@ def parse(data: bytes) -> dict:
             packed = struct.unpack_from("<Q", data, pos_start + index * 8)[0]
             x, y, z = _decode_position(packed)
             vertices.append([round(x, 4), round(y, 4), round(z, 4)])
-    normal_stride = 6 if vertex_flag in (0, 1) else 3
-    normals = _read_normals(data, norm_start, total_vcount, normal_stride) if norm_end <= face_start else None
+    normals = _read_normals(data, norm_start, total_vcount, 3) if norm_start + total_vcount * 3 <= face_start else None
     if normals is None:
         normals = _compute_normals(vertices, indices)
+    tangents = _read_directions(data, norm_start + 3 * total_vcount, total_vcount, 0, 3) if vertex_flag in (0, 1, 2) and norm_start + total_vcount * 6 <= face_start else None
     uvs = []
     uv_cursor = uv_start
     for item in table["records"]:
@@ -707,6 +876,7 @@ def parse(data: bytes) -> dict:
         "color_len": color_len,
         "vertices": vertices,
         "normals": normals,
+        "tangents": tangents,
         "uvs": uvs,
         "indices": indices,
         "bounds": {"min": mins, "max": maxs},

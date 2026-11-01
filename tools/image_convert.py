@@ -203,11 +203,65 @@ def dds_to_image(payload: bytes) -> Image.Image:
     if pf_flags & 0x20000 or bit_count == 8:
         stride = pitch if pitch >= width else width
         return Image.frombytes("L", (width, height), data[:stride * height], "raw", "L", stride, 1)
+    if bit_count == 24:
+        stride = pitch if pitch >= width * 3 else width * 3
+        return Image.frombytes("RGB", (width, height), data[:stride * height], "raw", "BGR", stride, 1)
     if bit_count == 32:
         stride = pitch if pitch >= width * 4 else width * 4
         # Most legacy 32-bit DDS files in this build are BGRA/RGBA masks.
         return Image.frombytes("RGBA", (width, height), data[:stride * height], "raw", "BGRA", stride, 1)
     raise ValueError(f"unsupported legacy DDS fourCC={fourcc!r} bits={bit_count}")
+
+
+def dds_cubemap_faces(payload: bytes) -> list[Image.Image]:
+    if len(payload) < 128 or not payload.startswith(DDS_MAGIC):
+        raise ValueError("not a DDS file")
+    height, width, pitch, depth, mips = struct.unpack_from("<5I", payload, 12)
+    caps2 = struct.unpack_from("<I", payload, 112)[0]
+    if not caps2 & DDSCAPS2_CUBEMAP:
+        raise ValueError("not a cubemap DDS")
+    if width == 0 or height == 0 or width > 16384 or height > 16384:
+        raise ValueError("invalid DDS dimensions")
+    fourcc = payload[84:88]
+    bit_count = struct.unpack_from("<I", payload, 88)[0]
+    pf_flags = struct.unpack_from("<I", payload, 80)[0]
+    mips = mips or 1
+
+    def mip_size(w, h):
+        if fourcc == b"DXT1":
+            return ((w + 3) // 4) * ((h + 3) // 4) * 8
+        if fourcc in (b"DXT3", b"DXT5"):
+            return ((w + 3) // 4) * ((h + 3) // 4) * 16
+        if fourcc == b"DX10":
+            dxgi = struct.unpack_from("<I", payload, 128)[0]
+            if dxgi == DXGI_BC1_UNORM:
+                return ((w + 3) // 4) * ((h + 3) // 4) * 8
+            if dxgi in (DXGI_BC2_UNORM, DXGI_BC3_UNORM, DXGI_BC5_UNORM, DXGI_BC7_UNORM):
+                return ((w + 3) // 4) * ((h + 3) // 4) * 16
+            return w * h * 4
+        if int.from_bytes(fourcc, "little") == 0x71 or bit_count == 64:
+            return w * h * 8
+        if pf_flags & 0x20000 or bit_count == 8:
+            return (pitch if pitch >= w else w) * h
+        if bit_count == 24:
+            return (pitch if pitch >= w * 3 else w * 3) * h
+        if bit_count == 32:
+            return (pitch if pitch >= w * 4 else w * 4) * h
+        raise ValueError(f"unsupported legacy DDS fourCC={fourcc!r} bits={bit_count}")
+
+    chain = sum(mip_size(max(1, width >> i), max(1, height >> i)) for i in range(mips))
+    mip0 = mip_size(width, height)
+    data = payload[128:]
+    header = bytearray(payload[:128])
+    header[12:32] = struct.pack("<5I", height, width, pitch, 0, 1)
+    struct.pack_into("<I", header, 112, 0)
+    faces = []
+    for index in range(6):
+        start = index * chain
+        if start + mip0 > len(data):
+            raise ValueError("truncated cubemap DDS")
+        faces.append(dds_to_image(bytes(header) + data[start:start + mip0]))
+    return faces
 
 
 def convert_image(payload: bytes, src_suffix: str, output: Path) -> tuple[str, str]:

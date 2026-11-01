@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import base64
+import xml.etree.ElementTree
 import io
 import ipaddress
 import json
@@ -254,6 +256,151 @@ def material_groups(objects: list, textures: list) -> list:
     ]
 
 
+SURF_MACRO_KEYS = [
+    "ENABLE_SCALE_9", "ENABLE_BORDER", "ENABLE_LIGHTING", "ENABLE_YTILING",
+    "ENABLE_PANNER", "ENABLE_TILING_HOME", "TEXCOORD1_ENABLE", "TWO_SIDED",
+    "UNABLE_ROUGHNESS_HW", "UNABLE_FATE_SPECULAR", "CHAR_OFFSET",
+    "ENABLE_STREAMER", "ENABLE_STREAMER_LINEAR", "ENABLE_WATER_BLOCK",
+    "USE_LOCAL_PARAMATER",
+]
+SURF_SCALAR_NODES = {
+    "repeat_scale_y": "RepeatScaleY", "mask_pow": "MaskPow", "mask_style": "MaskStyle",
+    "sparkle_scale": "SparkleScale", "sparkle_offset": "SparkleOffset",
+    "sparkle_speed": "SparkleSpeed", "sparkle_pow": "SparklePow",
+    "sparkle_intensity": "SparkleIntensity", "distort_scale": "DistortScale",
+    "distort_speed": "DistortSpeed", "change_color_key": "ChangeColorKey",
+    "offset_speed": "OffsetSpeed", "offset_strength": "OffsetStrength",
+    "offset_scale": "OffsetScale",
+    "border_pow": "BorderPow", "border_speed": "BorderSpeed", "border_breath": "BorderBreath",
+    "tint": "Tint", "position_x": "PositionX",
+    "length1": "Length1", "length2": "Length2", "length3": "Length3", "length4": "Length4",
+    "dark_intensity": "DarkIntensity", "up_intensity": "UpIntensity",
+    "hsv_s": "HSV_S", "hsv_v": "HSV_V",
+    "border_colorful": "BorderColorful", "spark_distort_scale": "SparkDistortScale",
+    "noise_strength": "NoiseStrength", "hue_strength": "HueStrength",
+    "mask_strength": "MaskStrength", "audio_range": "AudioRange",
+    "dissolve_value": "DissolveValue", "dissolve_strength": "DissolveStrength",
+    "dissolve_noise": "DissolveNoise", "dissolve_reverse": "DissolveReverse",
+    "dissolve_dir": "DissolveDir", "dissolve_intensity": "DissolveIntensity",
+    "color_intensity": "ColorIntensity", "mix_lerp": "MixLerp", "lerp_key": "LerpKey",
+    "panner_x": "PannerX", "panner_y": "PannerY", "rotation": "Rotation",
+    "roughness_hw": "RoughnessHW", "grid_scale": "GridScale",
+    "srgb_key": "srgbKey", "eff_control": "eff_Control",
+    "eff_emissive": "eff_EmmisiveIntensity",
+    "laser_scale": "LaserScale", "laser_transition": "LaserTransition",
+    "state": "State", "local_scale_key": "LocalScaleKey", "sparkle_key": "SparkleKey",
+    "flow_strength": "FlowStrength", "uv_speed": "uvSpeed", "back_n_invert": "BackN_Invert",
+    "streamer_speed": "StreamerSpeed", "uv_tiling": "UVTiling",
+    "flake_density": "FlakeDensity", "flake_number": "FlakeNumber",
+    "sparkle_emis": "SparkleEmisStrength", "flake_switch": "flakeSwitch",
+    "offset_mult": "OffsetMult", "offset_pow": "OffsetPow", "face_uv_offset": "FaceUVOffset",
+}
+SURF_VECTOR_NODES = {
+    "scale9_axis": "Scale9Axis", "sparkle_color": "SparkleColor",
+    "base_uv_para": "BaseUVPara", "sequins": "Sequins",
+    "dissolve_scale": "DissolveScale", "dissolve_color": "DissolveColor",
+    "fresnel_color": "FresnelColor", "grid_color": "GridColor",
+    "addition_color": "AddtionColor", "flow": "Flow", "flow_speed": "FlowSpeed",
+}
+SURF_SCALAR_FALLBACK = {
+    "repeat_scale_y": 1.0, "mask_pow": 3.0, "mask_style": 0.0,
+    "sparkle_scale": 2.0, "sparkle_offset": 8.0, "sparkle_speed": 0.02,
+    "sparkle_pow": 8.0, "sparkle_intensity": 4.0,
+    "distort_scale": 0.0, "distort_speed": 0.0, "change_color_key": 0.0,
+    "offset_speed": 0.0, "offset_strength": 0.0, "offset_scale": 1.0,
+}
+SURF_VECTOR_FALLBACK = {
+    "scale9_axis": [1.0, 1.0, 1.0, 1.0], "sparkle_color": [1.0, 1.0, 1.0, 1.0],
+}
+_surf_cache: dict = {}
+
+
+def _parse_surf_xml(data: bytes) -> dict:
+    ET = xml.etree.ElementTree
+    parsed = {"params": {}, "macros": {}}
+    try:
+        root = ET.fromstring(data.decode("gb2312", "replace"))
+    except Exception:
+        return parsed
+    sections = {"Resources": "params", "Macro": "macros"}
+    for section, target in sections.items():
+        for element in root.iter():
+            if element.tag != section:
+                continue
+            for param in element.iter("Param"):
+                name = param.attrib.get("Name")
+                if not name:
+                    continue
+                if target == "macros":
+                    parsed[target][name] = (param.attrib.get("Default") or "").strip().upper() == "TRUE"
+                    continue
+                children = param.findall("Child")
+                if children:
+                    values = []
+                    for child in children:
+                        try:
+                            values.append(float(child.attrib["Default"]))
+                        except (KeyError, ValueError):
+                            pass
+                    if values:
+                        parsed[target][name] = values
+                    continue
+                default = param.attrib.get("Default")
+                if default is None:
+                    continue
+                try:
+                    parsed[target][name] = float(default)
+                    continue
+                except ValueError:
+                    pass
+                parts = default.replace(",", " ").split()
+                try:
+                    values = [float(part) for part in parts]
+                except ValueError:
+                    parsed[target][name] = default
+                else:
+                    parsed[target][name] = values[0] if len(values) == 1 else values
+    return parsed
+
+
+def surf_defaults(surface: str) -> dict:
+    stem = surface.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if surface else ""
+    if not stem:
+        return {"params": {}, "macros": {}}
+    cached = _surf_cache.get(stem)
+    if cached is not None:
+        return cached
+    parsed = {"params": {}, "macros": {}}
+    try:
+        db_path = default_cache_dir() / "catalog.sqlite"
+        connection = sqlite3.connect(str(db_path))
+        connection.row_factory = sqlite3.Row
+        try:
+            surface_path = surface.replace("\\", "/").lower()
+            row = connection.execute(
+                "select f.offset, f.packed, f.unpacked, f.compression, p.path as package_path"
+                " from files f join packages p on p.name = f.package"
+                " where f.ext = '.surf' and lower(f.path) = ?",
+                (surface_path,),
+            ).fetchone()
+            if row is None:
+                escaped = stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                row = connection.execute(
+                    "select f.offset, f.packed, f.unpacked, f.compression, p.path as package_path"
+                    " from files f join packages p on p.name = f.package"
+                    " where f.ext = '.surf' and lower(f.path) like ? escape '\\'",
+                    (f"%/{escaped}.surf",),
+                ).fetchone()
+            if row is not None:
+                parsed = _parse_surf_xml(read_entry_bytes(row["package_path"], row))
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError):
+        pass
+    _surf_cache[stem] = parsed
+    return parsed
+
+
 def material_tree(data: dict, resolve=None) -> list:
     children = neox_object.build_tree(data)
     table = data.get("table") or []
@@ -351,6 +498,7 @@ def material_tree(data: dict, resolve=None) -> list:
         down_color = [1.0, 1.0, 1.0, 1.0]
         up_color = [1.0, 1.0, 1.0, 1.0]
         simple_light = False
+        mask_srgb = False
         base_normal = ""
         pattern_tex = ""
         # 水、玻璃和果冻的同名纹理槽含义不同，保留原始参数供预览器分支使用。
@@ -373,6 +521,21 @@ def material_tree(data: dict, resolve=None) -> list:
             "FresnelSpeed": 1.0, "IcingAmount": 0.0,
             "UGCKey_R": 1.0, "UGCKey_M": 1.0,
         }
+        deepwater_scalars = {
+            "NormalScale1": 1.0, "NormalScale2": 1.0, "NormalScale": 1.0,
+            "SpeedX": 0.0, "SpeedY": 0.0,
+            "DepthScale": 0.1, "OpacityMax": 0.6, "FoamScale": 0.3,
+            "HighlightStep": 0.973, "HighlightMin": 0.0, "WaterLightness": 1.0,
+        }
+        new_scalars = {
+            "FresnelPow": 1.0, "FresnelIntensity": 0.0,
+            "DetailNormalKey": 0.0, "DetailNormalScale": 1.0, "DetailNormalAlpha": 0.0,
+            "Milky_way": 0.0, "UGCKey_R4": 0.0, "UGCKey_M4": 0.0,
+        }
+        new_vectors = {
+            "UGCRoughness": [0.5, 0.5, 0.5, 0.5],
+            "UGCMetalness": [0.0, 0.0, 0.0, 0.0],
+        }
         waterfall_scalars = {
             "Speed_MainTexU": 0.0, "Speed_MainTexV": 0.0,
             "Speed_NoiseTexU": 0.0, "Speed_NoiseTexV": 0.0,
@@ -386,20 +549,32 @@ def material_tree(data: dict, resolve=None) -> list:
         reflection_cube = ""
         pattern_enabled = False
         authored_params = set()
+        node_values = {}
+        macros = {}
         for item in nodes:
             obj = objects[item] if item < len(objects) else None
             if not isinstance(obj, dict):
                 continue
             node_class = class_name(item)
             value = obj.get("Value")
+            if node_class:
+                node_values[node_class] = value
             if value is not None:
                 authored_params.add(node_class)
             if node_class in liquid_vectors and isinstance(value, list) and len(value) >= 4:
                 liquid_vectors[node_class] = [float(x) for x in value[:4]]
             elif node_class in liquid_scalars and isinstance(value, (int, float)):
                 liquid_scalars[node_class] = float(value)
+            elif node_class == "Speed_u" and isinstance(value, (int, float)):
+                liquid_scalars["Speed_U"] = float(value)
             elif node_class in waterfall_scalars and isinstance(value, (int, float)):
                 waterfall_scalars[node_class] = float(value)
+            elif node_class in new_scalars and isinstance(value, (int, float)):
+                new_scalars[node_class] = float(value)
+            elif node_class in deepwater_scalars and isinstance(value, (int, float)):
+                deepwater_scalars[node_class] = float(value)
+            elif node_class in new_vectors and isinstance(value, list) and len(value) >= 4:
+                new_vectors[node_class] = [float(x) for x in value[:4]]
             elif node_class == "Cube" and isinstance(value, str):
                 reflection_cube = resolve(value) if resolve else value
             if "AlphaRef" in obj:
@@ -415,6 +590,11 @@ def material_tree(data: dict, resolve=None) -> list:
             if node_class == "Macro0" and obj.get("Key") == "ENABLE_PATTERN":
                 try:
                     pattern_enabled = int(obj.get("Val") or 0) != 0
+                except (TypeError, ValueError):
+                    pass
+            if node_class.startswith("Macro") and isinstance(obj.get("Key"), str):
+                try:
+                    macros[obj["Key"]] = int(obj.get("Val") or 0) != 0
                 except (TypeError, ValueError):
                     pass
             if fallback_value is None and isinstance(value, list) and len(value) == 4 and all(isinstance(v, (int, float)) for v in value):
@@ -558,6 +738,25 @@ def material_tree(data: dict, resolve=None) -> list:
                     textures.append(resolve(value2) if resolve else value2)
         if not any((tex0, tex1, tex2, tex3, tex4, tex5)) and len({item for item in textures if item}) == 1:
             tex0 = next(item for item in textures if item)
+        surf = surf_defaults(surface)
+        surf_params = surf.get("params") or {}
+        for param_name, default_value in surf_params.items():
+            if param_name in authored_params:
+                continue
+            node_values[param_name] = default_value
+        for color_index in range(len(colors)):
+            mask_key = f"MaskColor{color_index}"
+            default_color = surf_params.get(mask_key)
+            if mask_key not in authored_params and isinstance(default_color, list) and len(default_color) >= 4:
+                colors[color_index] = [float(x) for x in default_color[:4]]
+        if "BorderColor" not in authored_params:
+            border_default = surf_params.get("BorderColor")
+            if isinstance(border_default, list) and len(border_default) >= 4:
+                border_color = [float(x) for x in border_default[:4]]
+        for speed_node in ("Speed_U", "Speed_u"):
+            speed_value = node_values.get(speed_node)
+            if speed_node not in authored_params and isinstance(speed_value, (int, float)):
+                liquid_scalars["Speed_U"] = float(speed_value)
         surface_lower = surface.lower()
         if "unlit" in surface_lower:
             lighting = False
@@ -598,6 +797,12 @@ def material_tree(data: dict, resolve=None) -> list:
                 colors[2] = border_color
         if "_simple" in surface_lower:
             simple_light = True
+        if "change_color_pattern" in surface_lower:
+            mask_srgb = True
+        if shader_kind in ("water", "waterfall") and tex0 and "normal" in tex0.lower():
+            tex0 = ""
+            base_color = colors[0]
+            transparent = True
         if "unlit_jelly" in surface_lower:
             color_mode = 6
         elif "icefloor" in surface_lower:
@@ -669,6 +874,21 @@ def material_tree(data: dict, resolve=None) -> list:
             # 水的泡沫/噪声、玻璃的法线及果冻的 Matcap 都不是颜色图的透明通道。
             opacity_tex = "none"
         normal_mode = 1 if color_mode == 2 else 0
+        surface_scalars = dict(SURF_SCALAR_FALLBACK)
+        for json_key, node_name in SURF_SCALAR_NODES.items():
+            value = node_values.get(node_name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                surface_scalars[json_key] = float(value)
+        surface_vectors = dict(SURF_VECTOR_FALLBACK)
+        for json_key, node_name in SURF_VECTOR_NODES.items():
+            value = node_values.get(node_name)
+            if isinstance(value, list) and value and all(isinstance(x, (int, float)) for x in value):
+                surface_vectors[json_key] = [float(x) for x in value[:4]]
+        macro_map = {key: False for key in SURF_MACRO_KEYS}
+        macro_map.update(surf.get("macros") or {})
+        macro_map.update(macros)
+        if not tiling and macro_map.get("ENABLE_TILING_HOME") and macro_map.get("ENABLE_SCALE_9"):
+            tiling = True
         materials.append({
             "index": material_index,
             "name": name,
@@ -720,6 +940,18 @@ def material_tree(data: dict, resolve=None) -> list:
             "down_color": down_color,
             "up_color": up_color,
             "simple_light": simple_light,
+            "fresnel_pow": new_scalars["FresnelPow"],
+            "fresnel_intensity": new_scalars["FresnelIntensity"],
+            "detail_normal_key": new_scalars["DetailNormalKey"],
+            "detail_normal_scale": new_scalars["DetailNormalScale"],
+            "detail_normal_alpha": new_scalars["DetailNormalAlpha"],
+            "milky_way": new_scalars["Milky_way"],
+            "ugc_key_r4": new_scalars["UGCKey_R4"],
+            "ugc_key_m4": new_scalars["UGCKey_M4"],
+            "ugc_roughness": new_vectors["UGCRoughness"],
+            "ugc_metalness": new_vectors["UGCMetalness"],
+            "water_params": dict(deepwater_scalars),
+            "mask_srgb": mask_srgb,
             "alpha_ref": alpha_ref,
             "axis": axis,
             "lerp_center": lerp_center,
@@ -738,6 +970,9 @@ def material_tree(data: dict, resolve=None) -> list:
             "base_normal": base_normal,
             "pattern_tex": pattern_tex,
             "pattern_enabled": pattern_enabled,
+            "macros": macro_map,
+            **surface_scalars,
+            **surface_vectors,
             "speed": liquid_vectors["Speed"],
             "variable": liquid_vectors["Variable"],
             "parameter": liquid_vectors["Parameter"],
@@ -758,8 +993,8 @@ def material_tree(data: dict, resolve=None) -> list:
             "ice_distort_strength": liquid_scalars["IceDistortStrength"],
             "fresnel_speed": liquid_scalars["FresnelSpeed"],
             "icing_amount": liquid_scalars["IcingAmount"],
-            "ugc_roughness": liquid_scalars["UGCKey_R"],
-            "ugc_metalness": liquid_scalars["UGCKey_M"],
+            "ugc_key_r": liquid_scalars["UGCKey_R"],
+            "ugc_key_m": liquid_scalars["UGCKey_M"],
             "color_mode": color_mode,
             "lerp_linear": lerp_linear,
             "emissive_kind": emissive_kind,
@@ -1117,6 +1352,9 @@ class BrowserServer(ThreadingHTTPServer):
     _unit_models_mtime = 0.0
     _map_preload_lock = threading.Lock()
     _map_preload = {}
+    _eid_truth_lock = threading.Lock()
+    _eid_truth = None
+    _eid_truth_fingerprint = ""
     version: str | None = None
     update_state: dict = {}
     update_repo: str = update_check.DEFAULT_REPO
@@ -2274,12 +2512,60 @@ class Handler(BaseHTTPRequestHandler):
                 continue
         return None, None
 
+    def _eid_truth_path(self) -> Path:
+        return self.server.cache_root / "eid_truth.json"
+
+    def _eid_truth_map(self) -> dict:
+        fingerprint = json.dumps(self.server.fingerprint, ensure_ascii=False, sort_keys=True)
+        with BrowserServer._eid_truth_lock:
+            if BrowserServer._eid_truth is None or BrowserServer._eid_truth_fingerprint != fingerprint:
+                mapping = {}
+                try:
+                    payload = json.loads(self._eid_truth_path().read_text("utf-8"))
+                    if payload.get("fingerprint") == fingerprint and isinstance(payload.get("map"), dict):
+                        mapping = {
+                            str(key): str(value) for key, value in payload["map"].items()
+                            if isinstance(value, str) and value.lower().endswith((".gim", ".mesh"))
+                        }
+                except (OSError, ValueError, TypeError, AttributeError):
+                    mapping = {}
+                BrowserServer._eid_truth = mapping
+                BrowserServer._eid_truth_fingerprint = fingerprint
+            return BrowserServer._eid_truth
+
+    def _learn_eid_truth(self, data: dict) -> None:
+        # 同一 unit_id 合并普通与批次记录后同时带有 eid 与 ctx_model_path 时，即获得真值对。
+        learned = False
+        mapping = self._eid_truth_map()
+        for unit in data.get("units", []):
+            eid = unit.get("eid")
+            model = unit.get("model")
+            if not isinstance(eid, int) or not model or unit.get("model_from_eid"):
+                continue
+            if mapping.get(str(eid)) != model:
+                mapping[str(eid)] = model
+                learned = True
+        if learned:
+            self._save_eid_truth(mapping)
+
+    def _save_eid_truth(self, mapping: dict) -> None:
+        path = self._eid_truth_path()
+        payload = {"fingerprint": json.dumps(self.server.fingerprint, ensure_ascii=False, sort_keys=True), "map": mapping}
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
     def _map_preload_models(self, map_path: str) -> dict:
-        stem = Path(map_path).stem
+        # 缓存键必须用完整路径：maps/8700700 与 mont/8700700 等 6 组同名词会串图。
+        cache_key = map_path
         with BrowserServer._map_preload_lock:
-            cached = BrowserServer._map_preload.get(stem)
+            cached = BrowserServer._map_preload.get(cache_key)
         if cached is not None:
             return cached
+        stem = Path(map_path).stem
         models = {}
         connection = db_connect(self.server.db_path)
         try:
@@ -2305,7 +2591,7 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, TypeError):
                 models = {}
         with BrowserServer._map_preload_lock:
-            BrowserServer._map_preload[stem] = models
+            BrowserServer._map_preload[cache_key] = models
         return models
 
     def _gmp_data(self, row) -> dict:
@@ -2317,24 +2603,32 @@ class Handler(BaseHTTPRequestHandler):
             return data
         with BrowserServer._gmp_sem:
             data = gmp_parse.parse(self._entry_payload(row))
-        if models:
+        self._learn_eid_truth(data)
+        truth = self._eid_truth_map()
+        if models or truth:
             preload = self._map_preload_models(row["path"])
             for unit in data.get("units", []):
                 if unit.get("model"):
                     continue
                 eid = unit.get("eid")
-                model = models.get(str(eid)) if isinstance(eid, int) else None
-                if model and (not preload or model in preload):
+                if not isinstance(eid, int):
+                    continue
+                unit_type = unit.get("type")
+                # 合并单元里 eid+ctx_model_path 同现的真值最可信，免门禁直接采用；
+                # 全局表只填模型类组件（type 256），逻辑实体（路点/组件组/触发器）不填。
+                model = truth.get(str(eid)) or (models.get(str(eid)) if unit_type == 256 else None)
+                if model and (not preload or model in preload or unit_type == 256):
                     unit["model"] = model
                     unit["model_from_eid"] = True
             if preload:
                 missing = collections.Counter(
                     unit.get("eid") for unit in data.get("units", [])
-                    if not unit.get("model") and isinstance(unit.get("eid"), int)
+                    if not unit.get("model") and isinstance(unit.get("eid"), int) and unit.get("type") == 256
                 )
                 by_count = collections.defaultdict(list)
                 for path, count in preload.items():
-                    by_count[count].append(path)
+                    if path.lower().endswith((".gim", ".mesh")):
+                        by_count[count].append(path)
                 eids_by_count = collections.defaultdict(list)
                 for eid, count in missing.items():
                     eids_by_count[count].append(eid)
@@ -2343,7 +2637,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(paths) != 1 or len(eids) != 1:
                         continue
                     for unit in data.get("units", []):
-                        if unit.get("eid") == eids[0] and not unit.get("model"):
+                        if unit.get("eid") == eids[0] and not unit.get("model") and unit.get("type") == 256:
                             unit["model"] = paths[0]
                             unit["model_from_eid"] = True
         data["path"] = row["path"]
@@ -2569,6 +2863,11 @@ class Handler(BaseHTTPRequestHandler):
                     mapping = {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
                 except (OSError, ValueError, TypeError, AttributeError):
                     mapping = {}
+                # eid 表里有纯数字占位与失效路径，过滤后才能安全当作 eid→模型 映射。
+                mapping = {
+                    str(key): str(value) for key, value in mapping.items()
+                    if str(value).lower().endswith((".gim", ".mesh")) and self._row(str(value))
+                }
                 BrowserServer._unit_models = mapping
                 BrowserServer._unit_models_mtime = mtime
             return BrowserServer._unit_models
@@ -3089,7 +3388,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     data = self._gmp_data(row)
                 except Exception as exc:
-                    self._error(f"GMP parse failed: {exc}", 415)
+                    self._error(f"GMP parse failed: {type(exc).__name__}: {exc}", 415)
                     return
                 self._json(data)
                 return
@@ -3360,6 +3659,25 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = ".png" if ctype == "image/png" else ".jpg" if ctype == "image/jpeg" else Path(row["path"]).suffix
                 self._send(data, ctype, filename=Path(row["path"]).with_suffix(suffix).name)
                 return
+            if route == "/api/cube":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                try:
+                    payload = self._entry_payload(row)
+                    faces = image_convert.dds_cubemap_faces(payload)
+                    encoded = []
+                    for image in faces:
+                        buffer = io.BytesIO()
+                        image.save(buffer, "PNG")
+                        encoded.append("data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"))
+                except ValueError as exc:
+                    self._error(str(exc), 415)
+                    return
+                self._json({"path": row["path"], "size": [faces[0].width, faces[0].height], "faces": encoded})
+                return
             if route == "/api/thumb":
                 path = (query.get("path", [""])[0] or "").strip("/")
                 row = self._row(path)
@@ -3544,7 +3862,7 @@ def main() -> int:
     parser.add_argument("--no-update-check", action="store_true", help="disable the GitHub release check")
     parser.add_argument("--update-repo", default=None, help="GitHub repository in owner/name form")
     parser.add_argument("--proxy", default=None, help="proxy URL used by the release check")
-    parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--no-open", "--unopen", dest="no_open", action="store_true")
     args = parser.parse_args()
 
     repo_value = args.update_repo or os.environ.get("NPKX_UPDATE_REPO") or update_check.DEFAULT_REPO
