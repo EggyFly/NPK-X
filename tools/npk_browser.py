@@ -3147,12 +3147,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _unit_model_map(self) -> dict:
         path = Path(__file__).resolve().parent.parent / "data" / "unit_models.json"
-        extra_path = Path(__file__).resolve().parent / "eid_models.json"
+        cache_path = self.server.cache_root / "eid_models.json"
+        catalog_path = Path(self.server.db_path)
         try:
-            mtime = (path.stat().st_mtime if path.is_file() else 0.0)
-            mtime += extra_path.stat().st_mtime if extra_path.is_file() else 0.0
-        except OSError:
-            mtime = 0.0
+            import eid_models_build
+            stamp = eid_models_build.fingerprint(catalog_path)
+        except Exception:
+            stamp = "missing"
+
+        def signature():
+            try:
+                return (
+                    path.stat().st_mtime if path.is_file() else 0.0,
+                    cache_path.stat().st_mtime if cache_path.is_file() else 0.0,
+                    stamp,
+                )
+            except OSError:
+                return (0.0, 0.0, stamp)
+
+        mtime = signature()
         with BrowserServer._unit_models_lock:
             if BrowserServer._unit_models is None or mtime != BrowserServer._unit_models_mtime:
                 mapping = {}
@@ -3162,20 +3175,56 @@ class Handler(BaseHTTPRequestHandler):
                     mapping = {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
                 except (OSError, ValueError, TypeError, AttributeError):
                     mapping = {}
-                try:
-                    extra = json.loads(extra_path.read_text("utf-8")).get("map", {})
-                    mapping.update({str(key): str(value) for key, value in extra.items()
-                                    if isinstance(value, str) and value.strip()})
-                except (OSError, ValueError, TypeError, AttributeError):
-                    pass
-                # eid 表里有纯数字占位与失效路径，过滤后才能安全当作 eid→模型 映射。
+                mapping.update(self._eid_model_cache(cache_path, catalog_path, stamp))
                 mapping = {
                     str(key): str(value) for key, value in mapping.items()
-                    if str(value).lower().endswith((".gim", ".mesh")) and self._row(str(value))
+                    if str(value).lower().endswith((".gim", ".mesh"))
                 }
+                # 一次批量查询替代逐条 _row，缓存命中时不必开上万次连接。
+                existing = set()
+                try:
+                    connection = db_connect(self.server.db_path)
+                    try:
+                        unique = sorted(set(mapping.values()))
+                        for start in range(0, len(unique), 500):
+                            chunk = unique[start:start + 500]
+                            sql = "select path from files where path in (%s)" % ",".join("?" * len(chunk))
+                            existing.update(row[0] for row in connection.execute(sql, chunk))
+                    finally:
+                        connection.close()
+                except (sqlite3.Error, OSError):
+                    existing = set()
+                mapping = {key: value for key, value in mapping.items() if value in existing}
                 BrowserServer._unit_models = mapping
-                BrowserServer._unit_models_mtime = mtime
+                BrowserServer._unit_models_mtime = signature()
             return BrowserServer._unit_models
+
+    def _eid_model_cache(self, cache_path: Path, catalog_path: Path, stamp: str) -> dict:
+        try:
+            payload = json.loads(cache_path.read_text("utf-8"))
+            raw = payload.get("map")
+            if payload.get("fingerprint") == stamp and isinstance(raw, dict) and raw:
+                return {str(key): str(value) for key, value in raw.items()
+                        if isinstance(value, str) and value.strip()}
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        try:
+            import eid_models_build
+            mapping = eid_models_build.build(catalog_path)
+        except Exception as exc:
+            print("eid_models build failed: %s" % exc, file=sys.stderr)
+            return {}
+        if not mapping:
+            return {}
+        payload = {"fingerprint": stamp, "built": int(time.time()), "map": mapping}
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_path.with_name("%s.%d.tmp" % (cache_path.name, os.getpid()))
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, cache_path)
+        except (OSError, ValueError, TypeError) as exc:
+            print("eid_models cache write failed: %s" % exc, file=sys.stderr)
+        return mapping
 
     def _xn_data(self, row, module: str | None = None) -> dict:
         signature = int(row["signature"])
