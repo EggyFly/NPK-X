@@ -126,6 +126,30 @@ def _read_directions(data: bytes, start: int, count: int, offset: int, stride: i
     return vectors
 
 
+def _read_uv_sets(data: bytes, start: int, records, end: int, pair_format: str):
+    uvs = []
+    uvs2 = []
+    has_uv2 = any(item[2] > 1 for item in records)
+    step = struct.calcsize(pair_format)
+    cursor = start
+    for item in records:
+        second = []
+        for layer in range(item[2]):
+            for _index in range(item[0]):
+                if cursor + step > end:
+                    raise ValueError("mesh uv out of range")
+                if layer == 0:
+                    u, v = struct.unpack_from(pair_format, data, cursor)
+                    uvs.append([round(u, 5), round(v, 5)])
+                elif layer == 1:
+                    u, v = struct.unpack_from(pair_format, data, cursor)
+                    second.append([round(u, 5), round(v, 5)])
+                cursor += step
+        if has_uv2:
+            uvs2.append(second if item[2] > 1 else [[0.0, 0.0]] * item[0])
+    return uvs, (uvs2 if has_uv2 else None), cursor
+
+
 def _compute_normals(vertices: list, indices: list) -> list:
     normals = [[0.0, 0.0, 0.0] for _ in vertices]
     for index in range(0, len(indices) - 2, 3):
@@ -547,16 +571,7 @@ def _parse_v256(data: bytes) -> dict:
     if valid < total_fcount * 3 * 0.999:
         raise ValueError("v256 face stream invalid")
     uv_start = face_start + total_fcount * 6
-    uvs = []
-    cursor = uv_start
-    for item in table["records"]:
-        for _layer in range(item[2]):
-            for _index in range(item[0]):
-                if cursor + 8 > len(data):
-                    raise ValueError("v256 uv out of range")
-                u, v = struct.unpack_from("<2f", data, cursor)
-                uvs.append([round(u, 5), round(v, 5)])
-                cursor += 8
+    uvs, uvs2, _ = _read_uv_sets(data, uv_start, table["records"], len(data), "<2f")
     if len(uvs) < total_vcount:
         uvs.extend([[0.0, 0.0]] * (total_vcount - len(uvs)))
     joints = []
@@ -604,6 +619,7 @@ def _parse_v256(data: bytes) -> dict:
         "normals": normals,
         "tangents": tangents,
         "uvs": uvs,
+        "uvs2": uvs2,
         "joints": joints,
         "weights": weights,
         "indices": indices,
@@ -680,17 +696,7 @@ def parse(data: bytes) -> dict:
                 normals = _compute_normals(vertices, indices)
             if vertex_flag in (0, 1, 2):
                 tangents = _read_directions(data, norm_start + 3 * total_vcount, total_vcount, 0, 3)
-        uvs = []
-        uv_cursor = uv_start
-        for item in info["records"]:
-            for layer in range(item[2]):
-                for index in range(item[0]):
-                    if uv_cursor + 4 > data_end:
-                        raise ValueError("skinned mesh uv out of range")
-                    if layer == 0:
-                        u, v = struct.unpack_from("<2e", data, uv_cursor)
-                        uvs.append([round(u, 5), round(v, 5)])
-                    uv_cursor += 4
+        uvs, uvs2, uv_cursor = _read_uv_sets(data, uv_start, info["records"], data_end, "<2e")
         if len(uvs) < total_vcount:
             uvs.extend([[0.0, 0.0]] * (total_vcount - len(uvs)))
         mins = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
@@ -743,6 +749,7 @@ def parse(data: bytes) -> dict:
             "normals": normals,
             "tangents": tangents,
             "uvs": uvs,
+            "uvs2": uvs2,
             "joints": joints,
             "weights": weights,
             "indices": indices,
@@ -819,17 +826,7 @@ def parse(data: bytes) -> dict:
     if normals is None:
         normals = _compute_normals(vertices, indices)
     tangents = _read_directions(data, norm_start + 3 * total_vcount, total_vcount, 0, 3) if vertex_flag in (0, 1, 2) and norm_start + total_vcount * 6 <= face_start else None
-    uvs = []
-    uv_cursor = uv_start
-    for item in table["records"]:
-        for layer in range(item[2]):
-            for index in range(item[0]):
-                if uv_cursor + 4 > data_end:
-                    raise ValueError("mesh uv range out of bounds")
-                if layer == 0:
-                    u, v = struct.unpack_from("<2e", data, uv_cursor)
-                    uvs.append([round(u, 5), round(v, 5)])
-                uv_cursor += 4
+    uvs, uvs2, _ = _read_uv_sets(data, uv_start, table["records"], data_end, "<2e")
     if len(uvs) < total_vcount:
         uvs.extend([[0.0, 0.0]] * (total_vcount - len(uvs)))
     mins = [min(vertex[axis] for vertex in vertices) for axis in range(3)]
@@ -878,6 +875,7 @@ def parse(data: bytes) -> dict:
         "normals": normals,
         "tangents": tangents,
         "uvs": uvs,
+        "uvs2": uvs2,
         "indices": indices,
         "bounds": {"min": mins, "max": maxs},
         "submeshes": submeshes,

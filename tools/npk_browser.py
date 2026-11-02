@@ -76,8 +76,9 @@ try:
 except Exception:  # optional
     _np = None
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 TOOLKIT_VERSION = "1.5-browser"
+PPK_INDEX_KEY = bytes.fromhex("70b2215f04d6373f3a7c3ebe21a7ef76")
 SORT_EXPRESSIONS = {
     "name_asc": "name COLLATE NOCASE ASC, id ASC",
     "name_desc": "name COLLATE NOCASE DESC, id ASC",
@@ -303,7 +304,7 @@ SURF_VECTOR_NODES = {
     "addition_color": "AddtionColor", "flow": "Flow", "flow_speed": "FlowSpeed",
 }
 SURF_SCALAR_FALLBACK = {
-    "repeat_scale_y": 1.0, "mask_pow": 3.0, "mask_style": 0.0,
+    "repeat_scale_y": 1.0, "mask_pow": 1.0, "mask_style": 0.0,
     "sparkle_scale": 2.0, "sparkle_offset": 8.0, "sparkle_speed": 0.02,
     "sparkle_pow": 8.0, "sparkle_intensity": 4.0,
     "distort_scale": 0.0, "distort_speed": 0.0, "change_color_key": 0.0,
@@ -1071,6 +1072,42 @@ def read_entry_bytes(package_path: str, row) -> bytes:
     return data
 
 
+def ppk_shards(game_root: Path) -> list[Path]:
+    folder = game_root / "ppk"
+    if not folder.is_dir():
+        return []
+    from model_names import shard_manifest_order
+
+    order = shard_manifest_order(game_root)
+    shards = [
+        candidate for candidate in folder.glob("*")
+        if candidate.is_file() and candidate.name not in {"assets.ppk", "assets.ppkn"}
+    ]
+    return sorted(shards, key=lambda candidate: (order.get(candidate.name, -1), candidate.stat().st_mtime_ns))
+
+
+def read_shard_entries(path: Path, key: bytes = PPK_INDEX_KEY) -> list:
+    with open(path, "rb") as handle:
+        head = handle.read(4)
+        if len(head) != 4:
+            return []
+        count = struct.unpack("<I", head)[0]
+        if not count or count > 4000000:
+            return []
+        raw = handle.read(count * 24)
+    if len(raw) != count * 24:
+        return []
+    table = N.decrypt_index(raw, key)
+    if not table or len(table) != count * 24:
+        print(f"warning: ppk shard index decrypt failed: {path.name}", file=sys.stderr)
+        return []
+    entries = []
+    for index in range(count):
+        signature, offset, packed, unpacked, content_hash, compression, _flags = struct.unpack_from("<5I2H", table, index * 24)
+        entries.append(N.Entry(signature, offset, packed, unpacked, 0, content_hash, compression, 0))
+    return entries
+
+
 def kind_for_ext(ext: str) -> str:
     ext = (ext or "").lower()
     if ext in IMAGE_EXT:
@@ -1103,10 +1140,89 @@ def detect_unresolved(package_path: str, entry) -> tuple[str, str]:
         return ".bnk", "bank"
     if ext == ".mesh":
         return ".mesh", "model"
+    if payload.startswith(b"\xc1\x59\x41\x0d"):
+        head = payload[:8192]
+        if any(key in head for key in (b"LightingMaterial", b"MaterialGroup", b"Technique")):
+            return ".mtg", kind_for_ext(".mtg")
+        if any(key in head for key in (b"SubMesh", b"SkeletonFile", b"Sub0", b"ColorFrame")):
+            return ".gim", "text"
+        if any(key in head for key in (b"RoadGroup", b"SceneRoad", b"Lightmap", b"Audio")):
+            return ".scn", kind_for_ext(".scn")
+        return ".gim", "text"
+    if payload.startswith(b"RAWANIMA"):
+        return ".rawanimation", "model"
+    if payload.startswith(b"SKELETON"):
+        return ".skeleton", "binary"
+    if payload[:1] == b"{":
+        return ".json", "text"
+    xml_ext = detect_xml_unresolved(payload)
+    if xml_ext:
+        return xml_ext, kind_for_ext(xml_ext)
+    for prefix, suffix in UNRESOLVED_MAGIC:
+        if payload.startswith(prefix):
+            return suffix, kind_for_ext(suffix)
     return ext or ".bin", "binary"
 
 
-def fingerprint(game_root: Path, profile: dict, key: bytes, seed: int, path_dict: Path | None, packages: list[Path]) -> dict:
+UNRESOLVED_MAGIC = (
+    (b"@BIN", ".efx"),
+    (b"\x28\x00\x00\x00\x00\x00\x22\x00", ".csb"),
+    (b"\x04\x54\x00\x19\x93\x0d\x0a\x1a", ".luac"),
+    (b"NXSC", ".meta"),
+    (b"NTRK", ".trk"),
+    (b"DZ\x00", ".gmp"),
+    (b"\x88\xa4", ".eggimonbin"),
+    (b"\x89\xa4", ".eggimonbin"),
+    (b"--- AUTO EXPORT", ".lua"),
+    (b"Kaydara FBX", ".fbx"),
+)
+
+NEOX_CHILD = {
+    b"Track": ".trackgroup",
+    b"Head": ".animation",
+    b"LODPolicy": ".lod",
+    b"Material": ".mtl",
+}
+NEOX_FIRST = re.compile(rb"<NeoX[^>]*>\s*<([A-Za-z]+)")
+
+
+def detect_xml_unresolved(payload: bytes) -> str | None:
+    head = payload[:600]
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    if head.startswith(b"<?xml"):
+        if b"DOCTYPE plist" in payload[:600]:
+            return ".plist"
+        end = head.find(b"?>")
+        if end >= 0:
+            head = head[end + 2:].lstrip()
+    if head.startswith(b"<NeoX>"):
+        match = NEOX_FIRST.match(head[:400])
+        return NEOX_CHILD.get(match.group(1)) if match else None
+    if head.startswith(b"<NeoX\n") or head.startswith(b"<NeoX\r"):
+        return ".stb"
+    if head.startswith(b"<Neox>"):
+        return ".nstb"
+    if head.startswith(b"<FxGroup"):
+        return ".sfxmusic"
+    if head.startswith(b"<PostProcess"):
+        return ".postprocess"
+    if head.startswith(b"<AnimationConfig"):
+        return ".animconfig"
+    if head.startswith(b"<AnimationGraph"):
+        return ".animgraph"
+    if head.startswith(b"<AnimationResourceMap"):
+        return ".animresmap"
+    if head.startswith(b"<BlendSpace1D"):
+        return ".blendspace1d"
+    if head.startswith(b"<BlendSpace"):
+        return ".blendspace"
+    if head.startswith(b"#define"):
+        return ".hlsl"
+    return None
+
+
+def fingerprint(game_root: Path, profile: dict, key: bytes, seed: int, path_dict: Path | None, packages: list[Path], shards: list[Path] = ()) -> dict:
     path_dict_info = None
     if path_dict and path_dict.is_file():
         path_dict_info = {"name": path_dict.name, "size": path_dict.stat().st_size, "sha256": sha256_file(path_dict)}
@@ -1128,6 +1244,10 @@ def fingerprint(game_root: Path, profile: dict, key: bytes, seed: int, path_dict
             {"name": p.name, "size": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
             for p in packages
         ],
+        "ppk_shards": [
+            {"name": p.name, "size": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
+            for p in shards
+        ],
     }
 
 
@@ -1140,8 +1260,9 @@ def build_catalog(
     path_dict: Path | None,
     packages: list[Path],
     resolver: N.PathResolver,
+    shards: list[Path] = (),
 ) -> dict:
-    meta = fingerprint(game_root, profile, key, seed, path_dict, packages)
+    meta = fingerprint(game_root, profile, key, seed, path_dict, packages, shards)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = db_path.with_suffix(".tmp.sqlite")
     for path in (tmp, Path(str(tmp) + "-wal"), Path(str(tmp) + "-shm")):
@@ -1221,12 +1342,6 @@ def build_catalog(
             )
             package_bytes += entry.unpacked_size
             total += 1
-            ancestor = parent
-            while ancestor:
-                stat = dir_stats.setdefault(ancestor, [0, 0])
-                stat[0] += 1
-                stat[1] += entry.unpacked_size
-                ancestor = ancestor.rsplit("/", 1)[0] if "/" in ancestor else ""
             if len(rows) >= 5000:
                 connection.executemany(
                     "INSERT INTO files(package,path,dir,name,signature,offset,packed,unpacked,compression,flags,packed_hash,unpacked_hash,kind,ext) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1245,9 +1360,68 @@ def build_catalog(
         connection.commit()
         startup_progress.note(f"catalog: {package_name} {len(entries)} entries")
         startup_progress.sub("catalog", 0, 1, "")
+    for shard in shards:
+        entries = read_shard_entries(shard)
+        if not entries:
+            continue
+        package_name = f"ppk/{shard.name}"
+        package_bytes = 0
+        rows = []
+        for entry in entries:
+            real = resolver.resolve(entry.signature)[0]
+            if real:
+                rel = real.replace("\\", "/").lstrip("/")
+                suffix = Path(rel).suffix.lower()
+                kind = kind_for_ext(suffix)
+                if suffix in (".jpg", ".jpeg"):
+                    kind = "image"
+                if suffix == ".wem":
+                    kind = "audio"
+            else:
+                try:
+                    suffix, kind = detect_unresolved(str(shard), entry)
+                except Exception:
+                    suffix, kind = ".bin", "binary"
+                rel = f"_unresolved/ppk/{entry.signature:08x}{suffix}"
+            parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            name = rel.rsplit("/", 1)[-1]
+            rows.append(
+                (
+                    package_name, rel, parent, name, entry.signature, entry.offset,
+                    entry.packed_size, entry.unpacked_size, entry.compression, entry.flags,
+                    entry.packed_hash, entry.unpacked_hash, kind, suffix,
+                )
+            )
+            package_bytes += entry.unpacked_size
+            total += 1
+        if rows:
+            connection.executemany(
+                "INSERT OR REPLACE INTO files(package,path,dir,name,signature,offset,packed,unpacked,compression,flags,packed_hash,unpacked_hash,kind,ext) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        connection.execute(
+            "INSERT INTO packages(name,path,entries,bytes) VALUES (?,?,?,?)",
+            (package_name, str(shard), len(entries), package_bytes),
+        )
+        connection.commit()
+        startup_progress.note(f"catalog: {package_name} {len(entries)} entries")
+    dir_stats = {}
+    for path, count, size in connection.execute("SELECT dir, COUNT(*), SUM(unpacked) FROM files GROUP BY dir"):
+        ancestor = path
+        while ancestor:
+            stat = dir_stats.setdefault(ancestor, [0, 0])
+            stat[0] += count
+            stat[1] += size or 0
+            ancestor = ancestor.rsplit("/", 1)[0] if "/" in ancestor else ""
     connection.executemany(
         "INSERT INTO dirs(path,parent,file_count,bytes) VALUES (?,?,?,?)",
         [(path, path.rsplit("/", 1)[0] if "/" in path else "", value[0], value[1]) for path, value in dir_stats.items()],
+    )
+    total = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    connection.execute(
+        "UPDATE packages SET "
+        "entries=(SELECT COUNT(*) FROM files WHERE files.package=packages.name), "
+        "bytes=(SELECT COALESCE(SUM(unpacked),0) FROM files WHERE files.package=packages.name)"
     )
     connection.execute("INSERT INTO meta(key,value) VALUES ('schema',?)", (SCHEMA_VERSION,))
     connection.execute("INSERT INTO meta(key,value) VALUES ('fingerprint',?)", (json.dumps(meta, ensure_ascii=False, sort_keys=True),))
@@ -1272,8 +1446,9 @@ def ensure_catalog(
     packages: list[Path],
     resolver: N.PathResolver,
     rebuild: bool,
+    shards: list[Path] = (),
 ) -> dict:
-    wanted = fingerprint(game_root, profile, key, seed, path_dict, packages)
+    wanted = fingerprint(game_root, profile, key, seed, path_dict, packages, shards)
     if not rebuild and db_path.is_file():
         try:
             connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -1291,7 +1466,7 @@ def ensure_catalog(
             pass
     if db_path.exists():
         db_path.unlink()
-    return build_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver)
+    return build_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, shards)
 
 
 class ThumbPending(Exception):
@@ -3882,6 +4057,7 @@ def main() -> int:
 
     game_root = E.find_game_root(args.game_root)
     packages = sorted(game_root.glob("*.npk"))
+    shards = ppk_shards(game_root)
     if not packages:
         print(f"no NPK files under {game_root}", file=sys.stderr)
         return 4
@@ -3935,6 +4111,8 @@ def main() -> int:
             sources = list(game_root.glob("*.npk")) + [
                 path for path in (game_root / "ppk").glob("*") if path.is_file()
             ]
+            if rebuild_data.EXTRA_PATHS_FILE.is_file():
+                sources.append(rebuild_data.EXTRA_PATHS_FILE)
             newest = max((path.stat().st_mtime for path in sources), default=0)
             if generated.is_file() and generated.stat().st_mtime >= newest:
                 path_dict = generated
@@ -3956,7 +4134,7 @@ def main() -> int:
     print(f"profile={profile.get('name', 'custom')} key={key.hex()}")
     print(f"cache={cache_root}")
     try:
-        meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog)
+        meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog, shards)
     except (N.Mode3FormatError, ValueError, OSError) as exc:
         discovered = None
         if not args.key_hex and packages:
@@ -3971,7 +4149,7 @@ def main() -> int:
                 except OSError:
                     pass
             try:
-                meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog)
+                meta = ensure_catalog(db_path, game_root, profile, key, seed, path_dict, packages, resolver, args.rebuild_catalog, shards)
             except (N.Mode3FormatError, ValueError, OSError) as retry_exc:
                 print(f"ERROR: {retry_exc}", file=sys.stderr)
                 return 5

@@ -4505,9 +4505,9 @@ function map3DComputeEnv(data) {
   if (euler) {
     // make_matrix_from_model_angle = Rz(roll)*Rx(pitch)*Ry(yaw)，作用于局部 +Z 后取负即指向光的 L。
     const d2r = Math.PI / 180;
-    const pitch = (Number(euler[0]) || 0) * d2r;
-    const yaw = (Number(euler[1]) || 0) * d2r;
-    const roll = (Number(euler[2]) || 0) * d2r;
+    const roll = (Number(euler[0]) || 0) * d2r;
+    const pitch = (Number(euler[1]) || 0) * d2r;
+    const yaw = (Number(euler[2]) || 0) * d2r;
     const v = [Math.sin(yaw), 0, Math.cos(yaw)];
     const w = [v[0], v[1] * Math.cos(pitch) - v[2] * Math.sin(pitch), v[1] * Math.sin(pitch) + v[2] * Math.cos(pitch)];
     const u = [w[0] * Math.cos(roll) - w[1] * Math.sin(roll), w[0] * Math.sin(roll) + w[1] * Math.cos(roll), w[2]];
@@ -4857,21 +4857,30 @@ function map3DBuildModel(model, mesh, units, materials, texturePaths, objects, k
   }
   const materialList = (Array.isArray(materials) ? materials : []).map((item) => (item && typeof item === "object" ? item : {}));
   if (materialList.some((item) => /^(water|water_color|water_simple|waterfall)$/.test(item.shader_kind))) map3d.animated = true;
+  const bounds = mesh.bounds || {};
+  const min = Array.isArray(bounds.min) ? bounds.min : [0, 0, 0];
+  const max = Array.isArray(bounds.max) ? bounds.max : [0, 0, 0];
   const submeshes = Array.isArray(mesh.submeshes) ? mesh.submeshes : [];
   const groups = [];
   for (const sub of submeshes) {
     const count = Math.max(0, (Number(sub.face_count) || 0) * 3);
     if (!count) continue;
+    const subBounds = sub.bounds && typeof sub.bounds === "object" ? sub.bounds : {};
+    const subMin = Array.isArray(subBounds.min) ? subBounds.min : min;
+    const subMax = Array.isArray(subBounds.max) ? subBounds.max : max;
     groups.push({
       material: Math.max(0, Number(sub.material_index) || 0),
       offset: Math.max(0, (Number(sub.face_offset) || 0) * 3),
       count,
+      boundMin: [Number(subMin[0]) || 0, Number(subMin[1]) || 0, Number(subMin[2]) || 0],
+      boundHalf: [
+        Math.max(0.0001, ((Number(subMax[0]) || 0) - (Number(subMin[0]) || 0)) / 2),
+        Math.max(0.0001, ((Number(subMax[1]) || 0) - (Number(subMin[1]) || 0)) / 2),
+        Math.max(0.0001, ((Number(subMax[2]) || 0) - (Number(subMin[2]) || 0)) / 2),
+      ],
     });
   }
   if (!groups.length) groups.push({ material: 0, offset: 0, count: indices.length });
-  const bounds = mesh.bounds || {};
-  const min = Array.isArray(bounds.min) ? bounds.min : [0, 0, 0];
-  const max = Array.isArray(bounds.max) ? bounds.max : [0, 0, 0];
   const center = [0, 0, 0];
   for (const unit of units) {
     const position = unit.position || [0, 0, 0];
@@ -5333,8 +5342,10 @@ function map3DApplyMaterial(entry, group) {
   gl.uniform1f(u.tiling, mat.tiling ? 1 : 0);
   const repeatScale = Number(mat.repeat_scale);
   gl.uniform1f(u.repeatScale, Number.isFinite(repeatScale) ? repeatScale : 1);
-  gl.uniform3f(u.boundMin, entry.boundMin[0], entry.boundMin[1], entry.boundMin[2]);
-  gl.uniform3f(u.boundHalf, entry.boundHalf[0], entry.boundHalf[1], entry.boundHalf[2]);
+  const boundMin = group.boundMin || entry.boundMin;
+  const boundHalf = group.boundHalf || entry.boundHalf;
+  gl.uniform3f(u.boundMin, boundMin[0], boundMin[1], boundMin[2]);
+  gl.uniform3f(u.boundHalf, boundHalf[0], boundHalf[1], boundHalf[2]);
   gl.uniform3f(u.fallback, entry.fallback[0], entry.fallback[1], entry.fallback[2]);
 }
 

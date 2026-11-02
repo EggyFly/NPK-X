@@ -32,6 +32,19 @@ MAX_OUTPUT_BYTES = 128 * 1024 * 1024
 STEP = 1024 * 1024
 
 
+EXTRA_PATHS_FILE = Path(__file__).with_name("pathdict_extra.txt")
+
+
+def _merge_extra_paths(data: bytes) -> bytes:
+    try:
+        extra = EXTRA_PATHS_FILE.read_text("utf-8", errors="ignore").splitlines()
+    except OSError:
+        return data
+    lines = {line.strip() for line in data.decode("utf-8", "ignore").splitlines() if line.strip()}
+    lines.update(line.strip() for line in extra if line.strip())
+    return "\n".join(sorted(lines)).encode("utf-8")
+
+
 def _looks_like_pathdict(data: bytes) -> bool:
     if len(data) < 1_000_000:
         return False
@@ -111,7 +124,7 @@ def find_path_dictionary(game_root: Path, scan_bytes: int = SCAN_BYTES, log=prin
         data = _scan_blob(blob)
         if data is not None:
             log(f"path dictionary found in {shard.name} ({len(data):,} bytes)")
-            return data
+            return _merge_extra_paths(data)
     if any(shard.stat().st_size > scan_bytes for shard in shards):
         log("not found in the scanned prefix; checking the remaining shard data...")
         for index, shard in enumerate(shards, 1):
@@ -121,7 +134,7 @@ def find_path_dictionary(game_root: Path, scan_bytes: int = SCAN_BYTES, log=prin
             data = _scan_blob(shard.read_bytes())
             if data is not None:
                 log(f"path dictionary found in {shard.name} ({len(data):,} bytes)")
-                return data
+                return _merge_extra_paths(data)
     raise FileNotFoundError(
         f"path dictionary frame not found in {ppk_dir}"
     )
