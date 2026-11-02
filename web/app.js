@@ -1802,8 +1802,10 @@ function renderGmpPreview(data, container) {
     `<span class="bank-chip">${tr("gmp.units")} <b>${Number(data.unit_count || 0).toLocaleString()}</b></span>`,
     `<span class="bank-chip">${tr("gmp.chunks")} <b>${Number((data.chunks || []).length).toLocaleString()}</b></span>`,
     `<span class="bank-chip">MessagePack <b>${Number(data.parsed_chunks || 0).toLocaleString()}</b></span>`,
+    data.bindict_units ? `<span class="bank-chip">bindict <b>${Number(data.bindict_units).toLocaleString()}</b></span>` : "",
+    data.terrain_chunks ? `<span class="bank-chip">地形 <b>${Number(data.terrain_chunks).toLocaleString()}</b></span>` : "",
     `<span class="bank-chip">${tr("gmp.binary")} <b>${Number(data.binary_chunks || 0).toLocaleString()}</b></span>`,
-  ].join("");
+  ].filter(Boolean).join("");
   const unitRows = units.slice(0, 200).map((unit) => {
     const position = (unit.position || []).map((value) => Number(value).toFixed(1)).join(", ");
     const label = unit.name || `${tr("common.unit")} ${unit.id}`;
@@ -1815,8 +1817,8 @@ function renderGmpPreview(data, container) {
   container.innerHTML = `<div class="gmp-preview">
     <div class="gmp-head">
       <div class="gmp-title">
-        <b>${esc(data.map_name || tr("gmp.mapName"))}</b>
-        <span>${tr("gmp.unitSummary", { units: Number(data.unit_count || 0).toLocaleString(), chunks: Number((data.chunks || []).length).toLocaleString() })}</span>
+        <b>${esc(data.map_display_name || data.map_name || tr("gmp.mapName"))}</b>
+        <span>${data.map_id ? `#${esc(String(data.map_id))} · ` : ""}${tr("gmp.unitSummary", { units: Number(data.unit_count || 0).toLocaleString(), chunks: Number((data.chunks || []).length).toLocaleString() })}</span>
       </div>
       <button class="btn primary" id="gmp-open-map" type="button">${icon("map")}${tr("gmp.openCanvas")}</button>
     </div>
@@ -2121,6 +2123,7 @@ const mapView = {
   centerX: 0, centerZ: 0, scale: 1, fitScale: 1,
   dotSize: Math.min(16, Math.max(3, Number(localStorage.getItem("npk-map-dot-size")) || 6)),
   sprites: localStorage.getItem("npk-map-sprites") !== "0",
+  terrain: localStorage.getItem("npk-map-terrain") !== "0",
   is3d: localStorage.getItem("npk-map-3d") === "1",
   ignoreErrors: localStorage.getItem("npk-map-ignore-errors") !== "0",
   dragging: false, dragX: 0, dragY: 0, dragGrab: null,
@@ -2263,7 +2266,9 @@ function openViewer(file) {
   viewer.file = file;
   viewer.path = file.path;
   const ext = (file.ext || "").toLowerCase();
-  viewer.mode = ext === ".gmp" ? "map" : isTextView(file) ? "text" : "image";
+  const spineFile = (ext === ".json" || ext === ".skel") && /(^|\/)spine\//.test(file.path || "");
+  viewer.mode = ext === ".gmp" ? "map" : ext === ".animation" || ext === ".rawanimation" ? "animation"
+    : ext === ".csb" ? "csb" : spineFile ? "spine" : isTextView(file) ? "text" : "image";
   setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -2273,6 +2278,12 @@ function openViewer(file) {
   lockViewerScroll();
   if (viewer.mode === "map") {
     openMapViewer(file, token);
+  } else if (viewer.mode === "animation") {
+    openAnimationViewer(file, token);
+  } else if (viewer.mode === "spine") {
+    openSpineViewer(file, token);
+  } else if (viewer.mode === "csb") {
+    openCsbViewer(file, token);
   } else if (viewer.mode === "image") {
     openImageViewer(
       file, token,
@@ -2770,6 +2781,73 @@ async function openMapViewer(file, token) {
   }
 }
 
+async function openAnimationViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/animation", { path: file.path }));
+    if (token !== viewer.token) return;
+    stage.innerHTML = "";
+    if (window.renderAnimationPreview) {
+      window.renderAnimationPreview(stage, data);
+    } else {
+      stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "animation preview missing" }))}</div>`;
+    }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openSpineViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/spine", { path: file.path }));
+    if (token !== viewer.token) return;
+    stage.innerHTML = "";
+    const textures = {};
+    const base = data.atlas_base || "";
+    for (const page of (data.atlas && data.atlas.pages) || []) {
+      const name = page.name || page.page || "";
+      if (name) {
+        const stem = String(name).replace(/\.(png|jpg|jpeg|webp)$/i, "");
+        textures[name] = apiUrl("/api/image", { path: base + stem + ".kta" });
+      }
+    }
+    if (window.renderSpinePreview) {
+      window.renderSpinePreview(stage, data, textures);
+    } else {
+      stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "spine preview missing" }))}</div>`;
+    }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openCsbViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/csb", { path: file.path }));
+    if (token !== viewer.token) return;
+    stage.innerHTML = "";
+    if (window.renderCsbPreview) {
+      window.CSB_FILE_ROUTE = "/api/image";
+      window.renderCsbPreview(stage, data);
+    } else {
+      stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "csb preview missing" }))}</div>`;
+    }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
 function renderMapStage(file, data) {
   const stage = $("viewer-stage");
   stage.innerHTML = `<canvas id="map-canvas" class="map-canvas" aria-label="${tr("map.canvas")}"></canvas>
@@ -2822,6 +2900,7 @@ function mapFoot() {
     <button class="mini-btn" id="map-zoom-fit" title="${tr("viewer.fit")}">${icon("fit")}${tr("map.fit")}</button>
     <label class="map-dot-control map-2d-only">${tr("map.dot")} <input id="map-dot-size" type="range" min="3" max="16" step="1" value="${mapView.dotSize}"></label>
     <label class="map-dot-control map-2d-only"><input id="map-sprites" type="checkbox" autocomplete="off" ${mapView.sprites ? "checked" : ""}>${tr("map.sprites")}</label>
+    <label class="map-dot-control"><input id="map-terrain" type="checkbox" autocomplete="off" ${mapView.terrain ? "checked" : ""}>${tr("map.terrain")}</label>
     <label class="map-dot-control"><input id="map-ignore-errors" type="checkbox" autocomplete="off" ${mapView.ignoreErrors ? "checked" : ""}>${tr("map.ignoreErrors")}</label>
     <span class="view-switch map-view-switch" role="group" aria-label="2D/3D"><button class="icon-btn ${mapView.is3d ? "" : "active"}" id="map-mode-2d" type="button" aria-pressed="${mapView.is3d ? "false" : "true"}" title="${tr("map.mode2d")}">2D</button><button class="icon-btn ${mapView.is3d ? "active" : ""}" id="map-mode-3d" type="button" aria-pressed="${mapView.is3d ? "true" : "false"}" title="${tr("map.mode3d")}">3D</button></span>
     <span class="map-msg-wrap"><button class="map-msg-btn" id="map-msg-btn" type="button" title="${tr("map.messages")}" aria-label="${tr("map.messages")}">${icon("bell")}</button><span class="map-msg-badge hidden" id="map-msg-badge">0</span><div class="map-msg-panel hidden" id="map-msg-panel"></div></span>
@@ -3294,6 +3373,19 @@ function bindMapControls(file) {
       requestMapDraw();
     });
   }
+  const terrain = $("map-terrain");
+  if (terrain) {
+    terrain.addEventListener("change", () => {
+      mapView.terrain = terrain.checked;
+      localStorage.setItem("npk-map-terrain", mapView.terrain ? "1" : "0");
+      if (!mapView.terrain) {
+        disposeMap3DTerrain();
+        requestMap3DDraw();
+        return;
+      }
+      if (mapView.is3d && map3d.gl && map3d.data) void loadMap3DTerrain(map3d.data, map3d.token);
+    });
+  }
   const ignore = $("map-ignore-errors");
   if (ignore) {
     ignore.addEventListener("change", () => {
@@ -3396,12 +3488,16 @@ function toggleMapMsgPanel() {
 
 const MAP_MESH_LIMIT = 240;
 const MAP_TEXTURE_LIMIT = 1200;
+const MAP3D_TERRAIN_TRI_LIMIT = 200000;
+const MAP3D_TERRAIN_VERTEX_LIMIT = 200000;
 const map3d = {
-  canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null,
+  canvas: null, gl: null, program: null, pointProgram: null, lineProgram: null, terrainProgram: null,
   uViewProj: null, uPointView: null, uPointSize: null, uLineView: null, uLineColor: null,
-  uniforms: {}, textureCache: new Map(), texturePending: new Map(), cubeCache: new Map(),
+  uniforms: {}, terrainUniforms: {}, textureCache: new Map(), texturePending: new Map(), cubeCache: new Map(),
   scene: null, sceneReady: false, animationStart: 0, animated: false,
   models: new Map(), units: [], points: null, pointCount: 0, grid: null, gridCount: 0, hiddenModels: new Set(),
+  terrain: new Map(), terrainPending: new Set(), terrainLoadData: null,
+  terrainTotal: 0, terrainLoaded: 0, terrainFailed: 0, terrainSeq: 0,
   camera: { yaw: 0.9, pitch: 0.9, distance: 100, fit: 100, target: [0, 0, 0] },
   dragging: false, panning: false, dragX: 0, dragY: 0,
   frame: 0, token: 0, loading: 0, total: 0, loadErrors: 0, note: "", ready: false, data: null,
@@ -4442,6 +4538,39 @@ void main() {
   out_color = v_color;
 }`;
 
+const MAP3D_TERRAIN_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+uniform mat4 u_view_proj;
+out vec3 v_world;
+void main() {
+  v_world = a_pos;
+  gl_Position = u_view_proj * vec4(a_pos, 1.0);
+}`;
+
+const MAP3D_TERRAIN_FS = `#version 300 es
+precision highp float;
+in vec3 v_world;
+uniform vec3 u_sun_dir;
+uniform vec3 u_sun_color;
+uniform vec3 u_ambient;
+uniform vec3 u_low_color;
+uniform vec3 u_high_color;
+uniform float u_min_h;
+uniform float u_max_h;
+out vec4 out_color;
+void main() {
+  vec3 normal = cross(dFdx(v_world), dFdy(v_world));
+  float normal_len = length(normal);
+  normal = normal_len > 0.0 ? normal / normal_len : vec3(0.0, 1.0, 0.0);
+  if (dot(normal, vec3(0.0, 1.0, 0.0)) < 0.0) normal = -normal;
+  float height = clamp((v_world.y - u_min_h) / max(0.01, u_max_h - u_min_h), 0.0, 1.0);
+  float slope = clamp(normal.y, 0.0, 1.0);
+  vec3 base = mix(u_low_color, u_high_color, smoothstep(0.0, 1.0, height));
+  base *= mix(0.72, 1.0, slope);
+  float light = max(dot(normal, normalize(u_sun_dir)), 0.0);
+  out_color = vec4(base * (u_ambient + u_sun_color * light), 1.0);
+}`;
+
 function map3DCompile(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -5369,6 +5498,176 @@ function buildMap3DGrid(data) {
   map3d.gridCount = values.length / 3;
 }
 
+function map3DBuildTerrain(index, terrain) {
+  const gl = map3d.gl;
+  if (!gl || !terrain) throw new Error("terrain unavailable");
+  const vertices = terrain.vertices;
+  const indices = terrain.indices;
+  if (!Array.isArray(vertices) || !Array.isArray(indices) || vertices.length < 3 || indices.length < 3) {
+    throw new Error("terrain vertices missing");
+  }
+  const count = Math.floor(indices.length / 3) * 3;
+  if (!count) throw new Error("terrain triangles missing");
+  if (vertices.length > MAP3D_TERRAIN_VERTEX_LIMIT) throw new Error("terrain vertices over limit");
+  const positions = new Float32Array(vertices.length * 3);
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < vertices.length; i += 1) {
+    const point = vertices[i] || [];
+    const x = Number(point[0]) || 0;
+    const y = Number(point[1]) || 0;
+    const z = Number(point[2]) || 0;
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  const wideIndex = vertices.length > 65535;
+  const indexType = wideIndex ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+  const indexArray = wideIndex ? new Uint32Array(count) : new Uint16Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const value = Number(indices[i]);
+    if (!Number.isInteger(value) || value < 0 || value >= vertices.length) throw new Error("terrain index out of range");
+    indexArray[i] = value;
+  }
+  const vao = gl.createVertexArray();
+  const positionBuffer = gl.createBuffer();
+  const indexBuffer = gl.createBuffer();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexArray, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  const center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  const radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2;
+  map3d.terrain.set(index, { vao, positionBuffer, indexBuffer, indexType, count, minY, maxY, center, radius });
+}
+
+async function loadMap3DTerrainChunk(data, index, token, seq) {
+  try {
+    const path = data.path || mapView.file?.path || "";
+    const response = await getJson(apiUrl("/api/terrain", { path, index }));
+    if (token !== map3d.token || seq !== map3d.terrainSeq || !mapView.terrain) return;
+    const terrain = response && response.terrain;
+    if (!terrain || !Array.isArray(terrain.vertices) || !Array.isArray(terrain.indices)) throw new Error("terrain unavailable");
+    const triangles = Math.floor(terrain.indices.length / 3);
+    if (triangles > MAP3D_TERRAIN_TRI_LIMIT) {
+      map3d.terrainFailed += 1;
+      mapMsgAdd("warn", tr("map.msg.warning"), tr("map.3d.terrainLimit", { index, count: MAP3D_TERRAIN_TRI_LIMIT }));
+      return;
+    }
+    map3DBuildTerrain(index, terrain);
+    map3d.terrainLoaded += 1;
+  } catch (error) {
+    if (token !== map3d.token || seq !== map3d.terrainSeq) return;
+    map3d.terrainFailed += 1;
+    mapMsgAdd("error", tr("map.terrain"), tr("map.3d.terrainError", { index, message: error.message || error }));
+  } finally {
+    if (seq === map3d.terrainSeq) map3d.terrainPending.delete(index);
+    if (token === map3d.token && seq === map3d.terrainSeq) {
+      updateMapHud();
+      requestMap3DDraw();
+    }
+  }
+}
+
+async function loadMap3DTerrain(data, token) {
+  const gl = map3d.gl;
+  if (!gl || !data || !mapView.terrain || !map3d.terrainProgram) return;
+  if (map3d.terrainLoadData !== data) {
+    disposeMap3DTerrain();
+    map3d.terrainLoadData = data;
+  }
+  const total = Math.max(0, Math.floor(Number(data.terrain_chunks) || 0));
+  if (!total) {
+    updateMapHud();
+    requestMap3DDraw();
+    return;
+  }
+  if (map3d.terrainTotal !== total) {
+    map3d.terrainTotal = total;
+    mapMsgAdd("info", tr("map.terrain"), tr("map.3d.terrainLoading", { done: 0, total }));
+  }
+  const jobs = [];
+  for (let index = 0; index < total; index += 1) {
+    if (map3d.terrain.has(index) || map3d.terrainPending.has(index)) continue;
+    jobs.push(index);
+  }
+  if (!jobs.length) {
+    updateMapHud();
+    requestMap3DDraw();
+    return;
+  }
+  for (const index of jobs) map3d.terrainPending.add(index);
+  const seq = map3d.terrainSeq;
+  updateMapHud();
+  await Promise.all(jobs.map((index) => loadMap3DTerrainChunk(data, index, token, seq)));
+}
+
+function disposeMap3DTerrain() {
+  const gl = map3d.gl;
+  map3d.terrainSeq += 1;
+  if (gl) {
+    for (const entry of map3d.terrain.values()) {
+      gl.deleteVertexArray(entry.vao);
+      gl.deleteBuffer(entry.positionBuffer);
+      gl.deleteBuffer(entry.indexBuffer);
+    }
+  }
+  map3d.terrain.clear();
+  map3d.terrainPending.clear();
+  map3d.terrainLoadData = null;
+  map3d.terrainTotal = 0;
+  map3d.terrainLoaded = 0;
+  map3d.terrainFailed = 0;
+}
+
+function drawMap3DTerrain(vp) {
+  const gl = map3d.gl;
+  if (!gl || !mapView.terrain || !map3d.terrainProgram || !map3d.terrain.size) return;
+  const uniforms = map3d.terrainUniforms;
+  const frustum = map3DFrustum(vp);
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const entry of map3d.terrain.values()) {
+    if (entry.minY < minY) minY = entry.minY;
+    if (entry.maxY > maxY) maxY = entry.maxY;
+  }
+  if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return;
+  gl.useProgram(map3d.terrainProgram);
+  gl.uniformMatrix4fv(uniforms.viewProj, false, vp);
+  gl.uniform3f(uniforms.sunDir, 0.458, 0.814, 0.356);
+  gl.uniform3f(uniforms.sunColor, 0.55, 0.5, 0.44);
+  gl.uniform3f(uniforms.ambient, 0.55, 0.58, 0.62);
+  gl.uniform3f(uniforms.lowColor, 0.208, 0.318, 0.243);
+  gl.uniform3f(uniforms.highColor, 0.541, 0.506, 0.439);
+  gl.uniform1f(uniforms.minH, minY);
+  gl.uniform1f(uniforms.maxH, maxY);
+  gl.disable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(1, 1);
+  for (const entry of map3d.terrain.values()) {
+    if (!map3DSphereInFrustum(frustum, entry.center, entry.radius)) continue;
+    gl.bindVertexArray(entry.vao);
+    gl.drawElements(gl.TRIANGLES, entry.count, entry.indexType, 0);
+  }
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.bindVertexArray(null);
+}
+
 function map3DRefreshColors(model) {
   for (const [key, entry] of map3d.models) {
     if (entry.model === model) map3DRefreshEntryColors(key);
@@ -5476,6 +5775,7 @@ function drawMap3D() {
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.LINES, 0, map3d.gridCount);
   }
+  drawMap3DTerrain(vp);
   if (!strict && map3d.models.size) {
     const frustum = map3DFrustum(vp);
     gl.useProgram(map3d.program);
@@ -5637,6 +5937,7 @@ function disposeMap3D() {
   const gl = map3d.gl;
   if (gl) {
     map3DReleaseScene();
+    disposeMap3DTerrain();
     for (const entry of map3d.models.values()) {
       gl.deleteVertexArray(entry.vao);
       gl.deleteBuffer(entry.positionBuffer);
@@ -5653,6 +5954,7 @@ function disposeMap3D() {
     if (map3d.program) gl.deleteProgram(map3d.program);
     if (map3d.pointProgram) gl.deleteProgram(map3d.pointProgram);
     if (map3d.lineProgram) gl.deleteProgram(map3d.lineProgram);
+    if (map3d.terrainProgram) gl.deleteProgram(map3d.terrainProgram);
   }
   if (map3d.frame) cancelAnimationFrame(map3d.frame);
   map3d.frame = 0;
@@ -5672,6 +5974,8 @@ function disposeMap3D() {
   map3d.program = null;
   map3d.pointProgram = null;
   map3d.lineProgram = null;
+  map3d.terrainProgram = null;
+  map3d.terrainUniforms = {};
   map3d.gl = null;
   map3d.token += 1;
   if (map3d.canvas) {
@@ -5717,11 +6021,37 @@ async function openMap3D(file, data) {
     localStorage.setItem("npk-map-3d", "0");
     return false;
   }
+  try {
+    map3d.terrainProgram = map3DProgram(gl, MAP3D_TERRAIN_VS, MAP3D_TERRAIN_FS);
+  } catch (error) {
+    map3d.terrainProgram = null;
+    map3d.terrainUniforms = {};
+    mapView.terrain = false;
+    const terrainToggle = $("map-terrain");
+    if (terrainToggle) {
+      terrainToggle.checked = false;
+      terrainToggle.disabled = true;
+    }
+    mapMsgAdd("error", tr("map.terrain"), tr("map.3d.terrainShader", { message: error.message || error }));
+  }
   map3d.uViewProj = gl.getUniformLocation(map3d.program, "u_view_proj");
   map3d.uPointView = gl.getUniformLocation(map3d.pointProgram, "u_view_proj");
   map3d.uPointSize = gl.getUniformLocation(map3d.pointProgram, "u_point_size");
   map3d.uLineView = gl.getUniformLocation(map3d.lineProgram, "u_view_proj");
   map3d.uLineColor = gl.getUniformLocation(map3d.lineProgram, "u_color");
+  map3d.terrainUniforms = {};
+  if (map3d.terrainProgram) {
+    map3d.terrainUniforms = {
+      viewProj: gl.getUniformLocation(map3d.terrainProgram, "u_view_proj"),
+      sunDir: gl.getUniformLocation(map3d.terrainProgram, "u_sun_dir"),
+      sunColor: gl.getUniformLocation(map3d.terrainProgram, "u_sun_color"),
+      ambient: gl.getUniformLocation(map3d.terrainProgram, "u_ambient"),
+      lowColor: gl.getUniformLocation(map3d.terrainProgram, "u_low_color"),
+      highColor: gl.getUniformLocation(map3d.terrainProgram, "u_high_color"),
+      minH: gl.getUniformLocation(map3d.terrainProgram, "u_min_h"),
+      maxH: gl.getUniformLocation(map3d.terrainProgram, "u_max_h"),
+    };
+  }
   const uniform = (name) => gl.getUniformLocation(map3d.program, name);
   map3d.uniforms = {
     tex0: uniform("u_tex0"), tex1: uniform("u_tex1"), tex2: uniform("u_tex2"), tex3: uniform("u_tex3"),
@@ -5838,6 +6168,7 @@ async function openMap3D(file, data) {
   map3d.ready = true;
   bindMap3DControls();
   requestMap3DDraw();
+  void loadMap3DTerrain(data, token);
   void loadMap3DMeshes(data, token);
   return true;
 }
@@ -5852,6 +6183,7 @@ async function setMapMode(next) {
     if (map3d.gl && map3d.data === mapView.data) {
       resizeMap3D();
       updateMapMode();
+      if (mapView.terrain) void loadMap3DTerrain(map3d.data, map3d.token);
       requestMap3DDraw();
       return;
     }
@@ -5860,9 +6192,12 @@ async function setMapMode(next) {
       mapView.is3d = false;
       localStorage.setItem("npk-map-3d", "0");
     }
-  } else if (map3d.frame) {
-    cancelAnimationFrame(map3d.frame);
-    map3d.frame = 0;
+  } else {
+    if (map3d.frame) {
+      cancelAnimationFrame(map3d.frame);
+      map3d.frame = 0;
+    }
+    disposeMap3DTerrain();
   }
   updateMapMode();
   if (mapView.is3d) requestMap3DDraw();
@@ -6017,10 +6352,15 @@ function bindMap3DControls() {
 
 function updateMap3DNote() {
   if (!mapView.is3d) return "";
+  const notes = [];
   if (map3d.loading < map3d.total) {
-    return tr("map.3d.loading", { done: map3d.loading, total: map3d.total });
+    notes.push(tr("map.3d.loading", { done: map3d.loading, total: map3d.total }));
   }
-  return "";
+  const terrainDone = map3d.terrainLoaded + map3d.terrainFailed;
+  if (map3d.terrainTotal && terrainDone < map3d.terrainTotal) {
+    notes.push(tr("map.3d.terrainLoading", { done: terrainDone, total: map3d.terrainTotal }));
+  }
+  return notes.join(" · ");
 }
 
 
@@ -6068,12 +6408,13 @@ function buildMapLegend() {
   if (!data || !panel) return;
   const groups = new Map();
   for (const unit of data.units || []) {
-    const key = unit.eid != null ? `eid:${unit.eid}` : unit.model_id != null ? `model:${unit.model_id}` : unit.model || `unit:${unit.id}`;
+    const baseName = String(unit.name || "").replace(/[\s_-]*\d+$/, "").trim();
+    const key = unit.eid != null ? `eid:${unit.eid}` : unit.model_id != null ? `model:${unit.model_id}` : unit.model ? `model:${unit.model}` : baseName ? `name:${baseName}` : `unit:${unit.id}`;
     if (!groups.has(key)) groups.set(key, { units: [], eid: unit.eid, label: "", color: "" });
     const group = groups.get(key);
     group.units.push(unit);
     if (!group.color && Array.isArray(unit.color) && unit.color.length >= 3) group.color = `rgb(${unit.color[0]}, ${unit.color[1]}, ${unit.color[2]})`;
-    if (!group.label) group.label = String((unit.model && mapView.modelNames[unit.model]) || unit.name || "").trim();
+    if (!group.label) group.label = String((unit.model && mapView.modelNames[unit.model]) || baseName || unit.name || "").trim();
   }
   const rows = [...groups.values()]
     .sort((a, b) => b.units.length - a.units.length)
@@ -6094,7 +6435,7 @@ function buildMapLegend() {
       </div>`;
     })
     .join("");
-  panel.innerHTML = `<div class="map-legend-head"><b>${esc(data.map_name || tr("gmp.mapName"))}</b><span>${tr("map.units", { count: Number(data.unit_count || 0).toLocaleString() })}</span></div>${rows || `<div class="map-legend-empty">${tr("map.noUnits")}</div>`}`;
+  panel.innerHTML = `<div class="map-legend-head"><b>${esc(data.map_display_name || data.map_name || tr("gmp.mapName"))}</b><span>${data.map_id ? `#${esc(String(data.map_id))} · ` : ""}${tr("map.units", { count: Number(data.unit_count || 0).toLocaleString() })}</span></div>${rows || `<div class="map-legend-empty">${tr("map.noUnits")}</div>`}`;
 }
 
 function updateMapLegendDots() {
@@ -8432,7 +8773,46 @@ async function showPreview(file) {
   const kind = info.kind;
   try {
     const ext = (info.ext || "").toLowerCase();
-    if (ext === ".gmp") {
+    const spineFile = (ext === ".json" || ext === ".skel") && /(^|\/)spine\//.test(info.path || file.path || "");
+    if (ext === ".csb") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("gmp.loading");
+      const data = await getJson(apiUrl("/api/csb", { path: file.path }));
+      if (token !== previewToken) return;
+      window.CSB_FILE_ROUTE = "/api/image";
+      if (window.renderCsbPreview) window.renderCsbPreview(media, data);
+      $("preview-note").textContent = "";
+    } else if (ext === ".animation" || ext === ".rawanimation") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("gmp.loading");
+      const data = await getJson(apiUrl("/api/animation", { path: file.path }));
+      if (token !== previewToken) return;
+      if (window.renderAnimationPreview) window.renderAnimationPreview(media, data);
+      $("preview-note").textContent = "";
+    } else if (spineFile) {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("gmp.loading");
+      const data = await getJson(apiUrl("/api/spine", { path: file.path }));
+      if (token !== previewToken) return;
+      const textures = {};
+      const base = data.atlas_base || "";
+      for (const page of (data.atlas && data.atlas.pages) || []) {
+        const name = page.name || page.page || "";
+        if (name) {
+          const stem = String(name).replace(/\.(png|jpg|jpeg|webp)$/i, "");
+          textures[name] = apiUrl("/api/image", { path: base + stem + ".kta" });
+        }
+      }
+      if (window.renderSpinePreview) window.renderSpinePreview(media, data, textures);
+      $("preview-note").textContent = "";
+    } else if (ext === ".skeleton") {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("gmp.loading");
+      const data = await getJson(apiUrl("/api/skeleton", { path: file.path }));
+      if (token !== previewToken) return;
+      if (window.renderSkeletonPreview) window.renderSkeletonPreview(media, data);
+      $("preview-note").textContent = "";
+    } else if (ext === ".gmp") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("gmp.loading");
       const data = await getJson(apiUrl("/api/gmp", { path: file.path }));

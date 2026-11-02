@@ -56,6 +56,11 @@ import neox_pose
 import neox_anim
 import image_convert
 import gmp_parse
+import animation_parse
+import spine_parse
+import csb_parse
+import rawanimation_parse
+import skeleton_preview_parse
 import xn_crypto
 import xn_parse
 import xn_decompile
@@ -114,6 +119,9 @@ BATCH_RAW_MAX = 2000
 BATCH_CONVERT_MAX = 200
 BATCH_TIME_BUDGET = 600
 BATCH_BODY_LIMIT = 2 * 1024 * 1024
+PARSE_UNPACKED_LIMIT = 8 * 1024 * 1024
+TERRAIN_UNPACKED_LIMIT = 32 * 1024 * 1024
+ANIM_DECODE_LOCK = threading.Lock()
 
 
 def clean_map_name(value: str | None, stem: str) -> str:
@@ -135,6 +143,39 @@ def clean_map_name(value: str | None, stem: str) -> str:
     if not text or text == stem:
         return ""
     return text[:120]
+
+
+MAP_NAMES_FILE = Path(__file__).with_name("map_names.json")
+_MAP_NAMES_CACHE: dict = {"stamp": None, "by_gmp": {}}
+
+
+def map_name_info(path: str) -> dict:
+    try:
+        stamp = MAP_NAMES_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if _MAP_NAMES_CACHE["stamp"] != stamp:
+        try:
+            raw = json.loads(MAP_NAMES_FILE.read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        by_gmp = {}
+        for map_id, item in raw.items():
+            gmp = str(item.get("gmp") or "").replace("\\", "/")
+            if not gmp:
+                continue
+            try:
+                value = int(map_id)
+            except (TypeError, ValueError):
+                continue
+            current = by_gmp.get(gmp)
+            if current is not None and current["id"] <= value:
+                continue
+            by_gmp[gmp] = {"id": value, "name": item.get("name") or "",
+                           "category": item.get("category") or ""}
+        _MAP_NAMES_CACHE["by_gmp"] = by_gmp
+        _MAP_NAMES_CACHE["stamp"] = stamp
+    return _MAP_NAMES_CACHE["by_gmp"].get(str(path).replace("\\", "/").lstrip("/"), {})
 
 
 def zip_arc_name(path: str) -> str:
@@ -1499,6 +1540,8 @@ class BrowserServer(ThreadingHTTPServer):
     _gmp_sem = threading.Semaphore(2)
     _gmp_cache_lock = threading.Lock()
     _gmp_cache: dict = {}
+    _terrain_cache_lock = threading.Lock()
+    _terrain_cache: dict = {}
     _names_lock = threading.Lock()
     _names: dict | None = None
     _names_key: str | None = None
@@ -2816,6 +2859,11 @@ class Handler(BaseHTTPRequestHandler):
                             unit["model"] = paths[0]
                             unit["model_from_eid"] = True
         data["path"] = row["path"]
+        info = map_name_info(row["path"])
+        if info:
+            data["map_id"] = info["id"]
+            data["map_display_name"] = info["name"]
+            data["map_category"] = info["category"]
         if not data.get("map_name"):
             data["map_name"] = Path(row["path"]).stem
         with BrowserServer._gmp_cache_lock:
@@ -2823,6 +2871,80 @@ class Handler(BaseHTTPRequestHandler):
             while len(BrowserServer._gmp_cache) > 8:
                 BrowserServer._gmp_cache.pop(next(iter(BrowserServer._gmp_cache)))
         return data
+
+    def _terrain_data(self, row) -> list:
+        key = (row["path"], row["packed_hash"])
+        with BrowserServer._terrain_cache_lock:
+            cached = BrowserServer._terrain_cache.pop(key, None)
+            if cached is not None:
+                BrowserServer._terrain_cache[key] = cached
+                return cached
+        terrains = gmp_parse.read_terrains(self._entry_payload(row))
+        with BrowserServer._terrain_cache_lock:
+            BrowserServer._terrain_cache[key] = terrains
+            while len(BrowserServer._terrain_cache) > 8:
+                BrowserServer._terrain_cache.pop(next(iter(BrowserServer._terrain_cache)))
+        return terrains
+
+    def _rawanimation_view(self, row, payload: bytes) -> dict:
+        raw = neox_anim.parse_rawanimation(payload)
+        if not raw or not raw.get("acl"):
+            return {"format": "rawanimation", "error": "rawanimation header unsupported"}
+        decoder = Path(__file__).parent / ("acl_decode.exe" if os.name == "nt" else "acl_decode")
+        decoder_v10 = Path(__file__).parent / ("acl_decode_v10.exe" if os.name == "nt" else "acl_decode_v10")
+        with ANIM_DECODE_LOCK:
+            decoded = neox_anim.decode_acl(raw["acl"], self.server.cache_root / "anim_frames",
+                                           decoder, decoder_v10, raw.get("version", 4))
+        if not decoded:
+            return {"format": "rawanimation", "version": raw.get("version"),
+                    "fps": float(raw.get("fps") or 30.0),
+                    "duration": float(raw.get("duration") or 0.0),
+                    "samples": 0, "bones": 0, "tracks": [], "refs": [],
+                    "names": (raw.get("names") or [])[:200], "path": row["path"],
+                    "warning": "acl decode failed", "warnings": ["acl decode failed"]}
+        floats = struct.unpack("<%df" % (len(decoded["data"]) // 4), decoded["data"])
+        samples = int(decoded.get("samples") or 0)
+        bones = int(decoded.get("bones") or 0)
+        layout = int(decoded.get("layout") or 10)
+        fps = float(raw.get("fps") or 30.0)
+        duration = float(raw.get("duration") or (samples / fps if fps else 0))
+        names = raw.get("names") or []
+        if not samples or not bones or len(floats) < samples * bones * layout:
+            return {"format": "rawanimation", "version": raw.get("version"), "fps": fps,
+                    "duration": duration, "samples": samples, "bones": bones,
+                    "tracks": [], "refs": [], "names": names[:200], "path": row["path"],
+                    "warning": "acl data truncated"}
+        stride = max(1, (samples + 299) // 300)
+        frames = list(range(0, samples, stride))
+        if frames and frames[-1] != samples - 1:
+            frames.append(samples - 1)
+        tracks = []
+        for track in range(bones):
+            label = names[track] if track < len(names) else "bone %d" % track
+            rows = {"translation": [], "rotation": [], "scale": []}
+            for frame in frames:
+                offset = (frame * bones + track) * layout
+                if layout == 12:
+                    qx, qy, qz, qw = floats[offset:offset + 4]
+                    tx, ty, tz = floats[offset + 4:offset + 7]
+                    sx, sy, sz = floats[offset + 8:offset + 11]
+                else:
+                    qx, qy, qz, qw = floats[offset:offset + 4]
+                    tx, ty, tz = floats[offset + 4:offset + 7]
+                    sx, sy, sz = floats[offset + 7:offset + 10]
+                stamp = round(frame / fps, 4) if fps else frame
+                rows["translation"].append([stamp, tx, ty, tz])
+                rows["rotation"].append([stamp, qx, qy, qz, qw])
+                rows["scale"].append([stamp, sx, sy, sz])
+            for channel, axes in (("translation", ["x", "y", "z"]), ("rotation", ["x", "y", "z", "w"]),
+                                  ("scale", ["x", "y", "z"])):
+                points = rows[channel]
+                tracks.append({"node": label, "channel": channel, "axes": axes, "keys": len(points),
+                               "start": points[0][0], "end": points[-1][0], "points": points,
+                               "source": "acl"})
+        return {"format": "rawanimation", "version": raw.get("version"), "fps": fps,
+                "duration": duration, "samples": samples, "bones": bones, "tracks": tracks,
+                "refs": [], "names": names[:200], "path": row["path"]}
 
     def _name_key(self) -> str:
         raw = json.dumps(self.server.fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -3025,8 +3147,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _unit_model_map(self) -> dict:
         path = Path(__file__).resolve().parent.parent / "data" / "unit_models.json"
+        extra_path = Path(__file__).resolve().parent / "eid_models.json"
         try:
-            mtime = path.stat().st_mtime if path.is_file() else 0.0
+            mtime = (path.stat().st_mtime if path.is_file() else 0.0)
+            mtime += extra_path.stat().st_mtime if extra_path.is_file() else 0.0
         except OSError:
             mtime = 0.0
         with BrowserServer._unit_models_lock:
@@ -3038,6 +3162,12 @@ class Handler(BaseHTTPRequestHandler):
                     mapping = {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
                 except (OSError, ValueError, TypeError, AttributeError):
                     mapping = {}
+                try:
+                    extra = json.loads(extra_path.read_text("utf-8")).get("map", {})
+                    mapping.update({str(key): str(value) for key, value in extra.items()
+                                    if isinstance(value, str) and value.strip()})
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
                 # eid 表里有纯数字占位与失效路径，过滤后才能安全当作 eid→模型 映射。
                 mapping = {
                     str(key): str(value) for key, value in mapping.items()
@@ -3326,7 +3456,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route.startswith("/static/"):
                 name = route[len("/static/"):]
-                if name in {"app.js", "style.css", "field_icons.js", "field_icons.css"}:
+                if name in {"app.js", "style.css", "field_icons.js", "field_icons.css",
+                            "animation_preview.js", "spine_preview.js", "csb_preview.js", "skeleton_preview.js"}:
                     ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
                     self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
                     return
@@ -3551,6 +3682,75 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if route == "/api/csb":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".csb":
+                    self._error("not a CSB file", 415)
+                    return
+                if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                    self._error("CSB file too large: %d bytes (limit %d MB)"
+                                % (row["unpacked"], PARSE_UNPACKED_LIMIT // (1024 * 1024)), 413)
+                    return
+                try:
+                    data = csb_parse.parse(self._entry_payload(row))
+                except Exception as exc:
+                    self._error("CSB parse failed: %s: %s" % (type(exc).__name__, exc), 415)
+                    return
+                data["path"] = row["path"]
+                self._json(data)
+                return
+            if route == "/api/spine":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() not in (".json", ".skel"):
+                    self._error("not a spine file", 415)
+                    return
+                if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                    self._error("spine file too large: %d bytes (limit %d MB)"
+                                % (row["unpacked"], PARSE_UNPACKED_LIMIT // (1024 * 1024)), 413)
+                    return
+                atlas_row = self._row(str(Path(path).with_suffix(".atlas")).replace("\\", "/"))
+                atlas = self._entry_payload(atlas_row) if atlas_row else None
+                data = spine_parse.parse(self._entry_payload(row), atlas)
+                data["path"] = row["path"]
+                data["name"] = row["name"]
+                data["package"] = row["package"]
+                data["size"] = row["unpacked"]
+                data["atlas_base"] = str(Path(row["path"]).parent).replace("\\", "/") + "/"
+                self._json(data)
+                return
+            if route == "/api/animation":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() not in (".animation", ".rawanimation"):
+                    self._error("not an animation file", 415)
+                    return
+                if (row["ext"] or "").lower() == ".rawanimation":
+                    if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                        self._error("rawanimation file too large: %d bytes (limit %d MB)"
+                                    % (row["unpacked"], PARSE_UNPACKED_LIMIT // (1024 * 1024)), 413)
+                        return
+                    payload = self._entry_payload(row)
+                    points = 600 if int(row["unpacked"] or 0) > 1024 * 1024 else 4000
+                    with ANIM_DECODE_LOCK:
+                        data = rawanimation_parse.parse(payload, self.server.cache_root / "anim_frames",
+                                                        max_points=points)
+                    data.setdefault("path", row["path"])
+                    self._json(data)
+                    return
+                payload = self._entry_payload(row)
+                self._json(animation_parse.parse(payload))
+                return
             if route == "/api/gmp":
                 path = (query.get("path", [""])[0] or "").strip("/")
                 row = self._row(path)
@@ -3565,6 +3765,59 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._error(f"GMP parse failed: {type(exc).__name__}: {exc}", 415)
                     return
+                self._json(data)
+                return
+            if route == "/api/terrain":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".gmp":
+                    self._error("not a GMP file", 415)
+                    return
+                if int(row["unpacked"] or 0) > TERRAIN_UNPACKED_LIMIT:
+                    self._error("GMP file too large for terrain: %d bytes (limit %d MB)"
+                                % (row["unpacked"], TERRAIN_UNPACKED_LIMIT // (1024 * 1024)), 413)
+                    return
+                try:
+                    terrains = self._terrain_data(row)
+                except Exception as exc:
+                    self._error("terrain parse failed: %s: %s" % (type(exc).__name__, exc), 415)
+                    return
+                if not terrains:
+                    self._error("no terrain", 404)
+                    return
+                try:
+                    index = int((query.get("index", ["0"])[0] or "0"))
+                except ValueError:
+                    index = 0
+                if index < 0 or index >= len(terrains):
+                    self._error("terrain index out of range", 416)
+                    return
+                self._json({"path": row["path"], "count": len(terrains), "index": index,
+                            "terrain": terrains[index]})
+                return
+            if route == "/api/skeleton":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                if (row["ext"] or "").lower() != ".skeleton":
+                    self._error("not a skeleton file", 415)
+                    return
+                if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                    self._error("skeleton file too large", 413)
+                    return
+                data = skeleton_preview_parse.parse(self._entry_payload(row))
+                if not data["bone_count"]:
+                    self._error("skeleton parse failed: " + "; ".join(data["warnings"]), 415)
+                    return
+                data["path"] = row["path"]
+                data["name"] = row["name"]
+                data["package"] = row["package"]
+                data["size"] = row["unpacked"]
                 self._json(data)
                 return
             if route == "/api/neox":

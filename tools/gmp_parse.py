@@ -135,6 +135,15 @@ def _text(value):
     return str(value)
 
 
+def _fix_mojibake(text: str) -> str:
+    if not text or all(ord(char) < 128 for char in text):
+        return text
+    try:
+        return text.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def _key(mapping, *names):
     if not isinstance(mapping, dict):
         return None
@@ -404,6 +413,21 @@ def _frames(payload: bytes):
         pos = start + consumed
 
 
+def read_terrains(payload: bytes) -> list:
+    import terrain_parse
+    out = []
+    for _offset, _compressed, raw in _frames(payload):
+        if raw[:4] not in (b"TESM", b"TESL"):
+            continue
+        try:
+            parsed = terrain_parse.parse(raw)
+        except Exception:
+            parsed = None
+        if parsed:
+            out.append(parsed)
+    return out
+
+
 def parse(payload: bytes) -> dict:
     if not payload.startswith(b"DZ") and ZSTD_MAGIC not in payload[:4096]:
         raise ValueError("not a GMP container")
@@ -414,7 +438,13 @@ def parse(payload: bytes) -> dict:
     sections = _section_formats(payload)
     for index, (offset, compressed, raw) in enumerate(_frames(payload)):
         chunk = {"index": index, "offset": offset, "compressed": compressed, "raw": len(raw)}
-        chunk.update(sections.get(offset, {}))
+        section = sections.get(offset) or {}
+        chunk.update(section)
+        if raw[:4] in (b"TESM", b"TESL"):
+            chunk["kind"] = "terrain"
+            chunk["consumed"] = len(raw)
+            chunks.append(chunk)
+            continue
         unsupported = chunk.get("encoding") == "bindict"
         skipped = len(raw) > MAX_MSGPACK_RAW
         try:
@@ -546,40 +576,81 @@ def parse(payload: bytes) -> dict:
         if isinstance(unit_type, int):
             type_counts[unit_type] = type_counts.get(unit_type, 0) + 1
     if not unit_list and sid3_raws:
-        # 158 张零单位图的单位数据在 sid3 bindict 里；解码出 unit_id+位置供画布显示。
+        # 158 张零单位图的单位数据在 sid3 bindict 里；按字段名解码出完整单位。
         try:
-            import bindict_units
+            import bindict_decode
         except ImportError:
-            bindict_units = None
-        if bindict_units is not None:
+            bindict_decode = None
+        if bindict_decode is not None:
             for raw in sid3_raws:
                 try:
-                    decoded = bindict_units.decode_section(raw)
+                    decoded = bindict_decode.decode_section(raw)
                 except Exception:
                     decoded = None
-                for unit in (decoded or {}).get("units", []):
-                    position = unit.get("position_guess")
-                    if not position:
+                for row in (decoded or {}).get("rows", []):
+                    position = _position(row.get("position")) or [0.0, 0.0, 0.0]
+                    if not row.get("unit_id"):
                         continue
+                    paint = list(row.get("paint") or [])
+                    while len(paint) < 4:
+                        paint.append(None)
                     unit_list.append({
-                        "id": unit["unit_id"],
-                        "name": "",
-                        "type": None,
-                        "eid": None,
-                        "model_id": None,
-                        "model": "",
-                        "material": "",
-                        "camp": None,
-                        "parent": 0,
+                        "id": row["unit_id"],
+                        "name": _fix_mojibake(row.get("name") or ""),
+                        "type": row.get("type"),
+                        "eid": row.get("eid"),
+                        "model_id": row.get("model_id"),
+                        "model": row.get("model") or "",
+                        "material": row.get("material") or "",
+                        "camp": row.get("camp"),
+                        "parent": row.get("parent_unit_id") or 0,
                         "position": [round(value, 3) for value in position[:3]],
-                        "color": None,
-                        "paint": [None, None, None, None],
-                        "alpha": None,
-                        "visible": True,
-                        "scale": None,
-                        "angle": None,
+                        "color": paint[0],
+                        "paint": paint[:4],
+                        "alpha": row.get("alpha"),
+                        "visible": row.get("visible", True),
+                        "scale": row.get("scale"),
+                        "angle": row.get("angle"),
                         "from_bindict": True,
                     })
+        if not unit_list:
+            try:
+                import bindict_units
+            except ImportError:
+                bindict_units = None
+            if bindict_units is not None:
+                for raw in sid3_raws:
+                    try:
+                        decoded = bindict_units.decode_section(raw)
+                    except Exception:
+                        decoded = None
+                    for unit in (decoded or {}).get("units", []):
+                        position = unit.get("position_guess")
+                        if not position:
+                            continue
+                        paths = unit.get("path_strings") or []
+                        names = unit.get("cjk_strings") or []
+                        model = next((path for path in paths if path.lower().endswith((".gim", ".mesh"))), "")
+                        material = next((path for path in paths if path.lower().endswith(".mtg")), "")
+                        unit_list.append({
+                            "id": unit["unit_id"],
+                            "name": _fix_mojibake(names[0]) if names else "",
+                            "type": None,
+                            "eid": None,
+                            "model_id": None,
+                            "model": model,
+                            "material": material,
+                            "camp": None,
+                            "parent": 0,
+                            "position": [round(value, 3) for value in position[:3]],
+                            "color": None,
+                            "paint": [None, None, None, None],
+                            "alpha": None,
+                            "visible": True,
+                            "scale": None,
+                            "angle": None,
+                            "from_bindict": True,
+                        })
     positions = [unit["position"] for unit in unit_list]
     bounds = _bounds(positions)
     unit_list.sort(key=lambda item: (item["eid"] or 0, item["name"], item["id"]))
