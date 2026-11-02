@@ -7,6 +7,9 @@
   var STYLE_ID = "csb-preview-style";
   var IMAGE_LIMIT = 400;
   var imageCache = new Map();
+  var ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
+  var ICON_RESET = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5a7 7 0 1 1-6.7 9h2.1a5 5 0 1 0 4.6-7V4l-4 3.5L12 11V5z"/></svg>';
 
   var CSS = [
     ".csb-preview { width: 100%; display: flex; flex-direction: column; gap: 10px; }",
@@ -26,7 +29,16 @@
     ".csb-tex-chip:hover { background: var(--md-surface-container-highest, #303639); }",
     ".csb-tex-box { display: flex; flex-direction: column; gap: 6px; }",
     ".csb-note { margin: 0; }",
-    "@media (max-width: 700px) { .csb-body { flex-direction: column; } .csb-side { width: 100%; flex: none; max-height: 190px; } .csb-canvas { height: 300px; } }"
+    ".csb-timeline { display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 10px; background: var(--md-surface-container-low, #171c1f); border: 1px solid var(--md-outline-variant, #3f484b); border-radius: var(--md-shape-md, 10px); }",
+    ".csb-timeline-label { flex: none; color: var(--md-on-surface-variant, #bfc8cb); font-size: 10px; font-weight: 600; letter-spacing: .3px; }",
+    ".csb-tl-btn { flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--md-shape-sm, 8px); background: var(--md-surface-container-high, #252b2e); color: var(--md-on-surface, #dfe3e6); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }",
+    ".csb-tl-btn svg { width: 14px; height: 14px; }",
+    ".csb-tl-btn:hover { background: var(--md-surface-container-highest, #303639); }",
+    ".csb-track { position: relative; flex: 1 1 auto; min-width: 60px; height: 18px; border-radius: 9px; overflow: hidden; cursor: pointer; background: var(--md-surface-container-lowest, #0a0e10); }",
+    ".csb-track-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--md-primary, #8ab4f8); opacity: .32; }",
+    ".csb-track-cursor { position: absolute; top: 50%; left: 0; width: 4px; height: 18px; margin-left: -2px; transform: translateY(-50%); border-radius: 2px; background: var(--md-primary, #8ab4f8); pointer-events: none; }",
+    ".csb-tl-clock { flex: none; min-width: 78px; text-align: right; color: var(--md-on-surface-variant, #bfc8cb); font: 10px/1.2 var(--md-font-mono, monospace); }",
+    "@media (max-width: 700px) { .csb-body { flex-direction: column; } .csb-side { width: 100%; flex: none; max-height: 190px; } .csb-canvas { height: 300px; } .csb-tl-clock { min-width: 64px; font-size: 9px; } }"
   ].join("\n");
 
   function ensureStyle() {
@@ -63,6 +75,142 @@
     var kids = childrenOf(node);
     for (var i = 0; i < kids.length; i++) total += countNodes(kids[i]);
     return total;
+  }
+
+  function normalizeAnimation(data) {
+    if (!data || typeof data !== "object") return null;
+    var duration = Math.round(num(data.duration, 0));
+    var speed = num(data.speed, 1);
+    if (!(speed > 0)) speed = 1;
+    var list = Array.isArray(data.channels) ? data.channels : [];
+    var channels = [];
+    for (var i = 0; i < list.length; i++) {
+      var channel = list[i];
+      if (!channel || typeof channel !== "object") continue;
+      var raw = Array.isArray(channel.frames) ? channel.frames : [];
+      var frames = [];
+      for (var j = 0; j < raw.length; j++) {
+        var frame = raw[j];
+        if (!frame || typeof frame !== "object") continue;
+        if (Math.round(num(frame.frame, -1)) < 0) continue;
+        frames.push(frame);
+      }
+      if (!frames.length) continue;
+      frames.sort(function (a, b) { return Math.round(num(a.frame, 0)) - Math.round(num(b.frame, 0)); });
+      channels.push({ property: String(channel.property || ""), tag: num(channel.tag, 0), frames: frames });
+    }
+    if (!(duration > 0) || !channels.length) return null;
+    return { duration: duration, speed: speed, current: String(data.current || ""), channels: channels };
+  }
+
+  function collectTagNodes(root) {
+    var map = new Map();
+    function visit(node) {
+      if (!node) return;
+      var tag = num(node.actionTag, 0);
+      if (tag) {
+        if (!map.has(tag)) map.set(tag, []);
+        map.get(tag).push(node);
+      }
+      var kids = childrenOf(node);
+      for (var i = 0; i < kids.length; i++) visit(kids[i]);
+    }
+    visit(root);
+    return map;
+  }
+
+  function captureBase(tags) {
+    var base = new Map();
+    tags.forEach(function (nodes) {
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        if (base.has(node)) continue;
+        base.set(node, {
+          pos: pair(node.pos, [0, 0]),
+          scale: pair(node.scale, [1, 1]),
+          anchor: pair(node.anchor, [0, 0]),
+          rotate: num(node.rotate, 0),
+          visible: node.visible !== false,
+          alpha: num(node.alpha, 255),
+          texture: node.texture || ""
+        });
+      }
+    });
+    return base;
+  }
+
+  function restoreNode(node, base) {
+    node.pos = base.pos.slice();
+    node.scale = base.scale.slice();
+    node.anchor = base.anchor.slice();
+    node.rotate = base.rotate;
+    node.visible = base.visible;
+    node.alpha = base.alpha;
+    node.texture = base.texture;
+  }
+
+  function mixPair(a, b, t, key, fallback) {
+    var first = pair(a[key], fallback);
+    if (!b) return first;
+    var second = pair(b[key], first);
+    return [first[0] + (second[0] - first[0]) * t, first[1] + (second[1] - first[1]) * t];
+  }
+
+  function mixNum(a, b, t, key, fallback) {
+    var first = num(a[key], fallback);
+    if (!b) return first;
+    var second = num(b[key], first);
+    return first + (second - first) * t;
+  }
+
+  function sampleFrames(frames, frame) {
+    var first = frames[0];
+    if (frame < Math.round(num(first.frame, 0))) return null;
+    var current = first;
+    var next = null;
+    for (var i = 1; i < frames.length; i++) {
+      var index = Math.round(num(frames[i].frame, 0));
+      if (index > frame) {
+        next = frames[i];
+        break;
+      }
+      current = frames[i];
+    }
+    if (!next) return { value: current, next: null, t: 0 };
+    var currentIndex = Math.round(num(current.frame, 0));
+    var span = Math.round(num(next.frame, 0)) - currentIndex;
+    var t = span > 0 ? (frame - currentIndex) / span : 0;
+    if (current.tween === false) return { value: current, next: null, t: 0 };
+    return { value: current, next: next, t: t };
+  }
+
+  function applyTimelineFrame(timeline, frame) {
+    var channels = timeline.channels;
+    for (var i = 0; i < channels.length; i++) {
+      var channel = channels[i];
+      var nodes = timeline.tags.get(channel.tag);
+      if (!nodes) continue;
+      var sample = sampleFrames(channel.frames, frame);
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j];
+        var base = timeline.base.get(node);
+        if (!base) continue;
+        if (!sample) {
+          restoreNode(node, base);
+          continue;
+        }
+        var a = sample.value;
+        var b = sample.next;
+        var t = sample.t;
+        if (channel.property === "Position") node.pos = mixPair(a, b, t, "pos", base.pos);
+        else if (channel.property === "Scale") node.scale = mixPair(a, b, t, "scale", base.scale);
+        else if (channel.property === "AnchorPoint") node.anchor = mixPair(a, b, t, "anchor", base.anchor);
+        else if (channel.property === "RotationSkew") node.rotate = mixNum(a, b, t, "rot", base.rotate);
+        else if (channel.property === "Alpha") node.alpha = Math.round(mixNum(a, b, t, "alpha", base.alpha));
+        else if (channel.property === "VisibleForFrame") node.visible = a.visible !== false;
+        else if (channel.property === "FileData") node.texture = a.texture || base.texture;
+      }
+    }
   }
 
   function mul(parent, local) {
@@ -709,7 +857,8 @@
       height: height,
       viewBox: viewBox,
       scene: scene,
-      version: version
+      version: version,
+      animation: normalizeAnimation(data.animation)
     };
   }
 
@@ -727,6 +876,17 @@
     var textureBox = model.textures.length
       ? '<div class="csb-tex-box"><div class="section-title">纹理 ' + model.textureCount + ' 张</div><div class="bank-chips csb-textures"></div></div>'
       : "";
+    var timelineBar = "";
+    if (model.animation) {
+      timelineBar = '<div class="csb-timeline">' +
+        '<span class="csb-timeline-label">时间轴</span>' +
+        '<button type="button" class="csb-tl-btn" data-csb-tl="play" title="播放/暂停" aria-label="播放/暂停">' + ICON_PAUSE + "</button>" +
+        '<button type="button" class="csb-tl-btn" data-csb-tl="reset" title="回到起点" aria-label="回到起点">' + ICON_RESET + "</button>" +
+        '<div class="csb-track" tabindex="0" role="slider" aria-label="时间轴" aria-valuemin="0" aria-valuemax="' + model.animation.duration + '" aria-valuenow="0">' +
+        '<div class="csb-track-fill"></div><div class="csb-track-cursor"></div></div>' +
+        '<span class="csb-tl-clock">0 / ' + model.animation.duration + "</span>" +
+        "</div>";
+    }
     container.innerHTML = '<div class="gmp-preview csb-preview">' +
       '<div class="gmp-head"><div class="gmp-title"><b>' + esc(model.scene) + "</b><span>" +
       esc(model.version || "csb") + " · " + model.nodeCount.toLocaleString() + " 个节点 · " +
@@ -740,6 +900,7 @@
       '<div class="bank-chips">' + htmlForChips({ version: model.version, width: model.width, height: model.height, truncated: model.header.truncated }, model.nodeCount, model.textureCount) + "</div>" +
       '<div class="csb-body"><div class="csb-stage"><canvas class="csb-canvas"></canvas></div>' +
       '<div class="csb-side">' + sideEmpty() + "</div></div>" +
+      timelineBar +
       '<div class="note csb-note">按 Cocos 左下原点布局，Y 轴已翻转到画布。虚线为隐藏节点，纹理加载失败时显示占位框与文件名。</div>' +
       textureBox +
       "</div>";
@@ -786,6 +947,113 @@
         if (!state.disposed) draw(state);
       });
     };
+
+    var timeline = null;
+    if (model.animation) {
+      timeline = {
+        duration: model.animation.duration,
+        speed: model.animation.speed,
+        channels: model.animation.channels,
+        tags: collectTagNodes(state.root),
+        base: null,
+        frame: 0,
+        playing: false,
+        raf: 0,
+        last: 0
+      };
+      timeline.base = captureBase(timeline.tags);
+      state.timeline = timeline;
+    }
+
+    var playButton = container.querySelector('[data-csb-tl="play"]');
+    var resetButton = container.querySelector('[data-csb-tl="reset"]');
+    var track = container.querySelector(".csb-track");
+    var trackFill = container.querySelector(".csb-track-fill");
+    var trackCursor = container.querySelector(".csb-track-cursor");
+    var clock = container.querySelector(".csb-tl-clock");
+
+    function syncTimeline() {
+      if (!timeline) return;
+      var percent = Math.min(100, Math.max(0, (timeline.frame / timeline.duration) * 100));
+      if (trackFill) trackFill.style.width = percent.toFixed(3) + "%";
+      if (trackCursor) trackCursor.style.left = percent.toFixed(3) + "%";
+      if (clock) clock.textContent = Math.floor(timeline.frame) + " / " + timeline.duration;
+      if (track) track.setAttribute("aria-valuenow", String(Math.floor(timeline.frame)));
+    }
+
+    function tickTimeline(now) {
+      if (!timeline.playing) {
+        timeline.raf = 0;
+        return;
+      }
+      if (!timeline.last) timeline.last = now;
+      var delta = Math.min(0.06, (now - timeline.last) / 1000);
+      timeline.last = now;
+      timeline.frame += delta * 60 * timeline.speed;
+      if (timeline.frame >= timeline.duration) timeline.frame = 0;
+      applyTimelineFrame(timeline, timeline.frame);
+      syncTimeline();
+      timeline.raf = requestAnimationFrame(tickTimeline);
+    }
+
+    function playTimeline() {
+      if (!timeline || timeline.playing) return;
+      timeline.playing = true;
+      timeline.last = 0;
+      if (playButton) playButton.innerHTML = ICON_PAUSE;
+      if (!timeline.raf) timeline.raf = requestAnimationFrame(tickTimeline);
+    }
+
+    function pauseTimeline() {
+      if (!timeline) return;
+      timeline.playing = false;
+      if (playButton) playButton.innerHTML = ICON_PLAY;
+    }
+
+    function setTimelineFrame(frame) {
+      if (!timeline) return;
+      timeline.frame = Math.max(0, Math.min(timeline.duration, frame));
+      applyTimelineFrame(timeline, timeline.frame);
+      syncTimeline();
+    }
+
+    if (playButton) {
+      playButton.addEventListener("click", function () {
+        if (timeline.playing) pauseTimeline();
+        else playTimeline();
+      });
+    }
+    if (resetButton) {
+      resetButton.addEventListener("click", function () {
+        setTimelineFrame(0);
+      });
+    }
+
+    var scrubId = null;
+    if (track && timeline) {
+      var trackFraction = function (event) {
+        var rect = track.getBoundingClientRect();
+        return Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+      };
+      track.addEventListener("pointerdown", function (event) {
+        if (event.button !== 0) return;
+        track.setPointerCapture(event.pointerId);
+        scrubId = event.pointerId;
+        pauseTimeline();
+        setTimelineFrame(trackFraction(event) * timeline.duration);
+      });
+      track.addEventListener("pointermove", function (event) {
+        if (scrubId !== event.pointerId) return;
+        setTimelineFrame(trackFraction(event) * timeline.duration);
+      });
+      track.addEventListener("pointerup", function (event) {
+        if (scrubId !== event.pointerId) return;
+        scrubId = null;
+      });
+      track.addEventListener("pointercancel", function () {
+        scrubId = null;
+      });
+    }
 
     function updateSide(hit) {
       side.innerHTML = sideFor(hit);
@@ -929,10 +1197,18 @@
     container._csbCleanup = function () {
       state.disposed = true;
       if (state.raf) cancelAnimationFrame(state.raf);
+      if (timeline) {
+        timeline.playing = false;
+        if (timeline.raf) cancelAnimationFrame(timeline.raf);
+        timeline.base.forEach(function (base, node) {
+          restoreNode(node, base);
+        });
+      }
       if (observer) observer.disconnect();
       container._csbCleanup = null;
     };
 
+    if (timeline) playTimeline();
     requestAnimationFrame(function () { draw(state); });
     return {
       redraw: function () { state.schedule(); },

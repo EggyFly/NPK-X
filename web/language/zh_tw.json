@@ -250,6 +250,7 @@
     "viewer.fitShort": "適應",
     "viewer.loadingMap": "正在解析地圖…",
     "viewer.loadingImage": "正在載入原圖…",
+    "viewer.loadingSkeleton": "正在解析骨骼…",
     "xn.cannotDecrypt": "無法解密",
     "xn.functionsClasses": "函式 / 類別",
     "xn.namesTable": "名稱表",

@@ -250,6 +250,7 @@
     "viewer.fitShort": "Fit",
     "viewer.loadingMap": "Parsing map…",
     "viewer.loadingImage": "Loading image…",
+    "viewer.loadingSkeleton": "Parsing skeleton…",
     "xn.cannotDecrypt": "Cannot decrypt",
     "xn.functionsClasses": "Functions / classes",
     "xn.namesTable": "Name table",

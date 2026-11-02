@@ -2268,7 +2268,7 @@ function openViewer(file) {
   const ext = (file.ext || "").toLowerCase();
   const spineFile = (ext === ".json" || ext === ".skel") && /(^|\/)spine\//.test(file.path || "");
   viewer.mode = ext === ".gmp" ? "map" : ext === ".animation" || ext === ".rawanimation" ? "animation"
-    : ext === ".csb" ? "csb" : spineFile ? "spine" : isTextView(file) ? "text" : "image";
+    : ext === ".csb" ? "csb" : ext === ".skeleton" ? "skeleton" : spineFile ? "spine" : isTextView(file) ? "text" : "image";
   setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -2284,6 +2284,8 @@ function openViewer(file) {
     openSpineViewer(file, token);
   } else if (viewer.mode === "csb") {
     openCsbViewer(file, token);
+  } else if (viewer.mode === "skeleton") {
+    openSkeletonViewer(file, token);
   } else if (viewer.mode === "image") {
     openImageViewer(
       file, token,
@@ -2841,6 +2843,25 @@ async function openCsbViewer(file, token) {
       window.renderCsbPreview(stage, data);
     } else {
       stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "csb preview missing" }))}</div>`;
+    }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openSkeletonViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("viewer.loadingSkeleton")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/skeleton", { path: file.path }));
+    if (token !== viewer.token) return;
+    stage.innerHTML = "";
+    if (window.renderSkeletonPreview) {
+      window.renderSkeletonPreview(stage, data);
+    } else {
+      stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "skeleton preview missing" }))}</div>`;
     }
   } catch (error) {
     if (token !== viewer.token) return;
@@ -8807,7 +8828,7 @@ async function showPreview(file) {
       $("preview-note").textContent = "";
     } else if (ext === ".skeleton") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
-      $("preview-note").textContent = tr("gmp.loading");
+      $("preview-note").textContent = tr("viewer.loadingSkeleton");
       const data = await getJson(apiUrl("/api/skeleton", { path: file.path }));
       if (token !== previewToken) return;
       if (window.renderSkeletonPreview) window.renderSkeletonPreview(media, data);

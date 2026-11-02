@@ -611,6 +611,7 @@ def parse(payload: bytes) -> dict:
                         "visible": row.get("visible", True),
                         "scale": row.get("scale"),
                         "angle": row.get("angle"),
+                        "logical": (not row.get("model")) and isinstance(row.get("type"), int) and row.get("type") in (512, 2048, 4096),
                         "from_bindict": True,
                     })
         if not unit_list:

@@ -10,6 +10,9 @@ import struct
 MAX_NODES = 12000
 MAX_DEPTH = 64
 MAX_VECTOR = 50000
+MAX_CHANNELS = 4096
+MAX_FRAMES = 4096
+MAX_CHANNEL_FRAMES = 65536
 IMAGE_EXTS = (
     ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".gif",
     ".ktx", ".dds", ".pvr", ".ccz",
@@ -187,6 +190,98 @@ def _scale9(data, node, table, node_type):
         node["scale9"] = enabled != 0
 
 
+UNION_SLOTS = {
+    "Position": 0,
+    "Scale": 1,
+    "RotationSkew": 1,
+    "AnchorPoint": 1,
+    "FileData": 3,
+    "Alpha": 5,
+    "VisibleForFrame": 6,
+}
+
+
+def _frame_value(data, frame_table, prop):
+    slot = UNION_SLOTS.get(prop)
+    if slot is None:
+        return None
+    target = _pointer(data, frame_table, slot)
+    sub = _table(data, target)
+    if not sub:
+        return None
+    index = _i32(data, _slot(data, sub, 0))
+    if index is None:
+        return None
+    frame = {"frame": index}
+    tween = _byte(data, sub, 1)
+    if tween is not None and not tween:
+        frame["tween"] = False
+    if prop == "Position":
+        frame["pos"] = _pair(data, sub, 2, (0.0, 0.0))
+    elif prop == "Scale":
+        frame["scale"] = _pair(data, sub, 2, (1.0, 1.0))
+    elif prop == "RotationSkew":
+        frame["rot"] = _pair(data, sub, 2, (0.0, 0.0))
+    elif prop == "AnchorPoint":
+        frame["anchor"] = _pair(data, sub, 2, (0.0, 0.0))
+    elif prop == "VisibleForFrame":
+        pos = _slot(data, sub, 2)
+        frame["visible"] = bool(data[pos]) if pos is not None and pos < len(data) else True
+    elif prop == "Alpha":
+        value = _i32(data, _slot(data, sub, 2))
+        frame["alpha"] = max(0, min(255, value if value is not None else 0))
+    elif prop == "FileData":
+        resource = _table(data, _pointer(data, sub, 2))
+        path = _text(data, resource, 0) if resource else None
+        if not path:
+            return None
+        frame["texture"] = path
+    return frame
+
+
+def _read_action(data, root_table):
+    action = _table(data, _pointer(data, root_table, 4))
+    if not action:
+        return None
+    duration = _i32(data, _slot(data, action, 0))
+    if not duration or duration <= 0:
+        return None
+    speed = _f32(data, _slot(data, action, 1))
+    state = {"channels": [], "budget": MAX_CHANNEL_FRAMES, "truncated": False}
+    for timeline in _vector(data, _pointer(data, action, 2), MAX_CHANNELS) or []:
+        if len(state["channels"]) >= MAX_CHANNELS or state["budget"] <= 0:
+            state["truncated"] = True
+            break
+        table = _table(data, timeline)
+        if not table:
+            continue
+        prop = _text(data, table, 0) or ""
+        tag = _i32(data, _slot(data, table, 1)) or 0
+        frames = []
+        for pos in _vector(data, _pointer(data, table, 2), MAX_FRAMES) or []:
+            if len(frames) >= MAX_FRAMES or state["budget"] <= 0:
+                state["truncated"] = True
+                break
+            frame_table = _table(data, pos)
+            if not frame_table:
+                continue
+            frame = _frame_value(data, frame_table, prop)
+            if frame is not None:
+                frames.append(frame)
+                state["budget"] -= 1
+        if frames:
+            state["channels"].append({"property": prop, "tag": tag, "frames": frames})
+    if not state["channels"]:
+        return None
+    return {
+        "duration": duration,
+        "speed": speed if speed and speed > 0 else 1.0,
+        "current": _text(data, action, 3) or "",
+        "channels": state["channels"],
+        "truncated": state["truncated"],
+    }
+
+
 def _common(data, spec):
     table = _table(data, spec)
     if not table:
@@ -277,6 +372,7 @@ def _walk(data, pos, depth, seen, state):
     visible = True
     alpha = 255
     tag = 0
+    action_tag = 0
     if common:
         common_table = _table(data, common)
         name = _text(data, common_table, 0) or ""
@@ -298,6 +394,9 @@ def _walk(data, pos, depth, seen, state):
         tag_value = _i32(data, _slot(data, common_table, 6))
         if tag_value is not None:
             tag = tag_value
+        action_value = _i32(data, _slot(data, common_table, 1))
+        if action_value is not None:
+            action_tag = action_value
     images = _collect_images(data, _table(data, spec), common)
     for image in images:
         if image not in state["textures"]:
@@ -313,6 +412,7 @@ def _walk(data, pos, depth, seen, state):
         "anchor": anchor_pair,
         "alpha": alpha,
         "tag": tag,
+        "actionTag": action_tag,
         "texture": images[0] if images else "",
         "children": [],
     }
@@ -361,7 +461,7 @@ def parse(payload: bytes) -> dict:
     state["textures"] = root_textures + [name for name in state["textures"] if name not in root_textures]
     scene = node["name"]
     width, height = node["size"]
-    return {
+    result = {
         "header": {
             "format": "cocos-studio-2-flatbuffer",
             "version": version or "",
@@ -376,3 +476,7 @@ def parse(payload: bytes) -> dict:
         "nodes": [node],
         "textures": state["textures"],
     }
+    animation = _read_action(payload, table)
+    if animation is not None:
+        result["animation"] = animation
+    return result
