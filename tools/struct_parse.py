@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""结构化预览解析器: .bin/.eggimonbin/.meta/.efx/.scn/.trk/.sfxmusic/.postprocess.
+"""结构化预览解析器: .bin/.eggimonbin/.meta/.efx/.scn/.trk/.sfxmusic/.postprocess/.cache.
 
 格式结论 (全部来自本目录样本实测):
-  .bin        zstd+msgpack 双层 / 裸 msgpack / bindict 表 / 高度图(u32 w, u32 h, int16 高程) / zlib / 全零
+  .bin        zstd+msgpack 双层 / 裸 msgpack / bindict 表 / 高度图(u32 w, u32 h, int16 高程) / zlib / 全零 / 多帧 zstd 着色器容器
   .eggimonbin msgpack, 顶层 uuid 键
   .meta       NXSC 头 0x28 + 可选 zstd 帧 + 哈希记录表 (记录内 16 字节处恒为 0x27 标记), 非 msgpack
+  .cache      16hex 族 = 多帧 zstd (帧 0 自包含, 其输出即帧 1+ 的 raw-content 字典, NeoX DecompressDataWithDict);
+              8hex 族 = 裸头 + 明文 GLSL 段 (#version 扫描分段)
   .efx        @BIN 头 + [u8 len+16][字符串] 属性流; 属性名/value 明文, 其余为哈希记录未解
   .scn        NeoX c159410d 容器, 值类型在 gim/mtg 基础上多 4=i32 与 7=f64 (PixelFormat 后接 ProbeOffset 佐证)
   .trk        NTRK 相机轨道: 32 字节名字段 + u32 帧数 + 帧数-1 个 f32 时间 + 6 字节通道标志 + 位置/四元数块
@@ -39,6 +41,12 @@ MAX_OBJECTS = 1200
 MAX_PAIRS = 500
 MAX_REFS = 80
 MAX_TIMES = 4000
+MAX_SHADER_FRAMES = 4096
+MAX_SHADER_SENT = 6
+MAX_SHADER_TEXT = 64 * 1024
+MAX_UNIFORM_ROWS = 500
+MAX_FRAME_SUMMARY = 300
+SHADER_CHUNK = 256 * 1024
 
 REF_RE = re.compile(
     r"[A-Za-z0-9_./\\-]{2,240}\.(?:kta|dds|ktx|png|jpe?g|tga|bmp|mesh|skeleton|mtg|gim|"
@@ -52,7 +60,7 @@ class StructError(ValueError):
     pass
 
 
-SUPPORTED_EXTS = {".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess"}
+SUPPORTED_EXTS = {".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess", ".cache"}
 
 
 def _text(value: bytes) -> str:
@@ -191,6 +199,9 @@ def parse_bin(data: bytes) -> dict:
         try:
             tree_data = _decode_msgpack(inner)
         except (gmp_parse.MsgpackError, ValueError, RecursionError, MemoryError):
+            shader = _shader_container_result(data)
+            if shader:
+                return shader
             return {
                 "kind": "zstd",
                 "layers": ["zstd"],
@@ -255,6 +266,189 @@ def parse_bin(data: bytes) -> dict:
     }
 
 
+def _frame_text(payload: bytes) -> str | None:
+    text = payload.rstrip(b"\x00")
+    try:
+        text = text.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if not text:
+        return None
+    printable = sum(1 for ch in text if ch.isprintable() or ch in "\n\r\t")
+    if printable / len(text) < 0.999:
+        return None
+    return text
+
+
+def _glsl_role(text: str) -> str:
+    if "gl_Position" in text:
+        return "vs"
+    if ("gl_FragColor" in text or "FragData" in text or "FragColor" in text
+            or "entryPointOutput" in text
+            or re.search(r"layout\(location\s*=\s*\d+\)\s*out\s+vec[234]", text)):
+        return "ps"
+    return "glsl"
+
+
+def _uniform_rows(text: str) -> list | None:
+    if text.lstrip()[:8] == "#version":
+        return None
+    rows = []
+    for entry in text.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        fields = entry.split(":")
+        if len(fields) < 4 or not fields[1].isalpha():
+            return None
+        rows.append({
+            "name": fields[0],
+            "type": fields[1],
+            "sampler": fields[2],
+            "props": ":".join(fields[3:]),
+        })
+    return rows or None
+
+
+def _decode_shader_frames(data: bytes):
+    pos = 0
+    outs = []
+    dctx_dict = None
+    while pos < len(data) and len(outs) < MAX_SHADER_FRAMES:
+        idx = data.find(ZSTD_MAGIC, pos)
+        if idx < 0:
+            break
+        dctx = dctx_dict if dctx_dict is not None else zstandard.ZstdDecompressor()
+        obj = dctx.decompressobj()
+        payload = b""
+        fed = idx
+        eof = False
+        while fed < len(data):
+            chunk = data[fed:fed + SHADER_CHUNK]
+            payload += obj.decompress(chunk)
+            fed += len(chunk)
+            if obj.eof:
+                eof = True
+                break
+        if not eof:
+            return outs, "truncated@%d" % idx
+        consumed = fed - idx - len(obj.unused_data)
+        outs.append((idx, payload))
+        if dctx_dict is None:
+            dctx_dict = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(payload))
+        pos = idx + consumed
+    return outs, ("done" if outs else "no_frames")
+
+
+def _shader_container_result(data: bytes) -> dict | None:
+    frames, status = _decode_shader_frames(data)
+    if status != "done" or len(frames) < 2:
+        return None
+    parsed = []
+    counts = {"glsl": 0, "uniform": 0, "layout": 0, "text": 0}
+    for index, (offset, payload) in enumerate(frames):
+        text = _frame_text(payload)
+        if text is None:
+            role = "layout"
+        elif text.lstrip()[:8] == "#version":
+            role = "glsl"
+        else:
+            role = "uniform" if _uniform_rows(text) else "text"
+        counts[role] += 1
+        parsed.append({"index": index, "offset": offset, "size": len(payload), "role": role, "text": text})
+    uniform_frame = next((item for item in parsed if item["role"] == "uniform"), None)
+    glsl_sent = []
+    for wanted in ("vs", "ps"):
+        pick = next((item for item in parsed if item["role"] == "glsl" and _glsl_role(item["text"]) == wanted), None)
+        if pick:
+            glsl_sent.append(pick)
+    sent_ids = {id(item) for item in glsl_sent}
+    for item in parsed:
+        if item["role"] != "glsl" or id(item) in sent_ids:
+            continue
+        if len(glsl_sent) >= MAX_SHADER_SENT:
+            break
+        glsl_sent.append(item)
+        sent_ids.add(id(item))
+    if uniform_frame:
+        sent_ids.add(id(uniform_frame))
+    more = [{"index": item["index"], "size": item["size"], "role": item["role"]}
+            for item in parsed if id(item) not in sent_ids][:MAX_FRAME_SUMMARY]
+    sent_glsl = []
+    for item in glsl_sent:
+        text = item["text"]
+        sent_glsl.append({
+            "index": item["index"],
+            "size": item["size"],
+            "role": _glsl_role(text) if text.lstrip()[:8] == "#version" else "glsl",
+            "text": text[:MAX_SHADER_TEXT],
+            "truncated": len(text) > MAX_SHADER_TEXT,
+        })
+    result = {
+        "kind": "shader_cache",
+        "layers": ["zstd", "dict"],
+        "frame_count": len(frames),
+        "glsl_frames": counts["glsl"],
+        "uniform_frames": counts["uniform"],
+        "layout_frames": counts["layout"],
+        "dict_size": len(frames[0][1]),
+        "more_frames": more,
+        "more_total": len(frames) - (len(glsl_sent) + (1 if uniform_frame else 0)),
+        "glsl": sent_glsl,
+    }
+    if uniform_frame:
+        rows = _uniform_rows(uniform_frame["text"])
+        result["uniform"] = {
+            "frame": uniform_frame["index"],
+            "rows": rows[:MAX_UNIFORM_ROWS],
+            "truncated": len(rows) > MAX_UNIFORM_ROWS,
+        }
+    layout_frame = next((item for item in parsed if item["role"] == "layout"), None)
+    if layout_frame:
+        result["hex_head"] = _hex_head(frames[layout_frame["index"]][1])
+    return result
+
+
+def parse_cache(data: bytes) -> dict:
+    if data[:4] == ZSTD_MAGIC:
+        result = _shader_container_result(data)
+        if result is None:
+            raise StructError("not a shader zstd container")
+        return result
+    starts = []
+    pos = 0
+    while len(starts) < 512:
+        idx = data.find(b"#version", pos)
+        if idx < 0:
+            break
+        starts.append(idx)
+        pos = idx + 8
+    if not starts:
+        raise StructError("no glsl in cache")
+    bounds = starts + [len(data)]
+    blocks = []
+    for i in range(len(starts)):
+        text = data[bounds[i]:bounds[i + 1]].decode("utf-8", "replace")
+        blocks.append({
+            "index": i,
+            "size": bounds[i + 1] - bounds[i],
+            "role": _glsl_role(text),
+            "text": text[:MAX_SHADER_TEXT],
+            "truncated": len(text) > MAX_SHADER_TEXT,
+        })
+    return {
+        "kind": "cache_plain",
+        "layers": ["raw"],
+        "head_size": starts[0],
+        "glsl_frames": len(blocks),
+        "glsl": blocks[:MAX_SHADER_SENT],
+        "more_frames": [{"index": item["index"], "size": item["size"], "role": item["role"]}
+                        for item in blocks[MAX_SHADER_SENT:]][:MAX_FRAME_SUMMARY],
+        "more_total": max(0, len(blocks) - MAX_SHADER_SENT),
+        "hex_head": _hex_head(data[:starts[0]]),
+    }
+
+
 def parse_eggimonbin(data: bytes) -> dict:
     tree_data = _decode_msgpack(data)
     tree_data["kind"] = "msgpack"
@@ -282,6 +476,7 @@ def parse_meta(data: bytes) -> dict:
         "version": ver,
         "flag": flag,
         "guid": guid,
+        "off12": "0x%016x" % struct.unpack_from("<Q", data, 12)[0],
         "schema_id": f"{schema_id:08x}",
         "size_field": size_field & 0x7FFFFFFF,
         "size_flag": bool(size_field & 0x80000000),
@@ -623,6 +818,8 @@ def parse(payload: bytes, ext: str) -> dict:
         return parse_meta(payload)
     if ext == ".efx":
         return parse_efx(payload)
+    if ext == ".cache":
+        return parse_cache(payload)
     if ext == ".scn":
         return parse_scn(payload)
     if ext == ".trk":

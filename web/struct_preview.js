@@ -4,7 +4,7 @@
   if (typeof window === "undefined") return;
   if (window.renderStructPreview) return;
   window.STRUCT_PREVIEW_EXT = new Set([
-    ".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess",
+    ".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess", ".cache",
   ]);
 
   var STYLE_ID = "struct-preview-style";
@@ -58,6 +58,7 @@
     "struct.title.trk": "相机轨道",
     "struct.title.sfxmusic": "音效事件 XML",
     "struct.title.postprocess": "后处理 XML",
+    "struct.title.cache": ".cache 着色器",
     "struct.tree": "结构树",
     "struct.expandAll": "展开",
     "struct.collapseAll": "收起",
@@ -85,6 +86,20 @@
     "struct.metaCompressed": "压缩",
     "struct.metaRaw": "未压缩",
     "struct.metaRecords": "哈希记录",
+    "struct.metaOff12": "批次标签",
+    "struct.shaderFrames": "帧数",
+    "struct.shaderGlsl": "GLSL 段",
+    "struct.shaderUniforms": "Uniform 表帧",
+    "struct.shaderDict": "字典帧",
+    "struct.shaderUniformTable": "Uniform 表",
+    "struct.shaderVertex": "顶点着色器 (VS)",
+    "struct.shaderFragment": "片段着色器 (PS)",
+    "struct.shaderVariant": "GLSL 变体",
+    "struct.shaderMore": "其余帧",
+    "struct.shaderLayoutHex": "布局帧 Hex (压缩字典)",
+    "struct.shaderRowsCut": "Uniform 行数过多，仅展示前一部分。",
+    "struct.shaderTextCut": "源码过长，仅展示前一部分。",
+    "struct.cacheHead": "缓存头",
     "struct.scnObjects": "对象",
     "struct.scnNames": "名称池",
     "struct.scnFields": "字段",
@@ -485,6 +500,7 @@
       [tr("struct.metaHash"), data.hash],
       [tr("struct.metaSchema"), data.schema_id],
       [tr("struct.metaCompressed"), data.compressed ? `${data.body_size} → ${data.inner_size}` : tr("struct.metaRaw")],
+      data.off12 ? [tr("struct.metaOff12"), data.off12] : null,
     ]));
     if (data.record_count) {
       root.appendChild(chips([
@@ -508,6 +524,124 @@
       root.appendChild(box);
     } else if (data.hex_head) {
       root.appendChild(hexDetails(data.hex_head));
+    }
+  }
+
+  function glslBlock(frame, open) {
+    var label = frame.role === "vs" ? tr("struct.shaderVertex")
+      : frame.role === "ps" ? tr("struct.shaderFragment") : tr("struct.shaderVariant");
+    var details = document.createElement("details");
+    details.className = "struct-details";
+    if (open) details.setAttribute("open", "");
+    details.innerHTML = `<summary>${esc(label)} · #${frame.index} · ${frame.size} B</summary>`;
+    var pre = document.createElement("pre");
+    pre.className = "struct-pre";
+    if (window.SyntaxHighlight) {
+      pre.innerHTML = window.SyntaxHighlight.render(frame.text, "hlsl") || esc(frame.text);
+    } else {
+      pre.textContent = frame.text;
+    }
+    details.appendChild(pre);
+    if (frame.truncated) {
+      var warn = document.createElement("div");
+      warn.className = "struct-warn";
+      warn.textContent = tr("struct.shaderTextCut");
+      details.appendChild(warn);
+    }
+    return details;
+  }
+
+  function glslSection(root, frames) {
+    var seen = { vs: 0, ps: 0 };
+    frames.forEach(function (frame) {
+      var open = false;
+      if (frame.role === "vs" || frame.role === "ps") {
+        open = seen[frame.role] === 0;
+        seen[frame.role] += 1;
+      } else if (frames.length === 1) {
+        open = true;
+      }
+      root.appendChild(glslBlock(frame, open));
+    });
+  }
+
+  function moreFramesDetails(total, frames) {
+    var details = document.createElement("details");
+    details.className = "struct-details";
+    details.innerHTML = `<summary>${esc(tr("struct.shaderMore"))} (+${total})</summary>`;
+    var pairs = document.createElement("div");
+    pairs.className = "struct-pairs";
+    frames.forEach(function (frame) {
+      var key = document.createElement("div");
+      key.className = "k";
+      key.textContent = `#${frame.index}`;
+      var value = document.createElement("div");
+      value.className = "v";
+      value.textContent = `${frame.role} · ${frame.size} B`;
+      pairs.appendChild(key);
+      pairs.appendChild(value);
+    });
+    details.appendChild(pairs);
+    return details;
+  }
+
+  function uniformSection(root, uniform) {
+    var box = document.createElement("div");
+    box.innerHTML = sectionTitle("struct.shaderUniformTable");
+    var pairs = document.createElement("div");
+    pairs.className = "struct-pairs";
+    (uniform.rows || []).forEach(function (row) {
+      var key = document.createElement("div");
+      key.className = "k";
+      key.textContent = row.name;
+      var value = document.createElement("div");
+      value.className = "v";
+      value.textContent = [row.type, row.sampler, row.props].filter(Boolean).join(" · ");
+      pairs.appendChild(key);
+      pairs.appendChild(value);
+    });
+    box.appendChild(pairs);
+    if (uniform.truncated) {
+      var warn = document.createElement("div");
+      warn.className = "struct-warn";
+      warn.textContent = tr("struct.shaderRowsCut");
+      box.appendChild(warn);
+    }
+    root.appendChild(box);
+  }
+
+  function renderShaderCache(root, data) {
+    root.appendChild(chips([
+      [tr("struct.shaderFrames"), data.frame_count],
+      [tr("struct.shaderGlsl"), data.glsl_frames],
+      [tr("struct.shaderUniforms"), data.uniform_frames],
+      [tr("struct.shaderDict"), `${data.dict_size} B`],
+    ]));
+    if (data.uniform && data.uniform.rows && data.uniform.rows.length) {
+      uniformSection(root, data.uniform);
+    }
+    glslSection(root, data.glsl || []);
+    if (data.hex_head) {
+      var details = hexDetails(data.hex_head);
+      details.querySelector("summary").textContent = tr("struct.shaderLayoutHex");
+      root.appendChild(details);
+    }
+    if (data.more_total > 0) {
+      root.appendChild(moreFramesDetails(data.more_total, data.more_frames || []));
+    }
+  }
+
+  function renderCachePlain(root, data) {
+    root.appendChild(chips([
+      [tr("struct.shaderGlsl"), data.glsl_frames],
+      [tr("struct.cacheHead"), `${data.head_size} B`],
+    ]));
+    glslSection(root, data.glsl || []);
+    if (data.hex_head) {
+      root.appendChild(hexDetails(data.hex_head));
+    }
+    if (data.more_total > 0) {
+      root.appendChild(moreFramesDetails(data.more_total, data.more_frames || []));
     }
   }
 
@@ -584,6 +718,8 @@
     trk: renderTrk,
     scn: renderScn,
     xml: renderXml,
+    shader_cache: renderShaderCache,
+    cache_plain: renderCachePlain,
   };
 
   function render(target, data) {
