@@ -547,12 +547,14 @@ const EXT_KIND = {
   ".mesh": "model", ".skeleton": "model", ".rawanimation": "model",
   ".animconfig": "binary", ".animgraph": "model", ".animation": "model",
   ".trackgroup": "model",
+  ".hlsl": "text", ".glsl": "text", ".vert": "text", ".frag": "text",
 };
 const NAME_EXT = new Set([".gmp", ".xn", ".wem"]);
 
 const TEXT_THUMB_EXT = new Set([
   ".json", ".xml", ".txt", ".conf", ".plist", ".atlas", ".lod", ".ini",
   ".csv", ".yaml", ".yml", ".html", ".css", ".js", ".lua", ".md", ".spr",
+  ".hlsl", ".glsl", ".vert", ".frag",
   ".animgraph", ".animation", ".animconfig", ".trackgroup",
 ]);
 
@@ -1702,6 +1704,10 @@ function bankMediaDetail(media) {
 async function showBankPreview(file, container, token) {
   const bank = await getJson(apiUrl("/api/bank", { path: file.path }));
   if (token !== previewToken) return;
+  renderBankPreview(file, bank, container);
+}
+
+function renderBankPreview(file, bank, container) {
   const entries = bank.media || [];
   const hirc = bank.hirc || {};
   const first = entries.find((item) => item.valid);
@@ -1960,7 +1966,7 @@ function unlockViewerScroll() {
 }
 
 async function openScriptViewer(file) {
-  closeDrawer();
+  if (!viewerFromDrawer) closeDrawer();
   if (viewerCloseTimer) {
     clearTimeout(viewerCloseTimer);
     viewerCloseTimer = 0;
@@ -1988,7 +1994,8 @@ async function openScriptViewer(file) {
       return;
     }
     const text = xnPreviewText(data);
-    $("viewer-stage").innerHTML = `<div class="script-viewer"><pre class="script-preview">${esc(text)}</pre></div>`;
+    const html = window.SyntaxHighlight ? window.SyntaxHighlight.render(text, "python") : null;
+    $("viewer-stage").innerHTML = `<div class="script-viewer"><pre class="script-preview">${html || esc(text)}</pre></div>`;
     $("viewer-foot").innerHTML = `<button class="mini-btn" id="xn-decompile" type="button">${tr("xn.decompile")}</button><button class="mini-btn" id="xn-disasm" type="button">${tr("xn.disasm")}</button><button class="mini-btn" id="xn-copy" type="button">${tr("xn.copyPreview")}</button>`;
     const decompile = $("xn-decompile");
     if (decompile) {
@@ -2002,7 +2009,9 @@ async function openScriptViewer(file) {
           if (result.error) throw new Error(backendText(result.error, result.detail));
           const block = document.createElement("pre");
           block.className = "script-preview";
-          block.textContent = `\n\n## decompiled source (${result.module})\n${result.source}`;
+          const source = `\n\n## decompiled source (${result.module})\n${result.source}`;
+          const sourceHtml = window.SyntaxHighlight ? window.SyntaxHighlight.render(source, "python") : null;
+          if (sourceHtml) block.innerHTML = sourceHtml; else block.textContent = source;
           $("viewer-stage").querySelector(".script-viewer")?.appendChild(block);
           decompile.dataset.loaded = "1";
           decompile.textContent = tr("xn.sourceLoaded");
@@ -2116,6 +2125,7 @@ const viewer = {
   dragging: false, dragX: 0, dragY: 0, mapDragging: false,
 };
 let viewerCloseTimer = 0;
+let viewerFromDrawer = false;
 
 const mapView = {
   data: null, file: null, canvas: null, ctx: null, stage: null,
@@ -2253,7 +2263,7 @@ function viewerIsOpen() {
 }
 
 function openViewer(file) {
-  closeDrawer();
+  if (!viewerFromDrawer) closeDrawer();
   if (viewerCloseTimer) {
     clearTimeout(viewerCloseTimer);
     viewerCloseTimer = 0;
@@ -2266,9 +2276,12 @@ function openViewer(file) {
   viewer.file = file;
   viewer.path = file.path;
   const ext = (file.ext || "").toLowerCase();
+  const kind = displayKind(file.kind, file.ext);
   const spineFile = (ext === ".json" || ext === ".skel") && /(^|\/)spine\//.test(file.path || "");
   viewer.mode = ext === ".gmp" ? "map" : ext === ".animation" || ext === ".rawanimation" ? "animation"
-    : ext === ".csb" ? "csb" : ext === ".skeleton" ? "skeleton" : spineFile ? "spine" : isTextView(file) ? "text" : "image";
+    : ext === ".csb" ? "csb" : ext === ".skeleton" ? "skeleton" : spineFile ? "spine"
+    : kind === "bank" ? "bank"
+    : ext === ".mtg" ? "neox" : isTextView(file) ? "text" : kind === "image" ? "image" : "inspect";
   setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -2286,6 +2299,12 @@ function openViewer(file) {
     openCsbViewer(file, token);
   } else if (viewer.mode === "skeleton") {
     openSkeletonViewer(file, token);
+  } else if (viewer.mode === "bank") {
+    openBankViewer(file, token);
+  } else if (viewer.mode === "neox") {
+    openNeoXViewer(file, token);
+  } else if (viewer.mode === "inspect") {
+    openInspectViewer(file, token);
   } else if (viewer.mode === "image") {
     openImageViewer(
       file, token,
@@ -2327,6 +2346,7 @@ function clearViewerContent() {
 
 function closeViewer() {
   viewer.token += 1;
+  viewerFromDrawer = false;
   viewer.path = null;
   viewer.file = null;
   viewer.mode = "";
@@ -2578,7 +2598,8 @@ async function openTextViewer(file, token) {
     if (token !== viewer.token) return;
     stage.innerHTML = `<div class="text-viewer-layout"><div class="viewer-text-wrap" id="viewer-text-wrap"><pre class="viewer-text" id="viewer-text"></pre></div>${textViewerMap()}</div>`;
     const pre = $("viewer-text");
-    pre.textContent = text;
+    const html = window.SyntaxHighlight ? window.SyntaxHighlight.render(text, file.path) : null;
+    if (html) pre.innerHTML = html; else pre.textContent = text;
     requestAnimationFrame(() => {
       if (token !== viewer.token) return;
       drawTextViewerMap(text);
@@ -2863,6 +2884,61 @@ async function openSkeletonViewer(file, token) {
     } else {
       stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: "skeleton preview missing" }))}</div>`;
     }
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+function viewerScrollWrap(stage) {
+  stage.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "viewer-scroll";
+  stage.appendChild(wrap);
+  return wrap;
+}
+
+function pauseDrawerMedia() {
+  document.querySelectorAll("#preview-media audio, #preview-media video").forEach((node) => node.pause());
+}
+
+async function openBankViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  try {
+    const bank = await getJson(apiUrl("/api/bank", { path: file.path }));
+    if (token !== viewer.token) return;
+    pauseDrawerMedia();
+    renderBankPreview(file, bank, viewerScrollWrap(stage));
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openNeoXViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("gmp.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/neox", neoxParams(file)));
+    if (token !== viewer.token) return;
+    renderNeoXPreview(data, viewerScrollWrap(stage), file);
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openInspectViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("viewer.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/inspect", { path: file.path }));
+    if (token !== viewer.token) return;
+    renderInspect(data, viewerScrollWrap(stage));
   } catch (error) {
     if (token !== viewer.token) return;
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
@@ -6700,7 +6776,7 @@ function renderNeoXPreview(data, container, file) {
 }
 
 async function openGimDirect(file) {
-  closeDrawer();
+  if (!viewerFromDrawer) closeDrawer();
   if (viewerCloseTimer) {
     clearTimeout(viewerCloseTimer);
     viewerCloseTimer = 0;
@@ -8750,6 +8826,39 @@ function setViewerTitle(file) {
   if (head) refreshMarqueeTargets(head);
 }
 
+function enlargePreview(file) {
+  if (!file) return;
+  viewerFromDrawer = true;
+  const ext = (file.ext || "").toLowerCase();
+  if (ext === ".gim" || ext === ".mesh") {
+    openGimDirect(file);
+    return;
+  }
+  if (ext === ".xn" || displayKind(file.kind, file.ext) === "script") {
+    openScriptViewer(file);
+    return;
+  }
+  openViewer(file);
+}
+
+function addEnlargeButton(file) {
+  const media = $("preview-media");
+  const old = $("preview-enlarge");
+  if (old) old.remove();
+  if (!file) return;
+  const kind = displayKind(file.kind, file.ext);
+  if (kind === "audio" || kind === "video") return;
+  const button = document.createElement("button");
+  button.id = "preview-enlarge";
+  button.type = "button";
+  button.className = "icon-btn preview-enlarge";
+  button.title = tr("viewer.enlarge");
+  button.setAttribute("aria-label", tr("viewer.enlarge"));
+  button.innerHTML = `<svg class="icon"><use href="#i-fullscreen"></use></svg>`;
+  button.addEventListener("click", () => enlargePreview(file));
+  media.appendChild(button);
+}
+
 async function showPreview(file) {
   const token = ++previewToken;
   stopXnMarquee();
@@ -8768,6 +8877,7 @@ async function showPreview(file) {
   }
   $("preview-media").classList.remove("swap-in", "gmp-mode");
   $("preview-media").innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+  addEnlargeButton(null);
   $("preview-meta").innerHTML = metaSkeleton();
   $("preview-note").textContent = tr("drawer.note.info");
   $("open-image").classList.add("hidden");
@@ -8832,6 +8942,13 @@ async function showPreview(file) {
       const data = await getJson(apiUrl("/api/skeleton", { path: file.path }));
       if (token !== previewToken) return;
       if (window.renderSkeletonPreview) window.renderSkeletonPreview(media, data);
+      $("preview-note").textContent = "";
+    } else if (window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext)) {
+      media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
+      $("preview-note").textContent = tr("struct.loading");
+      const data = await getJson(apiUrl("/api/struct", { path: file.path }));
+      if (token !== previewToken) return;
+      if (window.renderStructPreview) window.renderStructPreview(media, data);
       $("preview-note").textContent = "";
     } else if (ext === ".gmp") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
@@ -8903,7 +9020,10 @@ async function showPreview(file) {
     if (token !== previewToken) return;
     $("preview-note").textContent = "";
     media.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}<br>${tr("error.previewTip")}</div>`;
+    addEnlargeButton(null);
+    return;
   }
+  addEnlargeButton(file);
 }
 
 function openDrawerPanel() {

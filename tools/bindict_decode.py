@@ -296,7 +296,10 @@ class Bindict:
                     else:
                         value, cursor = self.scalar(cursor, val_tag, depth + 1)
                     rows.append((key, value))
-                return dict(rows), cursor
+                try:
+                    return dict(rows), cursor
+                except TypeError:
+                    return {str(key): value for key, value in rows}, cursor
             rows = {}
             cursor = pos
             for _ in range(count):

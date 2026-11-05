@@ -97,6 +97,18 @@
   --danger: var(--md-error);
   --radius: var(--md-shape-lg);
   --sidebar: 264px;
+  --code-kw: #7bdbe6;
+  --code-str: #a9d98d;
+  --code-num: #eec06c;
+  --code-com: #7b878b;
+  --code-fn: #9df1fa;
+  --code-type: #ffdfa0;
+  --code-attr: #b2cbd0;
+  --code-tag: #7bdbe6;
+  --code-prop: #8ee6ef;
+  --code-sel: #eec06c;
+  --code-lit: #ffb4ab;
+  --code-pre: #ffdfa0;
 }
 
 :root[data-theme="light"] {
@@ -176,6 +188,18 @@
   --md-elevation-3: 0 1px 3px rgba(0, 0, 0, .12), 0 4px 8px 3px rgba(0, 0, 0, .08);
   --md-elevation-4: 0 2px 3px rgba(0, 0, 0, .12), 0 6px 10px 4px rgba(0, 0, 0, .08);
   --md-elevation-5: 0 4px 4px rgba(0, 0, 0, .12), 0 8px 12px 6px rgba(0, 0, 0, .08);
+  --code-kw: #006a71;
+  --code-str: #2f6b2f;
+  --code-num: #8a5a00;
+  --code-com: #6f797a;
+  --code-fn: #005f66;
+  --code-type: #765b00;
+  --code-attr: #3f484a;
+  --code-tag: #006a71;
+  --code-prop: #005f66;
+  --code-sel: #765b00;
+  --code-lit: #8c1d18;
+  --code-pre: #765b00;
 }
 
 * { box-sizing: border-box; }
@@ -810,6 +834,7 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .drawer-sub { color: var(--md-on-surface-variant); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 .drawer-body { padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
 .preview-media {
+  position: relative;
   min-height: 120px; display: flex; align-items: center; justify-content: center;
   background: var(--md-surface-container-lowest); border: 1px solid var(--md-outline-variant);
   border-radius: var(--md-shape-lg); padding: 10px; overflow: hidden; flex: none;
@@ -824,6 +849,17 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   color: var(--md-on-surface-variant);
 }
 .preview-media .placeholder { color: var(--md-on-surface-variant); padding: 28px 12px; text-align: center; }
+.preview-enlarge {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  width: 32px; height: 32px;
+  background: var(--md-surface-container-high); color: var(--md-on-surface-variant);
+  box-shadow: var(--md-elevation-1);
+  animation: preview-in .3s ease;
+  transition: background .18s ease, color .18s ease, transform .18s ease;
+}
+.preview-enlarge .icon { width: 18px; height: 18px; }
+.preview-enlarge:hover { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.preview-enlarge:active { transform: scale(.94); }
 .inspect-card { width: 100%; display: flex; flex-direction: column; gap: 10px; }
 .inspect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .inspect-format { font-size: 13px; font-weight: 600; }
@@ -896,6 +932,16 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   white-space: pre-wrap; word-break: break-word;
 }
 .script-preview + .script-preview { margin-top: 18px; border-top: 1px solid var(--md-outline-variant); padding-top: 16px; }
+.tok-kw, .tok-tag { color: var(--code-kw); }
+.tok-str { color: var(--code-str); }
+.tok-num { color: var(--code-num); }
+.tok-com { color: var(--code-com); }
+.tok-fn { color: var(--code-fn); }
+.tok-type, .tok-pre { color: var(--code-type); }
+.tok-attr { color: var(--code-attr); }
+.tok-prop { color: var(--code-prop); }
+.tok-sel { color: var(--code-sel); }
+.tok-lit { color: var(--code-lit); }
 .gmp-units {
   display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow: auto;
   border: 0; border-radius: var(--md-shape-md); background: var(--md-surface-container-lowest); padding: 6px;
@@ -1023,6 +1069,9 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 @keyframes viewer-image-in { from { opacity: 0; } to { opacity: 1; } }
 .viewer-stage.dragging { cursor: grabbing; }
 .viewer-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--md-on-surface-variant); font-size: 11px; }
+.viewer-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: 18px; }
+.viewer-scroll.swap-in > * { animation: preview-in .3s ease; }
+.viewer-scroll .bank-media-list, .viewer-scroll .gmp-units, .viewer-scroll .xn-list { max-height: 46vh; }
 :root[data-theme="light"] .viewer-stage:has(> #viewer-image) {
   background: var(--md-surface-container);
 }

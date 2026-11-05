@@ -61,6 +61,7 @@ import spine_parse
 import csb_parse
 import rawanimation_parse
 import skeleton_preview_parse
+import struct_parse
 import xn_crypto
 import xn_parse
 import xn_decompile
@@ -104,6 +105,7 @@ VIDEO_EXT = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
 TEXT_EXT = {
     ".json", ".xml", ".txt", ".conf", ".plist", ".atlas", ".mtg", ".gim", ".lod",
     ".ini", ".csv", ".yaml", ".yml", ".html", ".css", ".js", ".lua", ".py", ".md",
+    ".hlsl", ".glsl", ".vert", ".frag",
 }
 MODEL_EXT = {".mesh", ".skel", ".animgraph", ".animation", ".rawanimation", ".blendspace1d", ".trackgroup"}
 MIME = {
@@ -3506,7 +3508,8 @@ class Handler(BaseHTTPRequestHandler):
             if route.startswith("/static/"):
                 name = route[len("/static/"):]
                 if name in {"app.js", "style.css", "field_icons.js", "field_icons.css",
-                            "animation_preview.js", "spine_preview.js", "csb_preview.js", "skeleton_preview.js"}:
+                            "animation_preview.js", "spine_preview.js", "csb_preview.js", "skeleton_preview.js",
+                            "syntax_highlight.js", "struct_preview.js"}:
                     ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
                     self._send((WEB_DIR / name).read_bytes(), ctype, cache="no-store")
                     return
@@ -3867,6 +3870,34 @@ class Handler(BaseHTTPRequestHandler):
                 data["name"] = row["name"]
                 data["package"] = row["package"]
                 data["size"] = row["unpacked"]
+                self._json(data)
+                return
+            if route == "/api/struct":
+                path = (query.get("path", [""])[0] or "").strip("/")
+                row = self._row(path)
+                if not row:
+                    self._error("not found", 404)
+                    return
+                ext = (row["ext"] or "").lower()
+                if ext not in struct_parse.SUPPORTED_EXTS:
+                    self._error("not a struct-preview file", 415)
+                    return
+                if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                    self._error("file too large: %d bytes (limit %d MB)"
+                                % (row["unpacked"], PARSE_UNPACKED_LIMIT // (1024 * 1024)), 413)
+                    return
+                try:
+                    data = struct_parse.parse(self._entry_payload(row), ext)
+                except struct_parse.StructError as exc:
+                    self._error(str(exc), 415)
+                    return
+                except Exception as exc:
+                    self._error("struct parse failed: %s: %s" % (type(exc).__name__, exc), 415)
+                    return
+                data["path"] = row["path"]
+                data["name"] = row["name"]
+                data["package"] = row["package"]
+                data["ext"] = ext
                 self._json(data)
                 return
             if route == "/api/neox":
