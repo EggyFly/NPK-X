@@ -9,7 +9,10 @@
   .cache      16hex 族 = 多帧 zstd (帧 0 自包含, 其输出即帧 1+ 的 raw-content 字典, NeoX DecompressDataWithDict);
               8hex 族 = 裸头 + 明文 GLSL 段 (#version 扫描分段)
   .efx        @BIN 头 + [u8 len+16][字符串] 属性流; 属性名/value 明文, 其余为哈希记录未解
-  .scn        NeoX c159410d 容器, 值类型在 gim/mtg 基础上多 4=i32 与 7=f64 (PixelFormat 后接 ProbeOffset 佐证)
+  .scn        NeoX c159410d 容器, 值类型在 gim/mtg 基础上多 4=i32 与 7/8=8 字节定长结构 (仅 Probe.PixelFormat,
+              73 文件实测值恒定且后接 ProbeOffset 全对齐, f64 解读数值荒谬故按原始字节展示);
+              SHValue 类对象是裸属性记录 (fid+type+value, 无 prop_count 头也无 01 00 终止符),
+              36 组×6 字节与 meta 表 36 个 SHValue 条目精确对齐 (057c29d9/06bca1d0 实测)
   .trk        NTRK 相机轨道: 32 字节名字段 + u32 帧数 + 帧数-1 个 f32 时间 + 6 字节通道标志 + 位置/四元数块
   .sfxmusic/.postprocess 为纯文本 XML, 已改由 /api/text 代码预览, 不再走结构化解析
 """
@@ -34,7 +37,7 @@ MAX_DEPTH = 20
 MAX_LIST = 300
 MAX_STR = 400
 MAX_RECORDS = 400
-MAX_OBJECTS = 1200
+MAX_OBJECTS = 4000
 MAX_PAIRS = 500
 MAX_REFS = 80
 MAX_TIMES = 4000
@@ -51,6 +54,8 @@ REF_RE = re.compile(
     re.IGNORECASE,
 )
 OBJECT_NAME_RE = re.compile(r"^[A-Za-z_]\w*\(\d+\)$")
+
+SCN_BARE_CLASSES = {"SHValue"}
 
 
 class StructError(ValueError):
@@ -596,8 +601,8 @@ def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
 def _read_value_ext(data: bytes, pos: int, typ: int):
     if typ == 4:
         return struct.unpack_from("<i", data, pos)[0], pos + 4
-    if typ == 7:
-        return struct.unpack_from("<d", data, pos)[0], pos + 8
+    if typ in (7, 8):
+        return "0x" + data[pos:pos + 8].hex(), pos + 8
     return neox_object._read_value(data, pos, typ)
 
 
@@ -642,8 +647,17 @@ def parse_scn(data: bytes) -> dict:
             warnings.append("inspect.scnObjectCap")
             break
         try:
-            prop_count, vpos = _read_varint(blob, vpos)
             props = {}
+            if (index < len(meta) and 0 <= meta[index][0] < len(table)
+                    and table[meta[index][0]] in SCN_BARE_CLASSES):
+                fid, vpos = _read_varint(blob, vpos)
+                typ, vpos = _read_varint(blob, vpos)
+                types_used[typ] = types_used.get(typ, 0) + 1
+                value, vpos = _read_value_ext(blob, vpos, typ)
+                props[fields[fid] if fid < len(fields) else f"field{fid}"] = value
+                objects.append(props)
+                continue
+            prop_count, vpos = _read_varint(blob, vpos)
             for _ in range(prop_count):
                 fid, vpos = _read_varint(blob, vpos)
                 typ, vpos = _read_varint(blob, vpos)

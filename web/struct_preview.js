@@ -6,6 +6,13 @@
   window.STRUCT_PREVIEW_EXT = new Set([
     ".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".cache",
   ]);
+  var SPECIAL_NAMES = new Set(["path_hash_file", "path_hash_file_full_res_list", "rv"]);
+  var SPECIAL_PREFIXES = ["auction_goods_name"];
+  window.STRUCT_PREVIEW_IS_SPECIAL = function (name) {
+    var lower = String(name || "").toLowerCase();
+    if (SPECIAL_NAMES.has(lower)) return true;
+    return SPECIAL_PREFIXES.some(function (prefix) { return lower.indexOf(prefix) === 0; });
+  };
 
   var STYLE_ID = "struct-preview-style";
   var CSS = [
@@ -106,6 +113,33 @@
     "struct.bdUnits": "单位",
     "struct.bdStringPool": "字符串池",
     "struct.unknown": "这个格式返回了未知结构，请查看 Hex。",
+    "struct.title.pathHash": "path_hash_file 路径哈希总表",
+    "struct.title.pathList": "path_hash_file_full_res_list 路径表",
+    "struct.title.luaChunk": "Lua 字节码",
+    "struct.title.resVersion": "rv 资源版本",
+    "struct.phHeader": "容器头",
+    "struct.phRecords": "记录总数",
+    "struct.phPayload": "解压负载",
+    "struct.phSample": "抽样记录（前 500 条 · FNV-1a32 / 路径长度）",
+    "struct.phLen": "长度",
+    "struct.plLines": "总行数",
+    "struct.plBytes": "解压大小",
+    "struct.plOffset": "起始行",
+    "struct.plSample": "路径行（正斜杠明文）",
+    "struct.plPrev": "上一页",
+    "struct.plNext": "下一页",
+    "struct.luaVersion": "版本",
+    "struct.luaSource": "来源",
+    "struct.luaCode": "指令",
+    "struct.luaConst": "常量",
+    "struct.luaProtos": "子函数",
+    "struct.luaSize": "大小",
+    "struct.rvValue": "内容",
+    "struct.rvSize": "大小",
+    "special.sampleCut": "记录总数超过抽样上限，仅显示前 500 条。",
+    "special.pageCut": "路径行超过单页上限，仅显示当前 500 行，可用分页按钮翻页。",
+    "special.luaBytecode": "NeoX 定制 Lua 5.4 字节码（非标准 1bLua 签名），已完整反序列化，常量即内容数据。",
+    "special.rvMeaning": "客户端引擎/资源 revision，与补丁清单 npk_version_pc 中的 res rev 一致。",
     "inspect.references": "引用资源",
     "inspect.hex": "原始 Hex（前 4 KB）",
     "text.tooLarge": "文件过大，仅显示前一部分。",
@@ -676,7 +710,136 @@
     }
   }
 
+  function pairsSection(titleKey, rows) {
+    var box = document.createElement("div");
+    box.innerHTML = sectionTitle(titleKey);
+    var pairs = document.createElement("div");
+    pairs.className = "struct-pairs";
+    rows.forEach(function (pair) {
+      var key = document.createElement("div");
+      key.className = "k";
+      key.textContent = pair[0];
+      var value = document.createElement("div");
+      value.className = "v";
+      value.textContent = pair[1];
+      pairs.appendChild(key);
+      pairs.appendChild(value);
+    });
+    box.appendChild(pairs);
+    return box;
+  }
+
+  function loadPathListPage(root, path, offset) {
+    fetch("/api/struct?path=" + encodeURIComponent(path) + "&offset=" + offset, { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : Promise.reject(new Error(String(response.status))); })
+      .then(function (data) {
+        var media = root.parentElement;
+        if (!media) return;
+        var current = media.querySelector(".struct-preview");
+        var currentPath = (current && current.dataset.path) || media.dataset.structPath || "";
+        if (currentPath && currentPath !== data.path) return;
+        if (media.classList.contains("viewer-struct") && window.renderStructBlocks) {
+          window.renderStructBlocks(media, data);
+        } else {
+          render(media, data);
+        }
+      })
+      .catch(function () {});
+  }
+
+  function renderPathHash(root, data) {
+    root.appendChild(chips([
+      [tr("struct.phHeader"), data.header_hex],
+      [tr("struct.phRecords"), Number(data.record_count).toLocaleString()],
+      [tr("struct.phPayload"), `${Number(data.payload_size).toLocaleString()} B`],
+    ]));
+    if (data.sample && data.sample.length) {
+      root.appendChild(pairsSection("struct.phSample", data.sample.map(function (row, index) {
+        return [`#${index}`, `${row[0]} · ${tr("struct.phLen")} ${row[1]}`];
+      })));
+    }
+  }
+
+  function renderPathList(root, data) {
+    root.appendChild(chips([
+      [tr("struct.plLines"), Number(data.line_count).toLocaleString()],
+      [tr("struct.plBytes"), `${(data.byte_size / 1048576).toFixed(2)} MB`],
+      [tr("struct.plOffset"), data.offset],
+      data.rows && data.rows.length ? [tr("struct.plSample"), `#${data.offset} – #${data.offset + data.rows.length - 1}`] : null,
+    ]));
+    if (data.rows && data.rows.length) {
+      root.appendChild(pairsSection("struct.plSample", data.rows.map(function (row, index) {
+        return [`#${data.offset + index}`, row];
+      })));
+    }
+    var bar = document.createElement("div");
+    bar.className = "struct-toolbar";
+    if (data.offset > 0) {
+      var prev = document.createElement("button");
+      prev.type = "button";
+      prev.className = "struct-mini";
+      prev.textContent = tr("struct.plPrev");
+      prev.addEventListener("click", function () {
+        loadPathListPage(root, data.path, Math.max(0, data.offset - 500));
+      });
+      bar.appendChild(prev);
+    }
+    if (data.rows && data.rows.length && data.offset + data.rows.length < data.line_count) {
+      var next = document.createElement("button");
+      next.type = "button";
+      next.className = "struct-mini";
+      next.textContent = tr("struct.plNext");
+      next.addEventListener("click", function () {
+        loadPathListPage(root, data.path, data.offset + data.rows.length);
+      });
+      bar.appendChild(next);
+    }
+    if (bar.childElementCount) {
+      root.appendChild(bar);
+    }
+  }
+
+  function renderLuaChunk(root, data) {
+    var main = data.main || {};
+    root.appendChild(chips([
+      [tr("struct.luaVersion"), `Lua ${data.lua_version} · fmt ${data.format} · ${data.sizes}`],
+      [tr("struct.luaSource"), data.source || "—"],
+      [tr("struct.luaSize"), `${Number(data.size).toLocaleString()} B`],
+      [tr("struct.luaCode"), main.code_count],
+      [tr("struct.luaConst"), main.constant_count],
+      main.proto_count ? [tr("struct.luaProtos"), main.proto_count] : null,
+    ]));
+    if (main.constants && main.constants.length) {
+      root.appendChild(treeSection(main.constants));
+    }
+    if (main.protos && main.protos.length) {
+      var details = document.createElement("details");
+      details.className = "struct-details";
+      details.innerHTML = `<summary>${esc(tr("struct.luaProtos"))} · ${main.protos.length} / ${main.proto_count}</summary>`;
+      details.appendChild(treeSection(main.protos));
+      root.appendChild(details);
+    }
+  }
+
+  function renderResVersion(root, data) {
+    root.appendChild(chips([
+      [tr("struct.rvValue"), data.value],
+      [tr("struct.rvSize"), `${data.size} B`],
+    ]));
+  }
+
+  var SPECIAL_TITLES = {
+    path_hash: "struct.title.pathHash",
+    path_list: "struct.title.pathList",
+    lua_chunk: "struct.title.luaChunk",
+    res_version: "struct.title.resVersion",
+  };
+
   var RENDERERS = {
+    path_hash: renderPathHash,
+    path_list: renderPathList,
+    lua_chunk: renderLuaChunk,
+    res_version: renderResVersion,
     msgpack: renderMsgpack,
     bindict: renderBindict,
     heightmap: renderHeightmap,
@@ -706,6 +869,16 @@
     });
   }
 
+  function markSingleCard(flow) {
+    var cards = Array.prototype.filter.call(flow.children, function (child) {
+      var cls = String((child && child.className) || "");
+      if (cls.indexOf("bank-chips") !== -1 || cls.indexOf("struct-warn") !== -1) return false;
+      if (cls.indexOf("struct-toolbar") !== -1) return false;
+      return child.querySelector && !!child.querySelector(".struct-tree,.struct-pairs,.struct-pre");
+    });
+    flow.classList.toggle("struct-single-card", cards.length === 1);
+  }
+
   function renderStructBlocks(target, data) {
     var media = toElement(target);
     if (!media) return;
@@ -717,6 +890,7 @@
     flow.className = "struct-flow";
     media.appendChild(flow);
     fillBlocks(flow, data);
+    markSingleCard(flow);
     media.classList.remove("swap-in");
     void media.offsetWidth;
     media.classList.add("swap-in");
@@ -732,7 +906,7 @@
     var media = toElement(target);
     if (!media) return;
     ensureStyle();
-    var titleKey = `struct.title.${(data.ext || "").replace(".", "")}`;
+    var titleKey = SPECIAL_TITLES[data.kind] || `struct.title.${(data.ext || "").replace(".", "")}`;
     var root = document.createElement("div");
     root.className = "struct-preview";
     root.dataset.path = data.path || "";

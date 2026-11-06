@@ -2284,7 +2284,8 @@ function openViewer(file) {
     : ext === ".csb" ? "csb" : ext === ".skeleton" ? "skeleton" : spineFile ? "spine"
     : kind === "bank" ? "bank"
     : ext === ".mtg" ? "neox" : isTextView(file) ? "text" : kind === "image" ? "image"
-    : window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext) ? "struct" : "inspect";
+    : window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext) ? "struct"
+    : typeof window.STRUCT_PREVIEW_IS_SPECIAL === "function" && window.STRUCT_PREVIEW_IS_SPECIAL(file.name) ? "struct" : "inspect";
   setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -8964,7 +8965,7 @@ async function showPreview(file) {
       if (token !== previewToken) return;
       if (window.renderSkeletonPreview) window.renderSkeletonPreview(media, data);
       $("preview-note").textContent = "";
-    } else if (window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext)) {
+    } else if ((window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext)) || (typeof window.STRUCT_PREVIEW_IS_SPECIAL === "function" && window.STRUCT_PREVIEW_IS_SPECIAL(info.name))) {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("struct.loading");
       const data = await getJson(apiUrl("/api/struct", { path: file.path }));

@@ -1090,6 +1090,10 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
   background: var(--md-surface-container);
   break-inside: avoid; max-height: min(78vh, 760px); overflow-y: auto;
 }
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow.struct-single-card > :has(> .struct-tree),
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow.struct-single-card > :has(> .struct-pairs),
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow.struct-single-card > .struct-details,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow.struct-single-card > .struct-pre { column-span: all; }
 :root[data-theme="light"] .viewer-stage:has(> #viewer-image) {
   background: var(--md-surface-container);
 }

@@ -62,6 +62,7 @@ import csb_parse
 import rawanimation_parse
 import skeleton_preview_parse
 import struct_parse
+import special_containers
 import xn_crypto
 import xn_parse
 import xn_decompile
@@ -1115,6 +1116,20 @@ def read_entry_bytes(package_path: str, row) -> bytes:
     return data
 
 
+def read_entry_raw(package_path: str, row) -> bytes:
+    if hasattr(row, "packed_size"):
+        offset, packed = row.offset, row.packed_size
+    else:
+        offset, packed = row["offset"], row["packed"]
+    offset, packed = int(offset), int(packed)
+    with open(package_path, "rb") as handle:
+        handle.seek(offset)
+        raw = handle.read(packed)
+    if len(raw) != packed:
+        raise ValueError("short read from package")
+    return raw
+
+
 def ppk_shards(game_root: Path) -> list[Path]:
     folder = game_root / "ppk"
     if not folder.is_dir():
@@ -1520,7 +1535,7 @@ class ThumbPending(Exception):
 
 class BrowserServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = False
     request_queue_size = 128
 
     db_path: Path
@@ -3879,15 +3894,28 @@ class Handler(BaseHTTPRequestHandler):
                     self._error("not found", 404)
                     return
                 ext = (row["ext"] or "").lower()
-                if ext not in struct_parse.SUPPORTED_EXTS:
+                special_kind = special_containers.match_name(row["name"] or "") if not ext else None
+                if special_kind is None and ext not in struct_parse.SUPPORTED_EXTS:
                     self._error("not a struct-preview file", 415)
                     return
-                if int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
+                if special_kind is None and int(row["unpacked"] or 0) > PARSE_UNPACKED_LIMIT:
                     self._error("file too large: %d bytes (limit %d MB)"
                                 % (row["unpacked"], PARSE_UNPACKED_LIMIT // (1024 * 1024)), 413)
                     return
                 try:
-                    data = struct_parse.parse(self._entry_payload(row), ext)
+                    if special_kind is not None:
+                        try:
+                            offset = int((query.get("offset", ["0"])[0] or "0"))
+                        except ValueError:
+                            offset = 0
+                        payload = read_entry_raw(row["package_path"], row) if special_kind == "path_list" \
+                            else self._entry_payload(row)
+                        data = special_containers.parse_special(special_kind, payload, max(offset, 0))
+                    else:
+                        data = struct_parse.parse(self._entry_payload(row), ext)
+                except special_containers.SpecialError as exc:
+                    self._error(str(exc), 415)
+                    return
                 except struct_parse.StructError as exc:
                     self._error(str(exc), 415)
                     return
@@ -4363,7 +4391,7 @@ def main() -> int:
     parser.add_argument("--cache-dir", type=Path, default=None)
     parser.add_argument("--cache-limit-mb", type=int, default=2048)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--rebuild-catalog", action="store_true")
     parser.add_argument("--refresh-pathdict", action="store_true")
     parser.add_argument("--force", action="store_true", help="clear cache and rebuild from the local client")
@@ -4535,22 +4563,23 @@ def main() -> int:
         },
     )
     server = None
-    for port in range(args.port, args.port + 20):
+    for port in range(args.port, args.port + 11):
         try:
             server = server_class((args.host, port), Handler)
             break
         except OSError:
             continue
     if server is None:
-        print("no free port", file=sys.stderr)
+        print(f"ERROR: no free port in {args.port}-{args.port + 10}", file=sys.stderr)
         return 6
     if server.server_port != args.port:
-        print(f"port {args.port} busy, using {server.server_port}", file=sys.stderr)
-    url = f"http://{args.host}:{server.server_port}/"
+        print(f"端口 {args.port} 被占用, 顺延到 {server.server_port}", file=sys.stderr)
+    visit_host = "localhost" if args.host in ("0.0.0.0", "::") else args.host
+    url = f"http://{visit_host}:{server.server_port}/"
     print(f"NPK Browser: {url}")
     print("Press Ctrl+C to stop.")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("WARNING: server is listening on a non-loopback address", file=sys.stderr)
+        print(f"局域网可通过本机 IP 访问: http://<本机IP>:{server.server_port}/")
     if check_update:
         threading.Thread(target=refresh_update, args=(server,), daemon=True).start()
     if not args.no_open:
