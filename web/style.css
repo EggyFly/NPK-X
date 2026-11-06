@@ -1072,6 +1072,24 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 .viewer-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: 18px; }
 .viewer-scroll.swap-in > * { animation: preview-in .3s ease; }
 .viewer-scroll .bank-media-list, .viewer-scroll .gmp-units, .viewer-scroll .xn-list { max-height: 46vh; }
+.viewer-scroll.viewer-struct .struct-tree, .viewer-scroll.viewer-struct .struct-pairs, .viewer-scroll.viewer-struct .struct-pre {
+  max-height: none; overflow: visible;
+}
+.viewer-scroll.viewer-struct .struct-pre { white-space: pre-wrap; overflow-wrap: break-word; }
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow { columns: 2; column-gap: 10px; }
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .bank-chips,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .struct-warn,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .struct-plot,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .struct-canvas { column-span: all; margin: 0 0 10px; }
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .struct-details,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > .struct-pre,
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > :has(> .struct-tree),
+.viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow > :has(> .struct-pairs) {
+  margin: 0 0 10px; padding: 12px;
+  border: 1px solid var(--md-outline-variant); border-radius: var(--md-shape-lg);
+  background: var(--md-surface-container);
+  break-inside: avoid; max-height: min(78vh, 760px); overflow-y: auto;
+}
 :root[data-theme="light"] .viewer-stage:has(> #viewer-image) {
   background: var(--md-surface-container);
 }
@@ -1297,6 +1315,7 @@ html.viewer-open { overflow: hidden; scrollbar-gutter: stable; }
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: minmax(0, 1fr) 220px; gap: 16px; }
+  .viewer-scroll.viewer-struct.viewer-struct-grid > .struct-flow { columns: 1; }
   .file-row { grid-template-columns: 48px minmax(0, 1fr) 84px 36px; }
   .file-row-pkg { display: none; }
   .file-list.picking .file-row { grid-template-columns: 24px 48px minmax(0, 1fr) 84px 36px; }

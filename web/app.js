@@ -556,6 +556,7 @@ const TEXT_THUMB_EXT = new Set([
   ".csv", ".yaml", ".yml", ".html", ".css", ".js", ".lua", ".md", ".spr",
   ".hlsl", ".glsl", ".vert", ".frag",
   ".animgraph", ".animation", ".animconfig", ".trackgroup",
+  ".postprocess", ".sfxmusic", ".stb", ".nstb", ".rscan", ".nxmeta", ".lic", ".texarray",
 ]);
 
 function displayKind(kind, ext) {
@@ -602,8 +603,9 @@ function itemAction(file) {
   if (ext === ".mesh") return { name: "gim", label: tr("action.view"), icon: "map" };
   if (ext === ".xn") return { name: "script", label: tr("action.script"), icon: "code" };
   if (kind === "audio") return { name: "play", label: tr("action.play"), icon: "play" };
+  if (kind === "video") return { name: "preview", label: tr("action.view"), icon: "zoom" };
   if (kind === "image" || isTextView(file)) return { name: "view", label: tr("action.view"), icon: "zoom" };
-  return { name: "preview", label: tr("action.view"), icon: "zoom" };
+  return { name: "view", label: tr("action.view"), icon: "zoom" };
 }
 
 function thumbMarkup(file, small = false) {
@@ -2281,7 +2283,8 @@ function openViewer(file) {
   viewer.mode = ext === ".gmp" ? "map" : ext === ".animation" || ext === ".rawanimation" ? "animation"
     : ext === ".csb" ? "csb" : ext === ".skeleton" ? "skeleton" : spineFile ? "spine"
     : kind === "bank" ? "bank"
-    : ext === ".mtg" ? "neox" : isTextView(file) ? "text" : kind === "image" ? "image" : "inspect";
+    : ext === ".mtg" ? "neox" : isTextView(file) ? "text" : kind === "image" ? "image"
+    : window.STRUCT_PREVIEW_EXT && window.STRUCT_PREVIEW_EXT.has(ext) ? "struct" : "inspect";
   setViewerTitle(file);
   $("viewer-stage").innerHTML = "";
   $("viewer-foot").innerHTML = "";
@@ -2303,6 +2306,8 @@ function openViewer(file) {
     openBankViewer(file, token);
   } else if (viewer.mode === "neox") {
     openNeoXViewer(file, token);
+  } else if (viewer.mode === "struct") {
+    openStructViewer(file, token);
   } else if (viewer.mode === "inspect") {
     openInspectViewer(file, token);
   } else if (viewer.mode === "image") {
@@ -2939,6 +2944,22 @@ async function openInspectViewer(file, token) {
     const data = await getJson(apiUrl("/api/inspect", { path: file.path }));
     if (token !== viewer.token) return;
     renderInspect(data, viewerScrollWrap(stage));
+  } catch (error) {
+    if (token !== viewer.token) return;
+    stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
+  }
+}
+
+async function openStructViewer(file, token) {
+  const stage = $("viewer-stage");
+  $("viewer-foot").innerHTML = "";
+  stage.innerHTML = `<div class="viewer-loading"><span class="spinner"></span>${tr("struct.loading")}</div>`;
+  try {
+    const data = await getJson(apiUrl("/api/struct", { path: file.path }));
+    if (token !== viewer.token) return;
+    const wrap = viewerScrollWrap(stage);
+    wrap.classList.add("viewer-struct", "viewer-struct-grid");
+    if (window.renderStructBlocks) window.renderStructBlocks(wrap, data);
   } catch (error) {
     if (token !== viewer.token) return;
     stage.innerHTML = `<div class="errorbox">${esc(tr("error.preview", { message: error.message }))}</div>`;
@@ -8962,6 +8983,16 @@ async function showPreview(file) {
       const data = await getJson(apiUrl("/api/neox", neoxParams(file)));
       if (token !== previewToken) return;
       renderNeoXPreview(data, media, file);
+    } else if (isTextView(file)) {
+      $("preview-note").textContent = tr("text.loading");
+      const response = await fetch(apiUrl("/api/text", { path: file.path }));
+      if (token !== previewToken) return;
+      if (!response.ok) throw new Error(tr("text.cannotPreview"));
+      const text = await response.text();
+      if (token !== previewToken) return;
+      const html = window.SyntaxHighlight ? window.SyntaxHighlight.render(text, file.path) : null;
+      media.innerHTML = `<pre>${html || esc(text)}</pre>`;
+      swapPreview(media);
     } else if (kind === "script") {
       media.innerHTML = `<div class="preview-skeleton skeleton" aria-hidden="true"></div>`;
       $("preview-note").textContent = tr("drawer.note.script");

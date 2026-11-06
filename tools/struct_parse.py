@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""结构化预览解析器: .bin/.eggimonbin/.meta/.efx/.scn/.trk/.sfxmusic/.postprocess/.cache.
+"""结构化预览解析器: .bin/.eggimonbin/.meta/.efx/.scn/.trk/.cache.
 
 格式结论 (全部来自本目录样本实测):
   .bin        zstd+msgpack 双层 / 裸 msgpack / bindict 表 / 高度图(u32 w, u32 h, int16 高程) / zlib / 全零 / 多帧 zstd 着色器容器
@@ -11,8 +11,7 @@
   .efx        @BIN 头 + [u8 len+16][字符串] 属性流; 属性名/value 明文, 其余为哈希记录未解
   .scn        NeoX c159410d 容器, 值类型在 gim/mtg 基础上多 4=i32 与 7=f64 (PixelFormat 后接 ProbeOffset 佐证)
   .trk        NTRK 相机轨道: 32 字节名字段 + u32 帧数 + 帧数-1 个 f32 时间 + 6 字节通道标志 + 位置/四元数块
-  .sfxmusic   XML <FxGroup>
-  .postprocess XML <PostProcess>
+  .sfxmusic/.postprocess 为纯文本 XML, 已改由 /api/text 代码预览, 不再走结构化解析
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from __future__ import annotations
 import re
 import struct
 import array
-import xml.etree.ElementTree
 import zlib
 
 import zstandard
@@ -35,7 +33,6 @@ MAX_NODES = 12000
 MAX_DEPTH = 20
 MAX_LIST = 300
 MAX_STR = 400
-MAX_TEXT = 160 * 1024
 MAX_RECORDS = 400
 MAX_OBJECTS = 1200
 MAX_PAIRS = 500
@@ -60,7 +57,7 @@ class StructError(ValueError):
     pass
 
 
-SUPPORTED_EXTS = {".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess", ".cache"}
+SUPPORTED_EXTS = {".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".cache"}
 
 
 def _text(value: bytes) -> str:
@@ -766,48 +763,6 @@ def parse_trk(data: bytes) -> dict:
     }
 
 
-def parse_xml(data: bytes) -> dict:
-    head = data[:MAX_TEXT]
-    try:
-        text = head.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = head.decode("gb18030", "replace")
-    truncated = len(data) > len(head)
-    root = element_count = depth = 0
-    root_tag = ""
-    children = []
-    try:
-        root = xml.etree.ElementTree.fromstring(data if not truncated else head)
-        root_tag = root.tag
-        counter = {"count": 0, "depth": 0}
-
-        def walk(element, level):
-            counter["count"] += 1
-            counter["depth"] = max(counter["depth"], level)
-            for child in element:
-                walk(child, level + 1)
-
-        walk(root, 1)
-        element_count = counter["count"]
-        depth = counter["depth"]
-        children = [child.tag for child in root][:40]
-    except xml.etree.ElementTree.ParseError as exc:
-        warnings = [f"xml parse: {exc}"]
-    else:
-        warnings = []
-    return {
-        "kind": "xml",
-        "root": root_tag,
-        "elements": element_count,
-        "depth": depth,
-        "children": children,
-        "text": text,
-        "truncated": truncated,
-        "references": _refs(text),
-        "warnings": warnings,
-    }
-
-
 def parse(payload: bytes, ext: str) -> dict:
     ext = (ext or "").lower()
     if ext == ".bin":
@@ -824,6 +779,4 @@ def parse(payload: bytes, ext: str) -> dict:
         return parse_scn(payload)
     if ext == ".trk":
         return parse_trk(payload)
-    if ext in (".sfxmusic", ".postprocess"):
-        return parse_xml(payload)
     raise StructError(f"unsupported ext {ext}")

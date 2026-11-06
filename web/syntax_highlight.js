@@ -17,8 +17,11 @@
     ".lua": "lua",
     ".xml": "xml", ".html": "xml", ".htm": "xml", ".xhtml": "xml", ".svg": "xml", ".plist": "xml",
     ".css": "css",
+    ".lod": "xml", ".animgraph": "xml", ".animconfig": "xml", ".trackgroup": "xml",
+    ".stb": "xml", ".nstb": "xml", ".sfxmusic": "xml", ".postprocess": "xml",
+    ".conf": "json", ".rscan": "json", ".nxmeta": "json", ".lic": "json", ".texarray": "json",
   };
-  const PLAIN_EXT = new Set([".md", ".markdown", ".csv", ".tsv", ".ini", ".conf", ".yaml", ".yml", ".atlas", ".spr", ".lod"]);
+  const PLAIN_EXT = new Set([".md", ".markdown", ".csv", ".tsv", ".ini", ".yaml", ".yml", ".atlas", ".spr"]);
   const LANG_KEYS = new Set(["python", "json", "javascript", "hlsl", "lua", "xml", "css"]);
   const BLOCK_COMMENT_LANGS = new Set(["json", "javascript", "hlsl", "css"]);
 

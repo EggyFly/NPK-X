@@ -4,7 +4,7 @@
   if (typeof window === "undefined") return;
   if (window.renderStructPreview) return;
   window.STRUCT_PREVIEW_EXT = new Set([
-    ".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".sfxmusic", ".postprocess", ".cache",
+    ".bin", ".eggimonbin", ".meta", ".efx", ".scn", ".trk", ".cache",
   ]);
 
   var STYLE_ID = "struct-preview-style";
@@ -56,8 +56,6 @@
     "struct.title.efx": "NeoX 特效属性",
     "struct.title.scn": "NeoX 场景对象",
     "struct.title.trk": "相机轨道",
-    "struct.title.sfxmusic": "音效事件 XML",
-    "struct.title.postprocess": "后处理 XML",
     "struct.title.cache": ".cache 着色器",
     "struct.tree": "结构树",
     "struct.expandAll": "展开",
@@ -107,9 +105,6 @@
     "struct.bdStrings": "字符串",
     "struct.bdUnits": "单位",
     "struct.bdStringPool": "字符串池",
-    "struct.xmlRoot": "根节点",
-    "struct.xmlElements": "元素数",
-    "struct.xmlDepth": "深度",
     "struct.unknown": "这个格式返回了未知结构，请查看 Hex。",
     "inspect.references": "引用资源",
     "inspect.hex": "原始 Hex（前 4 KB）",
@@ -342,17 +337,6 @@
     pre.textContent = (hexLines || []).join("\n");
     details.appendChild(pre);
     return details;
-  }
-
-  function textPre(text) {
-    var pre = document.createElement("pre");
-    pre.className = "struct-pre";
-    if (window.SyntaxHighlight) {
-      pre.innerHTML = window.SyntaxHighlight.render(text, "x.xml");
-    } else {
-      pre.textContent = text;
-    }
-    return pre;
   }
 
   function renderHeightmap(root, data) {
@@ -692,23 +676,6 @@
     }
   }
 
-  function renderXml(root, data) {
-    root.appendChild(chips([
-      [tr("struct.xmlRoot"), data.root || "—"],
-      [tr("struct.xmlElements"), data.elements],
-      [tr("struct.xmlDepth"), data.depth],
-    ]));
-    if (data.text) {
-      root.appendChild(textPre(data.text));
-    }
-    if (data.truncated) {
-      var warn = document.createElement("div");
-      warn.className = "struct-warn";
-      warn.textContent = tr("text.tooLarge");
-      root.appendChild(warn);
-    }
-  }
-
   var RENDERERS = {
     msgpack: renderMsgpack,
     bindict: renderBindict,
@@ -717,10 +684,49 @@
     efx: renderEfx,
     trk: renderTrk,
     scn: renderScn,
-    xml: renderXml,
     shader_cache: renderShaderCache,
     cache_plain: renderCachePlain,
   };
+
+  function fillBlocks(host, data) {
+    var renderer = RENDERERS[data.kind];
+    var warnKeys = (data.warnings || []).slice();
+    if (renderer) {
+      renderer(host, data);
+      if (data.note) warnKeys.push(data.note);
+    } else {
+      warnKeys.push(data.note || "struct.unknown");
+      if (data.hex_head) host.appendChild(hexDetails(data.hex_head));
+    }
+    warnKeys.forEach(function (key) {
+      var warn = document.createElement("div");
+      warn.className = "struct-warn";
+      warn.textContent = `${tr(key)}${key === "inspect.scnStopEarly" && data.stop_reason ? " · " + data.stop_reason : ""}`;
+      host.appendChild(warn);
+    });
+  }
+
+  function renderStructBlocks(target, data) {
+    var media = toElement(target);
+    if (!media) return;
+    ensureStyle();
+    media.innerHTML = "";
+    media.dataset.structPath = data.path || "";
+    media.dataset.kind = String(data.kind || "");
+    var flow = document.createElement("div");
+    flow.className = "struct-flow";
+    media.appendChild(flow);
+    fillBlocks(flow, data);
+    media.classList.remove("swap-in");
+    void media.offsetWidth;
+    media.classList.add("swap-in");
+    if (!langCache || langCache.code !== currentCode()) {
+      var path = data.path || "";
+      loadLang().then(function () {
+        if (media.dataset.structPath === path && media.childElementCount) renderStructBlocks(media, data);
+      });
+    }
+  }
 
   function render(target, data) {
     var media = toElement(target);
@@ -734,21 +740,7 @@
     head.className = "struct-head";
     head.innerHTML = `<span class="struct-title"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg>${esc(tr(titleKey))}</span>`;
     root.appendChild(head);
-    var renderer = RENDERERS[data.kind];
-    var warnKeys = (data.warnings || []).slice();
-    if (renderer) {
-      renderer(root, data);
-      if (data.note) warnKeys.push(data.note);
-    } else {
-      warnKeys.push(data.note || "struct.unknown");
-      if (data.hex_head) root.appendChild(hexDetails(data.hex_head));
-    }
-    warnKeys.forEach(function (key) {
-      var warn = document.createElement("div");
-      warn.className = "struct-warn";
-      warn.textContent = `${tr(key)}${key === "inspect.scnStopEarly" && data.stop_reason ? " · " + data.stop_reason : ""}`;
-      root.appendChild(warn);
-    });
+    fillBlocks(root, data);
     media.innerHTML = "";
     media.appendChild(root);
     media.classList.remove("swap-in");
@@ -764,4 +756,5 @@
   }
 
   window.renderStructPreview = render;
+  window.renderStructBlocks = renderStructBlocks;
 })();
